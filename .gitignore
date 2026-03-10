@@ -1,0 +1,33 @@
+# Xcode
+DerivedData/
+build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+xcuserdata/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Swift Package Manager
+.build/
+Packages/
+
+# Claude Code
+.claude/
+
+# App secrets — never commit
+*.xcconfig
+Secrets.swift
+
+# Archives & builds
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.app
+
+# Provisioning
+*.mobileprovision
+*.provisionprofile

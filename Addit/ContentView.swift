@@ -1,24 +1,27 @@
-//
-//  ContentView.swift
-//  Addit
-//
-//  Created by Clint Lang on 3/9/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @Environment(GoogleAuthService.self) private var authService
+    @Environment(AudioPlayerService.self) private var playerService
+    @State private var showNowPlaying = false
 
-#Preview {
-    ContentView()
+    var body: some View {
+        if authService.isSignedIn {
+            ZStack(alignment: .bottom) {
+                NavigationStack {
+                    LibraryView()
+                }
+
+                if playerService.currentTrack != nil {
+                    NowPlayingBar(showFullPlayer: $showNowPlaying)
+                        .transition(.move(edge: .bottom))
+                }
+            }
+            .sheet(isPresented: $showNowPlaying) {
+                NowPlayingView()
+            }
+        } else {
+            SignInView()
+        }
+    }
 }
