@@ -54,6 +54,39 @@ final class GoogleDriveService {
         return try await listFiles(query: query, pageSize: 1000, orderBy: "name")
     }
 
+    // MARK: - Folder Operations
+
+    func createFolder(name: String, inParent parentId: String) async throws -> DriveItem {
+        let token = try await getToken()
+
+        let url = URL(string: "\(baseURL)/files?supportsAllDrives=true")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let metadata: [String: Any] = [
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parentId]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: metadata)
+
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response)
+        return try JSONDecoder().decode(DriveItem.self, from: data)
+    }
+
+    func findOrCreateFolder(named name: String, inParent parentId: String) async throws -> DriveItem {
+        let escaped = name.replacingOccurrences(of: "'", with: "\\'")
+        let query = "'\(parentId)' in parents and name = '\(escaped)' and mimeType = 'application/vnd.google-apps.folder' and trashed=false"
+        let response = try await listFiles(query: query, pageSize: 1)
+        if let existing = response.files.first {
+            return existing
+        }
+        return try await createFolder(name: name, inParent: parentId)
+    }
+
     // MARK: - Write Operations
 
     func createFile(name: String, mimeType: String, inFolder parentId: String, data: Data) async throws -> DriveItem {

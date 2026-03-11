@@ -13,6 +13,10 @@ struct AlbumDetailView: View {
     @State private var tracklistFileId: String?
     @State private var isSavingOrder = false
     @State private var editMode: EditMode = .inactive
+    @State private var addiDataFolderId: String?
+    @State private var artistFileId: String?
+    @State private var isEditingArtist = false
+    @State private var editedArtistName = ""
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -41,6 +45,34 @@ struct AlbumDetailView: View {
                     .deleteDisabled(true)
                 }
             } else {
+                // Artist section
+                if album.artistName != nil || album.canEdit {
+                    Section {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Artist")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(album.artistName ?? "Unknown Artist")
+                                    .font(.headline)
+                                    .foregroundStyle(album.artistName != nil ? .primary : .secondary)
+                            }
+                            Spacer()
+                            if album.canEdit {
+                                Image(systemName: "pencil")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if album.canEdit {
+                                editedArtistName = album.artistName ?? ""
+                                isEditingArtist = true
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     HStack(spacing: 12) {
                         Button {
@@ -116,6 +148,15 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        .alert("Artist Name", isPresented: $isEditingArtist) {
+            TextField("Artist name", text: $editedArtistName)
+            Button("Save") {
+                Task { await saveArtistName() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enter the artist or band name for this album")
+        }
         .refreshable {
             await syncFromDrive()
         }
@@ -155,13 +196,15 @@ struct AlbumDetailView: View {
         guard let data = content.data(using: .utf8) else { return }
 
         do {
+            let folderId = try await ensureAdditDataFolder()
+
             if let existingId = tracklistFileId {
                 try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
             } else {
                 let item = try await driveService.createFile(
                     name: ".addit-tracklist",
                     mimeType: "text/plain",
-                    inFolder: album.googleFolderId,
+                    inFolder: folderId,
                     data: data
                 )
                 tracklistFileId = item.id
@@ -179,6 +222,60 @@ struct AlbumDetailView: View {
         } catch {
             syncError = "Failed to save order: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Artist
+
+    private func saveArtistName() async {
+        let trimmed = editedArtistName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newName: String? = trimmed.isEmpty ? nil : trimmed
+
+        album.artistName = newName
+        try? modelContext.save()
+
+        guard let data = (newName ?? "").data(using: .utf8) else { return }
+
+        do {
+            let folderId = try await ensureAdditDataFolder()
+
+            if let existingId = artistFileId {
+                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
+            } else {
+                let item = try await driveService.createFile(
+                    name: ".addit-artist",
+                    mimeType: "text/plain",
+                    inFolder: folderId,
+                    data: data
+                )
+                artistFileId = item.id
+            }
+        } catch {
+            syncError = "Failed to save artist: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - addit-data Folder
+
+    private func resolveAdditDataFolder() async {
+        do {
+            if let item = try await driveService.findFile(named: "addit-data", inFolder: album.googleFolderId),
+               item.isFolder {
+                addiDataFolderId = item.id
+                return
+            }
+        } catch {
+            // Best effort
+        }
+        addiDataFolderId = nil
+    }
+
+    private func ensureAdditDataFolder() async throws -> String {
+        if let existing = addiDataFolderId {
+            return existing
+        }
+        let folder = try await driveService.findOrCreateFolder(named: "addit-data", inParent: album.googleFolderId)
+        addiDataFolderId = folder.id
+        return folder.id
     }
 
     // MARK: - Sync
@@ -228,8 +325,14 @@ struct AlbumDetailView: View {
                 }
             }
 
+            // Resolve addit-data folder for metadata lookups
+            await resolveAdditDataFolder()
+
             // Apply tracklist ordering
             await applyTrackOrdering(driveFiles: driveFiles)
+
+            // Sync artist name
+            await syncArtistName()
 
             album.trackCount = driveFiles.count
             try? modelContext.save()
@@ -240,7 +343,19 @@ struct AlbumDetailView: View {
 
     private func applyTrackOrdering(driveFiles: [DriveItem]) async {
         do {
-            if let tracklistItem = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId) {
+            var tracklistItem: DriveItem?
+
+            // Check addit-data/ first
+            if let folderId = addiDataFolderId {
+                tracklistItem = try await driveService.findFile(named: ".addit-tracklist", inFolder: folderId)
+            }
+
+            // Fall back to root for backward compatibility
+            if tracklistItem == nil {
+                tracklistItem = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId)
+            }
+
+            if let tracklistItem {
                 tracklistFileId = tracklistItem.id
                 let data = try await driveService.downloadFileData(fileId: tracklistItem.id)
                 if let content = String(data: data, encoding: .utf8) {
@@ -269,7 +384,7 @@ struct AlbumDetailView: View {
                 }
             }
         } catch {
-            // If tracklist fetch fails, fall back to default ordering
+            // Fall back to default ordering
         }
 
         // Default: alphabetical order from Drive API response
@@ -278,6 +393,35 @@ struct AlbumDetailView: View {
             if let track = album.tracks.first(where: { $0.googleFileId == file.id }) {
                 track.trackNumber = index + 1
             }
+        }
+    }
+
+    private func syncArtistName() async {
+        do {
+            var artistItem: DriveItem?
+
+            // Check addit-data/ first
+            if let folderId = addiDataFolderId {
+                artistItem = try await driveService.findFile(named: ".addit-artist", inFolder: folderId)
+            }
+
+            // Fall back to root
+            if artistItem == nil {
+                artistItem = try await driveService.findFile(named: ".addit-artist", inFolder: album.googleFolderId)
+            }
+
+            if let artistItem {
+                artistFileId = artistItem.id
+                let data = try await driveService.downloadFileData(fileId: artistItem.id)
+                if let content = String(data: data, encoding: .utf8) {
+                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    album.artistName = trimmed.isEmpty ? nil : trimmed
+                }
+            } else {
+                artistFileId = nil
+            }
+        } catch {
+            // Keep existing local value on error
         }
     }
 }

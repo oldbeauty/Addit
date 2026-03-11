@@ -95,6 +95,13 @@ struct AlbumCard: View {
                 .multilineTextAlignment(.leading)
                 .foregroundStyle(.primary)
 
+            if let artistName = album.artistName {
+                Text(artistName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             Text("\(album.trackCount) track\(album.trackCount == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundStyle(.secondary)

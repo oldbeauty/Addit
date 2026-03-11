@@ -42,7 +42,7 @@ struct NowPlayingView: View {
                 Text(playerService.currentTrack?.displayName ?? "Not Playing")
                     .font(.title3.bold())
                     .lineLimit(1)
-                Text(playerService.currentTrack?.album?.name ?? "")
+                Text(nowPlayingSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -146,6 +146,14 @@ struct NowPlayingView: View {
             }
         }
         .padding()
+    }
+
+    private var nowPlayingSubtitle: String {
+        let albumName = playerService.currentTrack?.album?.name ?? ""
+        if let artistName = playerService.currentTrack?.album?.artistName {
+            return "\(artistName) \u{2014} \(albumName)"
+        }
+        return albumName
     }
 
     private var repeatIcon: String {

@@ -316,6 +316,7 @@ final class AudioPlayerService {
     private func updateNowPlayingInfo() {
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = currentTrack?.displayName ?? ""
+        info[MPMediaItemPropertyArtist] = currentTrack?.album?.artistName ?? ""
         info[MPMediaItemPropertyAlbumTitle] = currentTrack?.album?.name ?? ""
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime

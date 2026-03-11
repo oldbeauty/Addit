@@ -43,7 +43,7 @@ struct NowPlayingBar: View {
                     Text(playerService.currentTrack?.displayName ?? "")
                         .font(.subheadline.bold())
                         .lineLimit(1)
-                    Text(playerService.currentTrack?.album?.name ?? "")
+                    Text(miniPlayerSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -78,5 +78,13 @@ struct NowPlayingBar: View {
                 showFullPlayer = true
             }
         }
+    }
+
+    private var miniPlayerSubtitle: String {
+        let albumName = playerService.currentTrack?.album?.name ?? ""
+        if let artistName = playerService.currentTrack?.album?.artistName {
+            return "\(artistName) \u{2014} \(albumName)"
+        }
+        return albumName
     }
 }
