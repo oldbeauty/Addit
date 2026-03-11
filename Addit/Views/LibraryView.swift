@@ -14,11 +14,6 @@ struct LibraryView: View {
     @State private var showSettings = false
     @State private var selectedAlbum: Album?
     @State private var metadataEditorAlbum: Album?
-    @State private var albumPendingCoverChange: Album?
-    @State private var selectedCoverPhoto: PhotosPickerItem?
-    @State private var isShowingCoverPicker = false
-    @State private var isUploadingCover = false
-    @State private var coverUploadErrorMessage: String?
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
@@ -47,16 +42,8 @@ struct LibraryView: View {
                                 Button {
                                     metadataEditorAlbum = album
                                 } label: {
-                                    Label("Edit Metadata", systemImage: "pencil")
+                                    Label("Edit", systemImage: "pencil")
                                 }
-                                Button {
-                                    albumPendingCoverChange = album
-                                    selectedCoverPhoto = nil
-                                    isShowingCoverPicker = true
-                                } label: {
-                                    Label("Change Album Cover", systemImage: "photo")
-                                }
-                                .disabled(isUploadingCover)
                                 Button("Remove from Library", role: .destructive) {
                                     modelContext.delete(album)
                                 }
@@ -127,74 +114,12 @@ struct LibraryView: View {
         .sheet(item: $metadataEditorAlbum) { album in
             AlbumMetadataEditorSheet(album: album)
         }
-        .photosPicker(
-            isPresented: $isShowingCoverPicker,
-            selection: $selectedCoverPhoto,
-            matching: .images
-        )
-        .task(id: selectedCoverPhoto != nil) {
-            await uploadSelectedCoverIfNeeded()
-        }
-        .alert(
-            "Couldn't Change Album Cover",
-            isPresented: Binding(
-                get: { coverUploadErrorMessage != nil },
-                set: { if !$0 { coverUploadErrorMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(coverUploadErrorMessage ?? "")
-        }
         .safeAreaInset(edge: .bottom) {
             if playerService.currentTrack != nil {
                 Color.clear.frame(height: 64)
             }
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.9), value: selectedAlbum != nil)
-    }
-
-    @MainActor
-    private func uploadSelectedCoverIfNeeded() async {
-        guard let selectedCoverPhoto, let album = albumPendingCoverChange, !isUploadingCover else { return }
-
-        isUploadingCover = true
-
-        defer {
-            isUploadingCover = false
-            self.selectedCoverPhoto = nil
-            albumPendingCoverChange = nil
-        }
-
-        do {
-            guard let selectedData = try await selectedCoverPhoto.loadTransferable(type: Data.self) else {
-                throw CoverUploadError.unreadableSelection
-            }
-            guard let image = UIImage(data: selectedData),
-                  let jpegData = image.jpegData(compressionQuality: 0.9) else {
-                throw CoverUploadError.invalidImageData
-            }
-
-            let previousCoverFileId = album.coverFileId
-            let coverItem = try await driveService.upsertCoverJPG(inFolder: album.googleFolderId, data: jpegData)
-
-            albumArtService.invalidateImage(for: previousCoverFileId)
-            albumArtService.invalidateImage(for: coverItem.id)
-
-            let cachedImage = albumArtService.cacheImageData(jpegData, for: coverItem.id)
-            let resolution = AlbumArtResolution(
-                image: cachedImage,
-                resolvedCoverItem: coverItem,
-                shouldPersistMetadata: true
-            )
-
-            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
-            album.coverUpdatedAt = .now
-            try? modelContext.save()
-            albumArtService.bumpRefreshToken(for: album.googleFolderId)
-        } catch {
-            coverUploadErrorMessage = error.localizedDescription
-        }
     }
 
 }
@@ -276,30 +201,108 @@ struct AlbumMetadataEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(GoogleDriveService.self) private var driveService
+    @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(ThemeService.self) private var themeService
     @State private var editedTitle = ""
     @State private var editedArtist = ""
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var additDataFolderId: String?
+    @State private var selectedCoverPhoto: PhotosPickerItem?
+    @State private var isUploadingCover = false
+    @State private var coverUploadErrorMessage: String?
+    @State private var coverImage: UIImage?
+    @FocusState private var focusedField: EditField?
+
+    private enum EditField {
+        case title, artist
+    }
+
+    private let coverSize: CGFloat = 180
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Album Title") {
-                    TextField("Album title", text: $editedTitle)
-                }
-                Section("Artist") {
-                    TextField("Artist", text: $editedArtist)
-                }
-                if let errorMessage {
-                    Section {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Cover art
+                    PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: coverSize, height: coverSize)
+                                .overlay {
+                                    if let coverImage {
+                                        Image(uiImage: coverImage)
+                                            .resizable()
+                                            .scaledToFill()
+                                    } else {
+                                        Image(systemName: "music.note")
+                                            .font(.system(size: 48))
+                                            .foregroundStyle(.white.opacity(0.8))
+                                    }
+                                }
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .padding(4)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                                        .foregroundStyle(.secondary.opacity(0.6))
+                                }
+
+                            if isUploadingCover {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .frame(width: coverSize, height: coverSize)
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isUploadingCover)
+
+                    // Title and artist
+                    VStack(spacing: 4) {
+                        HStack(spacing: 6) {
+                            TextField("Album title", text: $editedTitle)
+                                .font(.title2.bold())
+                                .multilineTextAlignment(.center)
+                                .focused($focusedField, equals: .title)
+
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack(spacing: 6) {
+                            TextField("Artist", text: $editedArtist)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .focused($focusedField, equals: .artist)
+
+                            Image(systemName: "pencil")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 32)
+
+                    if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal)
                     }
                 }
+                .padding(.top, 24)
             }
-            .navigationTitle("Edit Metadata")
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Edit Album")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -310,6 +313,7 @@ struct AlbumMetadataEditorSheet: View {
                         ProgressView()
                     } else {
                         Button("Save") {
+                            focusedField = nil
                             Task { await saveMetadata() }
                         }
                         .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -319,7 +323,25 @@ struct AlbumMetadataEditorSheet: View {
             .task {
                 editedTitle = album.name
                 editedArtist = album.artistName ?? ""
+                let resolution = await albumArtService.resolveAlbumArt(for: album)
+                coverImage = resolution.image
                 await resolveAdditDataFolder()
+            }
+            .onChange(of: selectedCoverPhoto) { _, newValue in
+                if newValue != nil {
+                    Task { await uploadSelectedCover() }
+                }
+            }
+            .alert(
+                "Couldn't Change Album Cover",
+                isPresented: Binding(
+                    get: { coverUploadErrorMessage != nil },
+                    set: { if !$0 { coverUploadErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(coverUploadErrorMessage ?? "")
             }
         }
     }
@@ -339,12 +361,11 @@ struct AlbumMetadataEditorSheet: View {
         try? modelContext.save()
 
         do {
+            // Rename the actual Drive folder
+            try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
+
+            // Save artist to addit-data metadata file
             let folderId = additDataFolderId ?? album.googleFolderId
-            try await upsertMetadataFile(
-                named: ".addit-album-title",
-                content: trimmedTitle,
-                inFolder: folderId
-            )
             try await upsertMetadataFile(
                 named: ".addit-artist",
                 content: newArtist ?? "",
@@ -352,7 +373,51 @@ struct AlbumMetadataEditorSheet: View {
             )
             dismiss()
         } catch {
-            errorMessage = "Failed to save metadata: \(error.localizedDescription)"
+            errorMessage = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func uploadSelectedCover() async {
+        guard let selectedCoverPhoto, !isUploadingCover else { return }
+
+        isUploadingCover = true
+        defer {
+            isUploadingCover = false
+            self.selectedCoverPhoto = nil
+        }
+
+        do {
+            guard let selectedData = try await selectedCoverPhoto.loadTransferable(type: Data.self) else {
+                throw CoverUploadError.unreadableSelection
+            }
+            guard let image = UIImage(data: selectedData),
+                  let jpegData = image.jpegData(compressionQuality: 0.9) else {
+                throw CoverUploadError.invalidImageData
+            }
+
+            let previousCoverFileId = album.coverFileId
+            let additDataFolder = try await driveService.findOrCreateFolder(named: "addit-data", inParent: album.googleFolderId)
+            let coverItem = try await driveService.upsertCoverImage(inFolder: additDataFolder.id, data: jpegData)
+
+            albumArtService.invalidateImage(for: previousCoverFileId)
+            albumArtService.invalidateImage(for: coverItem.id)
+
+            let cachedImage = albumArtService.cacheImageData(jpegData, for: coverItem.id)
+            coverImage = cachedImage
+
+            let resolution = AlbumArtResolution(
+                image: cachedImage,
+                resolvedCoverItem: coverItem,
+                shouldPersistMetadata: true
+            )
+
+            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            album.coverUpdatedAt = .now
+            try? modelContext.save()
+            albumArtService.bumpRefreshToken(for: album.googleFolderId)
+        } catch {
+            coverUploadErrorMessage = error.localizedDescription
         }
     }
 

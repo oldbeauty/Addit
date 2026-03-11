@@ -37,7 +37,13 @@ final class AlbumArtService {
         }
 
         do {
-            let coverItem = try await driveService.findCoverJPG(inFolder: album.googleFolderId)
+            // Only look for cover.* in addit-data/ subfolder
+            var coverItem: DriveItem?
+            if let additDataItem = try await driveService.findFile(named: "addit-data", inFolder: album.googleFolderId),
+               additDataItem.isFolder {
+                coverItem = try await driveService.findCoverImage(inFolder: additDataItem.id)
+            }
+
             let resolvedImage: UIImage?
             if let coverItem {
                 resolvedImage = await image(for: coverItem.id)

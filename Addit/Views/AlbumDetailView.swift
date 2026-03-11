@@ -381,8 +381,9 @@ struct AlbumDetailView: View {
         defer { isSyncing = false }
 
         do {
-            // Refresh folder permissions
+            // Refresh folder name and permissions from Drive
             if let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) {
+                album.name = folderInfo.name
                 album.canEdit = folderInfo.canEdit
             }
 
@@ -427,9 +428,6 @@ struct AlbumDetailView: View {
 
             // Sync artist name
             await syncArtistName()
-
-            // Sync album title
-            await syncAlbumTitle()
 
             // Sync JPEG cover art metadata
             await syncCoverArtMetadata()
@@ -525,37 +523,15 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func syncAlbumTitle() async {
-        do {
-            var titleItem: DriveItem?
-
-            // Check addit-data/ first
-            if let folderId = addiDataFolderId {
-                titleItem = try await driveService.findFile(named: ".addit-album-title", inFolder: folderId)
-            }
-
-            // Fall back to root
-            if titleItem == nil {
-                titleItem = try await driveService.findFile(named: ".addit-album-title", inFolder: album.googleFolderId)
-            }
-
-            if let titleItem {
-                let data = try await driveService.downloadFileData(fileId: titleItem.id)
-                if let content = String(data: data, encoding: .utf8) {
-                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        album.name = trimmed
-                    }
-                }
-            }
-        } catch {
-            // Keep existing local value on error
-        }
-    }
-
     private func syncCoverArtMetadata() async {
         do {
-            if let coverItem = try await driveService.findCoverJPG(inFolder: album.googleFolderId) {
+            // Only look for cover.* in addit-data/ subfolder
+            var coverItem: DriveItem?
+            if let folderId = addiDataFolderId {
+                coverItem = try await driveService.findCoverImage(inFolder: folderId)
+            }
+
+            if let coverItem {
                 album.coverFileId = coverItem.id
                 album.coverMimeType = coverItem.mimeType
                 album.coverUpdatedAt = .now

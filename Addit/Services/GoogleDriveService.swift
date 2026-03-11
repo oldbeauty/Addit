@@ -43,15 +43,18 @@ final class GoogleDriveService {
         return try await listFiles(query: query, pageToken: pageToken, pageSize: 1000, orderBy: "name")
     }
 
-    func findCoverJPG(inFolder folderId: String) async throws -> DriveItem? {
-        let query = "'\(folderId)' in parents and mimeType='image/jpeg' and trashed=false"
+    func findCoverImage(inFolder folderId: String) async throws -> DriveItem? {
+        let query = "'\(folderId)' in parents and mimeType contains 'image/' and trashed=false"
         let response = try await listFiles(query: query, pageSize: 100, orderBy: "name")
-        guard !response.files.isEmpty else { return nil }
-        return response.files.sorted(by: compareCoverPriority).first
+        // Only match files named exactly "cover" (any extension: cover.jpg, cover.png, etc.)
+        return response.files.first { item in
+            let nameWithoutExt = (item.name as NSString).deletingPathExtension.lowercased()
+            return nameWithoutExt == "cover"
+        }
     }
 
-    func upsertCoverJPG(inFolder folderId: String, data: Data, fileName: String = "cover.jpg") async throws -> DriveItem {
-        if let existing = try await findCoverJPG(inFolder: folderId) {
+    func upsertCoverImage(inFolder folderId: String, data: Data, fileName: String = "cover.jpg") async throws -> DriveItem {
+        if let existing = try await findCoverImage(inFolder: folderId) {
             try await updateFileData(fileId: existing.id, data: data, mimeType: "image/jpeg")
             return existing
         }
@@ -257,22 +260,6 @@ final class GoogleDriveService {
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(DriveFileListResponse.self, from: data)
-    }
-
-    private func compareCoverPriority(_ lhs: DriveItem, _ rhs: DriveItem) -> Bool {
-        let lhsRank = coverNameRank(lhs.name)
-        let rhsRank = coverNameRank(rhs.name)
-        if lhsRank != rhsRank { return lhsRank < rhsRank }
-        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-    }
-
-    private func coverNameRank(_ fileName: String) -> Int {
-        let lower = fileName.lowercased()
-        let preferredTokens = ["cover", "folder", "front", "album"]
-        for (index, token) in preferredTokens.enumerated() where lower.contains(token) {
-            return index
-        }
-        return preferredTokens.count
     }
 
     private func getToken() async throws -> String {

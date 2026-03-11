@@ -136,7 +136,12 @@ struct AddAlbumView: View {
     }
 
     private func syncCoverArt(for album: Album, folderId: String) async {
-        let coverItem = try? await driveService.findCoverJPG(inFolder: folderId)
+        // Only look for cover.* in addit-data/ subfolder
+        var coverItem: DriveItem?
+        if let additDataItem = try? await driveService.findFile(named: "addit-data", inFolder: folderId),
+           additDataItem.isFolder {
+            coverItem = try? await driveService.findCoverImage(inFolder: additDataItem.id)
+        }
         if let coverItem {
             album.coverFileId = coverItem.id
             album.coverMimeType = coverItem.mimeType
