@@ -1,9 +1,23 @@
 import SwiftUI
+import UIKit
+import SwiftData
 
 struct NowPlayingView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(AudioPlayerService.self) private var playerService
+    @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(ThemeService.self) private var themeService
     @Environment(\.dismiss) private var dismiss
     @State private var seekValue: TimeInterval = 0
+    @State private var albumImage: UIImage?
+
+    private var artworkTaskID: String? {
+        guard let album = playerService.currentTrack?.album else { return nil }
+        let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
+            ? albumArtService.artworkRefreshVersion
+            : 0
+        return "\(album.coverArtTaskID)-\(refreshMarker)"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,7 +33,7 @@ struct NowPlayingView: View {
             RoundedRectangle(cornerRadius: 20)
                 .fill(
                     LinearGradient(
-                        colors: [Color.accentColor.opacity(0.6), Color.accentColor.opacity(0.2)],
+                        colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.2)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -27,10 +41,19 @@ struct NowPlayingView: View {
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: 320)
                 .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 80))
-                        .foregroundStyle(.white.opacity(0.7))
+                    Group {
+                        if let albumImage {
+                            Image(uiImage: albumImage)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 80))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .shadow(radius: 20, y: 10)
                 .padding(.horizontal, 40)
 
@@ -68,7 +91,7 @@ struct NowPlayingView: View {
                         playerService.endSeeking(to: seekValue)
                     }
                 }
-                .tint(Color.accentColor)
+                .tint(themeService.accentColor)
 
                 HStack {
                     Text(formatTime(playerService.isSeeking ? seekValue : playerService.currentTime))
@@ -92,9 +115,9 @@ struct NowPlayingView: View {
                 Button {
                     playerService.toggleShuffle()
                 } label: {
-                    Image(systemName: "shuffle")
-                        .font(.title3)
-                        .foregroundStyle(playerService.isShuffleOn ? Color.accentColor : .secondary)
+                        Image(systemName: "shuffle")
+                            .font(.title3)
+                            .foregroundStyle(playerService.isShuffleOn ? themeService.accentColor : .secondary)
                 }
 
                 Button {
@@ -129,9 +152,9 @@ struct NowPlayingView: View {
                 Button {
                     playerService.cycleRepeatMode()
                 } label: {
-                    Image(systemName: repeatIcon)
-                        .font(.title3)
-                        .foregroundStyle(playerService.repeatMode == .off ? .secondary : Color.accentColor)
+                        Image(systemName: repeatIcon)
+                            .font(.title3)
+                            .foregroundStyle(playerService.repeatMode == .off ? .secondary : themeService.accentColor)
                 }
             }
 
@@ -146,6 +169,15 @@ struct NowPlayingView: View {
             }
         }
         .padding()
+        .task(id: artworkTaskID) {
+            guard let album = playerService.currentTrack?.album else {
+                albumImage = nil
+                return
+            }
+            let resolution = await albumArtService.resolveAlbumArt(for: album)
+            albumImage = resolution.image
+            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+        }
     }
 
     private var nowPlayingSubtitle: String {

@@ -31,3 +31,7 @@ Secrets.swift
 # Provisioning
 *.mobileprovision
 *.provisionprofile
+
+*AGENTS.md
+
+

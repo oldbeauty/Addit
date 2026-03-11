@@ -3,6 +3,7 @@ import SwiftData
 
 struct AlbumDetailView: View {
     let album: Album
+    let embeddedInPanel: Bool
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(GoogleDriveService.self) private var driveService
     @Environment(\.modelContext) private var modelContext
@@ -14,9 +15,11 @@ struct AlbumDetailView: View {
     @State private var isSavingOrder = false
     @State private var editMode: EditMode = .inactive
     @State private var addiDataFolderId: String?
-    @State private var artistFileId: String?
-    @State private var isEditingArtist = false
-    @State private var editedArtistName = ""
+
+    init(album: Album, embeddedInPanel: Bool = false) {
+        self.album = album
+        self.embeddedInPanel = embeddedInPanel
+    }
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -45,42 +48,14 @@ struct AlbumDetailView: View {
                     .deleteDisabled(true)
                 }
             } else {
-                // Artist section
-                if album.artistName != nil || album.canEdit {
-                    Section {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Artist")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(album.artistName ?? "Unknown Artist")
-                                    .font(.headline)
-                                    .foregroundStyle(album.artistName != nil ? .primary : .secondary)
-                            }
-                            Spacer()
-                            if album.canEdit {
-                                Image(systemName: "pencil")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if album.canEdit {
-                                editedArtistName = album.artistName ?? ""
-                                isEditingArtist = true
-                            }
-                        }
-                    }
-                }
-
                 Section {
                     HStack(spacing: 12) {
                         Button {
                             playerService.playAlbum(album)
                         } label: {
-                            Label("Play All", systemImage: "play.fill")
+                            Label("Play", systemImage: "play.fill")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
 
                         Button {
                             playerService.playAlbum(album, shuffled: true)
@@ -120,6 +95,10 @@ struct AlbumDetailView: View {
         }
         .environment(\.editMode, $editMode)
         .navigationTitle(album.name)
+        .navigationBarTitleDisplayMode(embeddedInPanel ? .inline : .automatic)
+        .scrollContentBackground(embeddedInPanel ? .hidden : .visible)
+        .background(embeddedInPanel ? Color.clear : Color(.systemBackground))
+        .toolbarBackground(embeddedInPanel ? .hidden : .visible, for: .navigationBar)
         .toolbar {
             if album.canEdit && !isReordering && !isSyncing {
                 ToolbarItem(placement: .primaryAction) {
@@ -147,15 +126,6 @@ struct AlbumDetailView: View {
                     }
                 }
             }
-        }
-        .alert("Artist Name", isPresented: $isEditingArtist) {
-            TextField("Artist name", text: $editedArtistName)
-            Button("Save") {
-                Task { await saveArtistName() }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Enter the artist or band name for this album")
         }
         .refreshable {
             await syncFromDrive()
@@ -196,7 +166,7 @@ struct AlbumDetailView: View {
         guard let data = content.data(using: .utf8) else { return }
 
         do {
-            let folderId = try await ensureAdditDataFolder()
+            let folderId = addiDataFolderId ?? album.googleFolderId
 
             if let existingId = tracklistFileId {
                 try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
@@ -224,36 +194,6 @@ struct AlbumDetailView: View {
         }
     }
 
-    // MARK: - Artist
-
-    private func saveArtistName() async {
-        let trimmed = editedArtistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newName: String? = trimmed.isEmpty ? nil : trimmed
-
-        album.artistName = newName
-        try? modelContext.save()
-
-        guard let data = (newName ?? "").data(using: .utf8) else { return }
-
-        do {
-            let folderId = try await ensureAdditDataFolder()
-
-            if let existingId = artistFileId {
-                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
-            } else {
-                let item = try await driveService.createFile(
-                    name: ".addit-artist",
-                    mimeType: "text/plain",
-                    inFolder: folderId,
-                    data: data
-                )
-                artistFileId = item.id
-            }
-        } catch {
-            syncError = "Failed to save artist: \(error.localizedDescription)"
-        }
-    }
-
     // MARK: - addit-data Folder
 
     private func resolveAdditDataFolder() async {
@@ -269,15 +209,6 @@ struct AlbumDetailView: View {
         addiDataFolderId = nil
     }
 
-    private func ensureAdditDataFolder() async throws -> String {
-        if let existing = addiDataFolderId {
-            return existing
-        }
-        let folder = try await driveService.findOrCreateFolder(named: "addit-data", inParent: album.googleFolderId)
-        addiDataFolderId = folder.id
-        return folder.id
-    }
-
     // MARK: - Sync
 
     private func syncFromDrive() async {
@@ -289,7 +220,7 @@ struct AlbumDetailView: View {
         do {
             // Refresh folder permissions
             if let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) {
-                album.canEdit = folderInfo.canAddChildren
+                album.canEdit = folderInfo.canEdit
             }
 
             let response = try await driveService.listAudioFiles(inFolder: album.googleFolderId)
@@ -333,6 +264,12 @@ struct AlbumDetailView: View {
 
             // Sync artist name
             await syncArtistName()
+
+            // Sync album title
+            await syncAlbumTitle()
+
+            // Sync JPEG cover art metadata
+            await syncCoverArtMetadata()
 
             album.trackCount = driveFiles.count
             try? modelContext.save()
@@ -411,17 +348,58 @@ struct AlbumDetailView: View {
             }
 
             if let artistItem {
-                artistFileId = artistItem.id
                 let data = try await driveService.downloadFileData(fileId: artistItem.id)
                 if let content = String(data: data, encoding: .utf8) {
                     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                     album.artistName = trimmed.isEmpty ? nil : trimmed
                 }
-            } else {
-                artistFileId = nil
             }
         } catch {
             // Keep existing local value on error
+        }
+    }
+
+    private func syncAlbumTitle() async {
+        do {
+            var titleItem: DriveItem?
+
+            // Check addit-data/ first
+            if let folderId = addiDataFolderId {
+                titleItem = try await driveService.findFile(named: ".addit-album-title", inFolder: folderId)
+            }
+
+            // Fall back to root
+            if titleItem == nil {
+                titleItem = try await driveService.findFile(named: ".addit-album-title", inFolder: album.googleFolderId)
+            }
+
+            if let titleItem {
+                let data = try await driveService.downloadFileData(fileId: titleItem.id)
+                if let content = String(data: data, encoding: .utf8) {
+                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        album.name = trimmed
+                    }
+                }
+            }
+        } catch {
+            // Keep existing local value on error
+        }
+    }
+
+    private func syncCoverArtMetadata() async {
+        do {
+            if let coverItem = try await driveService.findCoverJPG(inFolder: album.googleFolderId) {
+                album.coverFileId = coverItem.id
+                album.coverMimeType = coverItem.mimeType
+                album.coverUpdatedAt = .now
+            } else {
+                album.coverFileId = nil
+                album.coverMimeType = nil
+                album.coverUpdatedAt = nil
+            }
+        } catch {
+            // Keep existing cover metadata on error
         }
     }
 }
@@ -431,13 +409,14 @@ struct TrackRow: View {
     let number: Int
     let isCurrentTrack: Bool
     let isPlaying: Bool
+    @Environment(ThemeService.self) private var themeService
 
     var body: some View {
         HStack(spacing: 12) {
             if isCurrentTrack {
                 Image(systemName: isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
                     .font(.caption)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(themeService.accentColor)
                     .frame(width: 24)
             } else {
                 Text("\(number)")
@@ -449,7 +428,7 @@ struct TrackRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.displayName)
                     .font(.body)
-                    .foregroundStyle(isCurrentTrack ? Color.accentColor : .primary)
+                    .foregroundStyle(isCurrentTrack ? themeService.accentColor : .primary)
                     .lineLimit(1)
 
                 if let size = track.fileSize {

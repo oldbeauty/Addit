@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SignInView: View {
     @Environment(GoogleAuthService.self) private var authService
+    @Environment(ThemeService.self) private var themeService
 
     var body: some View {
         VStack(spacing: 32) {
@@ -9,7 +10,7 @@ struct SignInView: View {
 
             Image(systemName: "music.note.house.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(themeService.accentColor)
 
             VStack(spacing: 8) {
                 Text("Addit")
@@ -32,7 +33,7 @@ struct SignInView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(Color.accentColor)
+                .background(themeService.accentColor)
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }

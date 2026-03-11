@@ -97,7 +97,7 @@ struct AddAlbumView: View {
             googleFolderId: folder.id,
             name: folder.name,
             trackCount: audioFiles.count,
-            canEdit: folder.canAddChildren
+            canEdit: folder.canEdit
         )
         modelContext.insert(album)
 
@@ -115,6 +115,9 @@ struct AddAlbumView: View {
 
         do {
             try modelContext.save()
+            Task {
+                await syncCoverArt(for: album, folderId: folder.id)
+            }
             addedSuccessfully = true
         } catch {
             saveError = error.localizedDescription
@@ -136,6 +139,20 @@ struct AddAlbumView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func syncCoverArt(for album: Album, folderId: String) async {
+        let coverItem = try? await driveService.findCoverJPG(inFolder: folderId)
+        if let coverItem {
+            album.coverFileId = coverItem.id
+            album.coverMimeType = coverItem.mimeType
+            album.coverUpdatedAt = .now
+        } else {
+            album.coverFileId = nil
+            album.coverMimeType = nil
+            album.coverUpdatedAt = nil
+        }
+        try? modelContext.save()
     }
 }
 

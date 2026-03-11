@@ -1,10 +1,25 @@
 import SwiftUI
+import UIKit
+import SwiftData
 
 struct NowPlayingBar: View {
     @Binding var showFullPlayer: Bool
+    @Environment(\.modelContext) private var modelContext
     @Environment(AudioPlayerService.self) private var playerService
+    @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(ThemeService.self) private var themeService
     @State private var seekValue: TimeInterval = 0
     @State private var isScrubbing = false
+    @State private var albumImage: UIImage?
+    private let artworkSize: CGFloat = 44
+
+    private var artworkTaskID: String? {
+        guard let album = playerService.currentTrack?.album else { return nil }
+        let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
+            ? albumArtService.artworkRefreshVersion
+            : 0
+        return "\(album.coverArtTaskID)-\(refreshMarker)"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,19 +40,30 @@ struct NowPlayingBar: View {
                     isScrubbing = false
                 }
             }
-            .tint(Color.accentColor)
+            .tint(themeService.accentColor)
             .frame(height: 16)
             .padding(.horizontal, 16)
             .padding(.top, 4)
 
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.2))
-                    .frame(width: 44, height: 44)
+                    .fill(themeService.accentColor.opacity(0.2))
+                    .frame(width: artworkSize, height: artworkSize)
                     .overlay {
-                        Image(systemName: "music.note")
-                            .foregroundStyle(Color.accentColor)
+                        Group {
+                            if let albumImage {
+                                Image(uiImage: albumImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: artworkSize, height: artworkSize)
+                            } else {
+                                Image(systemName: "music.note")
+                                    .foregroundStyle(themeService.accentColor)
+                                    .frame(width: artworkSize, height: artworkSize)
+                            }
+                        }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(playerService.currentTrack?.displayName ?? "")
@@ -77,6 +103,15 @@ struct NowPlayingBar: View {
             if !isScrubbing {
                 showFullPlayer = true
             }
+        }
+        .task(id: artworkTaskID) {
+            guard let album = playerService.currentTrack?.album else {
+                albumImage = nil
+                return
+            }
+            let resolution = await albumArtService.resolveAlbumArt(for: album)
+            albumImage = resolution.image
+            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
         }
     }
 
