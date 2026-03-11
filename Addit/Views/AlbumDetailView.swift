@@ -166,7 +166,7 @@ struct AlbumDetailView: View {
         guard let data = content.data(using: .utf8) else { return }
 
         do {
-            let folderId = try await ensureAdditDataFolder()
+            let folderId = addiDataFolderId ?? album.googleFolderId
 
             if let existingId = tracklistFileId {
                 try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
@@ -209,15 +209,6 @@ struct AlbumDetailView: View {
         addiDataFolderId = nil
     }
 
-    private func ensureAdditDataFolder() async throws -> String {
-        if let existing = addiDataFolderId {
-            return existing
-        }
-        let folder = try await driveService.findOrCreateFolder(named: "addit-data", inParent: album.googleFolderId)
-        addiDataFolderId = folder.id
-        return folder.id
-    }
-
     // MARK: - Sync
 
     private func syncFromDrive() async {
@@ -229,7 +220,7 @@ struct AlbumDetailView: View {
         do {
             // Refresh folder permissions
             if let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) {
-                album.canEdit = folderInfo.canAddChildren
+                album.canEdit = folderInfo.canEdit
             }
 
             let response = try await driveService.listAudioFiles(inFolder: album.googleFolderId)

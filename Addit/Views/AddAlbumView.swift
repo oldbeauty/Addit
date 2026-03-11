@@ -97,7 +97,7 @@ struct AddAlbumView: View {
             googleFolderId: folder.id,
             name: folder.name,
             trackCount: audioFiles.count,
-            canEdit: folder.canAddChildren
+            canEdit: folder.canEdit
         )
         modelContext.insert(album)
 

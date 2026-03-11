@@ -19,6 +19,7 @@ Follow standard Swift style: 4-space indentation, one type per file, and descrip
 
 ## Feature Conventions
 Album artwork source-of-truth is the JPEG in the album's root Google Drive folder. Persisted `Album.coverFileId` is only a cache of that lookup, and user-selected replacements should be uploaded as `cover.jpg`.
+Use Drive `capabilities.canEdit` to gate album file edits; `canAddChildren` is only relevant when creating new files or folders.
 
 ## Testing Guidelines
 There is currently no XCTest target in the project. New features should add focused tests when practical, ideally in a future `AdditTests/` target using XCTest. Until then, validate changes with simulator builds and manual checks for sign-in, album sync, playback controls, and track ordering.

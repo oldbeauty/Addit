@@ -33,7 +33,7 @@ final class GoogleDriveService {
     }
 
     func upsertCoverJPG(inFolder folderId: String, data: Data, fileName: String = "cover.jpg") async throws -> DriveItem {
-        if let existing = try await findFile(named: fileName, inFolder: folderId) {
+        if let existing = try await findCoverJPG(inFolder: folderId) {
             try await updateFileData(fileId: existing.id, data: data, mimeType: "image/jpeg")
             return existing
         }

@@ -152,6 +152,9 @@ struct LibraryView: View {
                 Color.clear.frame(height: 64)
             }
         }
+        .task {
+            await refreshAlbumPermissions()
+        }
         .animation(.spring(response: 0.32, dampingFraction: 0.9), value: selectedAlbum != nil)
     }
 
@@ -192,6 +195,26 @@ struct LibraryView: View {
             albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
         } catch {
             coverUploadErrorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func refreshAlbumPermissions() async {
+        var hasChanges = false
+
+        for album in albums {
+            guard let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) else {
+                continue
+            }
+
+            if album.canEdit != folderInfo.canEdit {
+                album.canEdit = folderInfo.canEdit
+                hasChanges = true
+            }
+        }
+
+        if hasChanges {
+            try? modelContext.save()
         }
     }
 }
@@ -331,7 +354,7 @@ struct AlbumMetadataEditorSheet: View {
         try? modelContext.save()
 
         do {
-            let folderId = try await ensureAdditDataFolder()
+            let folderId = additDataFolderId ?? album.googleFolderId
             try await upsertMetadataFile(
                 named: ".addit-album-title",
                 content: trimmedTitle,
@@ -373,15 +396,6 @@ struct AlbumMetadataEditorSheet: View {
             // Best effort
         }
         additDataFolderId = nil
-    }
-
-    private func ensureAdditDataFolder() async throws -> String {
-        if let additDataFolderId {
-            return additDataFolderId
-        }
-        let folder = try await driveService.findOrCreateFolder(named: "addit-data", inParent: album.googleFolderId)
-        additDataFolderId = folder.id
-        return folder.id
     }
 }
 
