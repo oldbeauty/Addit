@@ -276,7 +276,9 @@ final class GoogleDriveService {
             return
         case 401:
             throw DriveError.unauthorized
-        case 403, 429:
+        case 403:
+            throw DriveError.forbidden
+        case 429:
             throw DriveError.rateLimited
         case 404:
             throw DriveError.notFound
@@ -289,6 +291,7 @@ final class GoogleDriveService {
 enum DriveError: LocalizedError {
     case notConfigured
     case unauthorized
+    case forbidden
     case notFound
     case rateLimited
     case invalidResponse
@@ -298,6 +301,7 @@ enum DriveError: LocalizedError {
         switch self {
         case .notConfigured: return "Drive service not configured"
         case .unauthorized: return "Not authorized. Please sign in again."
+        case .forbidden: return "You don't have edit access to this folder."
         case .notFound: return "File or folder not found"
         case .rateLimited: return "Too many requests. Please try again later."
         case .invalidResponse: return "Invalid response from server"

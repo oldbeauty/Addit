@@ -212,10 +212,14 @@ struct AlbumMetadataEditorSheet: View {
     @State private var isUploadingCover = false
     @State private var coverUploadErrorMessage: String?
     @State private var coverImage: UIImage?
+    @State private var reorderedTracks: [Track] = []
+    @State private var editedTrackNames: [String: String] = [:]
+    @State private var tracklistFileId: String?
+    @State private var isSavingOrder = false
     @FocusState private var focusedField: EditField?
 
-    private enum EditField {
-        case title, artist
+    private enum EditField: Hashable {
+        case title, artist, track(String)
     }
 
     private let coverSize: CGFloat = 180
@@ -265,12 +269,12 @@ struct AlbumMetadataEditorSheet: View {
                     }
                     .disabled(isUploadingCover)
 
-                    // Title and artist
-                    VStack(spacing: 4) {
+                    // Title and artist – left-aligned with cover edge
+                    VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             TextField("Album title", text: $editedTitle)
                                 .font(.title2.bold())
-                                .multilineTextAlignment(.center)
+                                .multilineTextAlignment(.leading)
                                 .focused($focusedField, equals: .title)
 
                             Image(systemName: "pencil")
@@ -282,7 +286,7 @@ struct AlbumMetadataEditorSheet: View {
                             TextField("Artist", text: $editedArtist)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
+                                .multilineTextAlignment(.leading)
                                 .focused($focusedField, equals: .artist)
 
                             Image(systemName: "pencil")
@@ -290,13 +294,46 @@ struct AlbumMetadataEditorSheet: View {
                                 .foregroundStyle(.tertiary)
                         }
                     }
-                    .padding(.horizontal, 32)
+                    .frame(width: coverSize + 8, alignment: .leading)
 
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal)
+                    }
+
+                    // Arrange tracklist
+                    if !reorderedTracks.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            List {
+                                ForEach(reorderedTracks) { track in
+                                    HStack(spacing: 6) {
+                                        TextField(
+                                            track.displayName,
+                                            text: Binding(
+                                                get: { editedTrackNames[track.googleFileId] ?? track.displayName },
+                                                set: { editedTrackNames[track.googleFileId] = $0 }
+                                            )
+                                        )
+                                        .font(.body)
+                                        .lineLimit(1)
+                                        .focused($focusedField, equals: .track(track.googleFileId))
+
+                                        Image(systemName: "pencil")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .onMove { source, destination in
+                                    reorderedTracks.move(fromOffsets: source, toOffset: destination)
+                                }
+                            }
+                            .listStyle(.plain)
+                            .environment(\.editMode, .constant(.active))
+                            .frame(height: CGFloat(reorderedTracks.count) * 44)
+                        }
+                        .padding(.horizontal)
                     }
                 }
                 .padding(.top, 24)
@@ -323,9 +360,11 @@ struct AlbumMetadataEditorSheet: View {
             .task {
                 editedTitle = album.name
                 editedArtist = album.artistName ?? ""
+                reorderedTracks = album.tracks.sorted { $0.trackNumber < $1.trackNumber }
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
                 coverImage = resolution.image
                 await resolveAdditDataFolder()
+                await resolveTracklistFileId()
             }
             .onChange(of: selectedCoverPhoto) { _, newValue in
                 if newValue != nil {
@@ -356,6 +395,9 @@ struct AlbumMetadataEditorSheet: View {
         let trimmedArtist = editedArtist.trimmingCharacters(in: .whitespacesAndNewlines)
         let newArtist: String? = trimmedArtist.isEmpty ? nil : trimmedArtist
 
+        let previousName = album.name
+        let previousArtist = album.artistName
+
         album.name = trimmedTitle
         album.artistName = newArtist
         try? modelContext.save()
@@ -371,9 +413,20 @@ struct AlbumMetadataEditorSheet: View {
                 content: newArtist ?? "",
                 inFolder: folderId
             )
+
+            // Rename changed tracks in Drive
+            try await renameChangedTracks()
+
+            // Save track order (uses updated names)
+            try await saveTrackOrder(inFolder: folderId)
+
             dismiss()
         } catch {
-            errorMessage = "Failed to save: \(error.localizedDescription)"
+            // Revert local changes on failure
+            album.name = previousName
+            album.artistName = previousArtist
+            try? modelContext.save()
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -446,6 +499,62 @@ struct AlbumMetadataEditorSheet: View {
             // Best effort
         }
         additDataFolderId = nil
+    }
+
+    private func resolveTracklistFileId() async {
+        do {
+            if let folderId = additDataFolderId,
+               let item = try await driveService.findFile(named: ".addit-tracklist", inFolder: folderId) {
+                tracklistFileId = item.id
+                return
+            }
+            if let item = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId) {
+                tracklistFileId = item.id
+                return
+            }
+        } catch {
+            // Best effort
+        }
+        tracklistFileId = nil
+    }
+
+    private func renameChangedTracks() async throws {
+        for track in reorderedTracks {
+            guard let editedName = editedTrackNames[track.googleFileId] else { continue }
+            let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            // Preserve the original file extension
+            let ext = (track.name as NSString).pathExtension
+            let newFileName = ext.isEmpty ? trimmed : "\(trimmed).\(ext)"
+            guard newFileName != track.name else { continue }
+
+            try await driveService.renameFile(fileId: track.googleFileId, newName: newFileName)
+            track.name = newFileName
+        }
+        try? modelContext.save()
+    }
+
+    private func saveTrackOrder(inFolder folderId: String) async throws {
+        let content = reorderedTracks.map(\.name).joined(separator: "\n")
+        guard let data = content.data(using: .utf8) else { return }
+
+        if let existingId = tracklistFileId {
+            try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
+        } else {
+            let item = try await driveService.createFile(
+                name: ".addit-tracklist",
+                mimeType: "text/plain",
+                inFolder: folderId,
+                data: data
+            )
+            tracklistFileId = item.id
+        }
+
+        for (index, track) in reorderedTracks.enumerated() {
+            track.trackNumber = index + 1
+        }
+        try? modelContext.save()
     }
 }
 
