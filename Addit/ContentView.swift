@@ -3,25 +3,29 @@ import SwiftUI
 struct ContentView: View {
     @Environment(GoogleAuthService.self) private var authService
     @Environment(AudioPlayerService.self) private var playerService
+    @Environment(ThemeService.self) private var themeService
     @State private var showNowPlaying = false
 
     var body: some View {
-        if authService.isSignedIn {
-            ZStack(alignment: .bottom) {
-                NavigationStack {
-                    LibraryView()
-                }
+        Group {
+            if authService.isSignedIn {
+                ZStack(alignment: .bottom) {
+                    NavigationStack {
+                        LibraryView()
+                    }
 
-                if playerService.currentTrack != nil {
-                    NowPlayingBar(showFullPlayer: $showNowPlaying)
-                        .transition(.move(edge: .bottom))
+                    if playerService.currentTrack != nil {
+                        NowPlayingBar(showFullPlayer: $showNowPlaying)
+                            .transition(.move(edge: .bottom))
+                    }
                 }
+                .sheet(isPresented: $showNowPlaying) {
+                    NowPlayingView()
+                }
+            } else {
+                SignInView()
             }
-            .sheet(isPresented: $showNowPlaying) {
-                NowPlayingView()
-            }
-        } else {
-            SignInView()
         }
+        .tint(themeService.accentColor)
     }
 }
