@@ -11,6 +11,11 @@ struct NowPlayingView: View {
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
 
+    private var artworkTaskID: String? {
+        guard let album = playerService.currentTrack?.album else { return nil }
+        return "\(album.coverArtTaskID)-\(albumArtService.refreshToken(for: album.googleFolderId))"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Drag indicator
@@ -161,7 +166,7 @@ struct NowPlayingView: View {
             }
         }
         .padding()
-        .task(id: playerService.currentTrack?.album?.coverArtTaskID) {
+        .task(id: artworkTaskID) {
             guard let album = playerService.currentTrack?.album else {
                 albumImage = nil
                 return

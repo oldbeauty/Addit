@@ -14,6 +14,7 @@ final class AlbumArtService {
 
     private let fileManager = FileManager.default
     private let memoryCache = NSCache<NSString, UIImage>()
+    private var refreshTokens: [String: Int] = [:]
 
     private var cacheDirectory: URL {
         let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -65,6 +66,14 @@ final class AlbumArtService {
         try? fileManager.removeItem(at: localURL(for: fileId))
     }
 
+    func refreshToken(for albumFolderId: String) -> Int {
+        refreshTokens[albumFolderId, default: 0]
+    }
+
+    func bumpRefreshToken(for albumFolderId: String) {
+        refreshTokens[albumFolderId, default: 0] += 1
+    }
+
     @MainActor
     func applyResolution(_ resolution: AlbumArtResolution, to album: Album, modelContext: ModelContext) {
         guard resolution.shouldPersistMetadata else { return }
@@ -84,6 +93,8 @@ final class AlbumArtService {
         if previousCoverFileId != album.coverFileId {
             invalidateImage(for: previousCoverFileId)
         }
+
+        bumpRefreshToken(for: album.googleFolderId)
 
         try? modelContext.save()
     }

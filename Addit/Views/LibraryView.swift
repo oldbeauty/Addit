@@ -389,6 +389,10 @@ struct AlbumArtworkThumbnail: View {
     @State private var image: UIImage?
     private let thumbnailSize: CGFloat = 148
 
+    private var artworkTaskID: String {
+        "\(album.coverArtTaskID)-\(albumArtService.refreshToken(for: album.googleFolderId))"
+    }
+
     var body: some View {
         RoundedRectangle(cornerRadius: 12)
             .fill(
@@ -415,7 +419,7 @@ struct AlbumArtworkThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .task(id: album.coverArtTaskID) {
+            .task(id: artworkTaskID) {
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
                 image = resolution.image
                 albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)

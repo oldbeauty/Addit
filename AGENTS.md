@@ -22,6 +22,7 @@ Album artwork source-of-truth is the JPEG in the album's root Google Drive folde
 Use Drive `capabilities.canEdit` to gate album file edits; `canAddChildren` is only relevant when creating new files or folders.
 Avoid disabling Drive-backed library actions solely from cached album permissions; prefer opening the flow and surfacing write failures at save/upload time.
 Avoid eager per-album Drive refreshes from list screens; prefer cached album metadata and only fall back to Drive when the cached file ID or image is missing.
+When replacing cover art, bump an explicit album-art refresh signal for library/player views; cache invalidation alone is not enough to guarantee SwiftUI reruns artwork-loading tasks.
 
 ## Testing Guidelines
 There is currently no XCTest target in the project. New features should add focused tests when practical, ideally in a future `AdditTests/` target using XCTest. Until then, validate changes with simulator builds and manual checks for sign-in, album sync, playback controls, and track ordering.

@@ -13,6 +13,11 @@ struct NowPlayingBar: View {
     @State private var albumImage: UIImage?
     private let artworkSize: CGFloat = 44
 
+    private var artworkTaskID: String? {
+        guard let album = playerService.currentTrack?.album else { return nil }
+        return "\(album.coverArtTaskID)-\(albumArtService.refreshToken(for: album.googleFolderId))"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Draggable scrubber
@@ -96,7 +101,7 @@ struct NowPlayingBar: View {
                 showFullPlayer = true
             }
         }
-        .task(id: playerService.currentTrack?.album?.coverArtTaskID) {
+        .task(id: artworkTaskID) {
             guard let album = playerService.currentTrack?.album else {
                 albumImage = nil
                 return
