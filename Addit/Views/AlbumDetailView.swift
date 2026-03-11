@@ -17,6 +17,11 @@ struct AlbumDetailView: View {
     @State private var artistFileId: String?
     @State private var isEditingArtist = false
     @State private var editedArtistName = ""
+    @State private var isEditingAlbumName = false
+    @State private var editedAlbumName = ""
+    @State private var isEditingTrackName = false
+    @State private var editedTrackName = ""
+    @State private var trackBeingRenamed: Track?
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -100,8 +105,13 @@ struct AlbumDetailView: View {
                             track: track,
                             number: index + 1,
                             isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
-                            isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying
-                        )
+                            isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying,
+                            canEdit: album.canEdit
+                        ) {
+                            editedTrackName = track.displayName
+                            trackBeingRenamed = track
+                            isEditingTrackName = true
+                        }
                         .contentShape(Rectangle())
                         .onTapGesture {
                             playerService.playTrack(track, inQueue: sortedTracks)
@@ -148,6 +158,16 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        .toolbarTitleMenu {
+            if album.canEdit && !isReordering && !isSyncing {
+                Button {
+                    editedAlbumName = album.name
+                    isEditingAlbumName = true
+                } label: {
+                    Label("Rename Album", systemImage: "pencil")
+                }
+            }
+        }
         .alert("Artist Name", isPresented: $isEditingArtist) {
             TextField("Artist name", text: $editedArtistName)
             Button("Save") {
@@ -156,6 +176,26 @@ struct AlbumDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Enter the artist or band name for this album")
+        }
+        .alert("Rename Album", isPresented: $isEditingAlbumName) {
+            TextField("Album name", text: $editedAlbumName)
+            Button("Save") {
+                Task { await saveAlbumName() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enter a new name for this album")
+        }
+        .alert("Rename Track", isPresented: $isEditingTrackName) {
+            TextField("Track name", text: $editedTrackName)
+            Button("Save") {
+                Task { await saveTrackName() }
+            }
+            Button("Cancel", role: .cancel) {
+                trackBeingRenamed = nil
+            }
+        } message: {
+            Text("Enter a new name for this track")
         }
         .refreshable {
             await syncFromDrive()
@@ -251,6 +291,87 @@ struct AlbumDetailView: View {
             }
         } catch {
             syncError = "Failed to save artist: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Rename Album
+
+    private func saveAlbumName() async {
+        let trimmed = editedAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != album.name else { return }
+
+        let oldName = album.name
+        album.name = trimmed
+        try? modelContext.save()
+
+        do {
+            try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmed)
+        } catch {
+            // Revert on failure
+            album.name = oldName
+            try? modelContext.save()
+            syncError = "Failed to rename album: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Rename Track
+
+    private func saveTrackName() async {
+        guard let track = trackBeingRenamed else { return }
+        let trimmed = editedTrackName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            trackBeingRenamed = nil
+            return
+        }
+
+        // Preserve the original file extension
+        let originalExtension = (track.name as NSString).pathExtension
+        let newFileName: String
+        if originalExtension.isEmpty {
+            newFileName = trimmed
+        } else {
+            newFileName = "\(trimmed).\(originalExtension)"
+        }
+
+        guard newFileName != track.name else {
+            trackBeingRenamed = nil
+            return
+        }
+
+        let oldName = track.name
+
+        // Update locally first
+        track.name = newFileName
+        try? modelContext.save()
+
+        do {
+            try await driveService.renameFile(fileId: track.googleFileId, newName: newFileName)
+
+            // Update the tracklist file if it exists, replacing old name with new
+            await updateTracklistAfterRename(oldName: oldName, newName: newFileName)
+        } catch {
+            // Revert on failure
+            track.name = oldName
+            try? modelContext.save()
+            syncError = "Failed to rename track: \(error.localizedDescription)"
+        }
+
+        trackBeingRenamed = nil
+    }
+
+    private func updateTracklistAfterRename(oldName: String, newName: String) async {
+        guard let tracklistId = tracklistFileId else { return }
+
+        do {
+            let data = try await driveService.downloadFileData(fileId: tracklistId)
+            guard var content = String(data: data, encoding: .utf8) else { return }
+
+            content = content.replacingOccurrences(of: oldName, with: newName)
+
+            guard let updatedData = content.data(using: .utf8) else { return }
+            try await driveService.updateFileData(fileId: tracklistId, data: updatedData, mimeType: "text/plain")
+        } catch {
+            // Non-critical — tracklist will still work on next reorder
         }
     }
 
@@ -431,6 +552,8 @@ struct TrackRow: View {
     let number: Int
     let isCurrentTrack: Bool
     let isPlaying: Bool
+    var canEdit: Bool = false
+    var onRename: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -462,6 +585,15 @@ struct TrackRow: View {
             Spacer()
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            if canEdit {
+                Button {
+                    onRename?()
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+        }
     }
 
     private func formatFileSize(_ bytes: Int64) -> String {

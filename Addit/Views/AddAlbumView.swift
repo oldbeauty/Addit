@@ -1,76 +1,87 @@
 import SwiftUI
 import SwiftData
 
+enum FolderSource: String, CaseIterable {
+    case personal = "Personal"
+    case starred = "Starred"
+    case shared = "Shared"
+
+    var icon: String {
+        switch self {
+        case .personal: return "folder.fill"
+        case .starred: return "star.fill"
+        case .shared: return "person.2.fill"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .personal: return "No Folders"
+        case .starred: return "No Starred Folders"
+        case .shared: return "No Shared Folders"
+        }
+    }
+
+    var emptyDescription: String {
+        switch self {
+        case .personal: return "No folders found in your Google Drive"
+        case .starred: return "You haven't starred any folders"
+        case .shared: return "No folders have been shared with you"
+        }
+    }
+}
+
 struct AddAlbumView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(GoogleDriveService.self) private var driveService
 
-    @State private var folders: [DriveItem] = []
+    @State private var selectedSource: FolderSource = .personal
     @State private var searchText = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var selectedFolder: DriveItem?
     @State private var addedSuccessfully = false
     @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isLoading && folders.isEmpty {
-                    ProgressView("Loading folders...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let errorMessage {
-                    ContentUnavailableView(
-                        "Error",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(errorMessage)
-                    )
-                } else if folders.isEmpty && !searchText.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
-                } else if folders.isEmpty {
-                    ContentUnavailableView(
-                        "No Folders Found",
-                        systemImage: "folder",
-                        description: Text("No folders found in your Google Drive")
-                    )
-                } else {
-                    List(folders) { folder in
-                        Button {
-                            selectedFolder = folder
-                        } label: {
-                            Label(folder.name, systemImage: "folder.fill")
-                                .foregroundStyle(.primary)
-                        }
+            VStack(spacing: 0) {
+                Picker("Source", selection: $selectedSource) {
+                    ForEach(FolderSource.allCases, id: \.self) { source in
+                        Text(source.rawValue).tag(source)
                     }
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                FolderBrowserView(
+                    folderId: nil,
+                    folderName: selectedSource.rawValue,
+                    source: selectedSource,
+                    existingFolderIds: existingFolderIds(),
+                    onAdd: { folder, audioFiles in
+                        addToLibrary(folder: folder, audioFiles: audioFiles)
+                    }
+                )
+                .id(selectedSource)
+            }
+            .navigationDestination(for: DriveItem.self) { folder in
+                FolderBrowserView(
+                    folderId: folder.id,
+                    folderName: folder.name,
+                    source: selectedSource,
+                    existingFolderIds: existingFolderIds(),
+                    onAdd: { folder, audioFiles in
+                        addToLibrary(folder: folder, audioFiles: audioFiles)
+                    }
+                )
             }
             .searchable(text: $searchText, prompt: "Search folders")
-            .onChange(of: searchText) { _, newValue in
-                Task {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    await loadFolders(search: newValue)
-                }
-            }
             .navigationTitle("Add Album")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-            }
-            .sheet(item: $selectedFolder, onDismiss: {
-                if addedSuccessfully {
-                    dismiss()
-                }
-            }) { folder in
-                FolderPreviewSheet(
-                    folder: folder,
-                    existingFolderIds: existingFolderIds(),
-                    onAdd: { audioFiles in
-                        addToLibrary(folder: folder, audioFiles: audioFiles)
-                    }
-                )
             }
             .alert("Failed to Save", isPresented: .init(
                 get: { saveError != nil },
@@ -80,8 +91,8 @@ struct AddAlbumView: View {
             } message: {
                 Text(saveError ?? "Unknown error")
             }
-            .task {
-                await loadFolders()
+            .onChange(of: addedSuccessfully) { _, success in
+                if success { dismiss() }
             }
         }
     }
@@ -120,109 +131,142 @@ struct AddAlbumView: View {
             saveError = error.localizedDescription
         }
     }
-
-    private func loadFolders(search: String = "") async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            let response: DriveFileListResponse
-            if search.isEmpty {
-                response = try await driveService.listFolders()
-            } else {
-                response = try await driveService.searchFolders(query: search)
-            }
-            folders = response.files
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
 }
 
-struct FolderPreviewSheet: View {
-    let folder: DriveItem
+struct FolderBrowserView: View {
+    let folderId: String?
+    let folderName: String
+    let source: FolderSource
     let existingFolderIds: Set<String>
-    let onAdd: ([DriveItem]) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @Environment(GoogleDriveService.self) private var driveService
+    let onAdd: (DriveItem, [DriveItem]) -> Void
 
+    @Environment(GoogleDriveService.self) private var driveService
+    @State private var subfolders: [DriveItem] = []
     @State private var audioFiles: [DriveItem] = []
     @State private var isLoading = true
-    @State private var isAdding = false
     @State private var errorMessage: String?
 
+    private var isRoot: Bool { folderId == nil }
+
+    private var currentFolder: DriveItem? {
+        guard let folderId else { return nil }
+        return DriveItem(
+            id: folderId,
+            name: folderName,
+            mimeType: "application/vnd.google-apps.folder",
+            size: nil,
+            parents: nil,
+            capabilities: nil
+        )
+    }
+
     private var alreadyAdded: Bool {
-        existingFolderIds.contains(folder.id)
+        guard let folderId else { return false }
+        return existingFolderIds.contains(folderId)
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if isLoading {
-                    ProgressView("Loading tracks...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let errorMessage {
+        Group {
+            if isLoading {
+                ProgressView("Loading...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage {
+                ContentUnavailableView(
+                    "Error",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
+            } else if subfolders.isEmpty && audioFiles.isEmpty {
+                if isRoot {
                     ContentUnavailableView(
-                        "Error",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(errorMessage)
-                    )
-                } else if audioFiles.isEmpty {
-                    ContentUnavailableView(
-                        "No Audio Files",
-                        systemImage: "music.note",
-                        description: Text("This folder doesn't contain any audio files")
+                        source.emptyTitle,
+                        systemImage: source.icon,
+                        description: Text(source.emptyDescription)
                     )
                 } else {
-                    List {
+                    ContentUnavailableView(
+                        "Empty Folder",
+                        systemImage: "folder",
+                        description: Text("This folder is empty")
+                    )
+                }
+            } else {
+                List {
+                    if !subfolders.isEmpty {
+                        Section(isRoot ? "Folders" : "Subfolders") {
+                            ForEach(subfolders) { folder in
+                                NavigationLink(value: folder) {
+                                    Label(folder.name, systemImage: "folder.fill")
+                                }
+                            }
+                        }
+                    }
+
+                    if !audioFiles.isEmpty {
                         Section("\(audioFiles.count) audio file\(audioFiles.count == 1 ? "" : "s")") {
                             ForEach(audioFiles) { file in
                                 Label(file.name, systemImage: "music.note")
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
             }
-            .navigationTitle(folder.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
+        }
+        .navigationTitle(isRoot ? "" : folderName)
+        .navigationBarTitleDisplayMode(isRoot ? .inline : .large)
+        .toolbar {
+            if !isRoot && !audioFiles.isEmpty && !isLoading {
                 ToolbarItem(placement: .confirmationAction) {
-                    if !audioFiles.isEmpty {
-                        if alreadyAdded || isAdding {
-                            if isAdding {
-                                ProgressView()
-                            } else {
-                                Label("Added", systemImage: "checkmark")
-                            }
-                        } else {
-                            Button {
-                                isAdding = true
-                                onAdd(audioFiles)
-                                dismiss()
-                            } label: {
-                                Label("Add to Library", systemImage: "plus")
-                            }
+                    if alreadyAdded {
+                        Label("Added", systemImage: "checkmark")
+                            .foregroundStyle(.secondary)
+                    } else if let currentFolder {
+                        Button {
+                            onAdd(currentFolder, audioFiles)
+                        } label: {
+                            Label("Add to Library", systemImage: "plus")
                         }
                     }
                 }
             }
-            .task {
-                await loadAudioFiles()
-            }
+        }
+        .task {
+            await loadContents()
         }
     }
 
-    private func loadAudioFiles() async {
+    private func loadContents() async {
         isLoading = true
+        errorMessage = nil
+
         do {
-            let response = try await driveService.listAudioFiles(inFolder: folder.id)
-            audioFiles = response.files
+            if isRoot {
+                let response: DriveFileListResponse
+                switch source {
+                case .personal:
+                    response = try await driveService.listFolders()
+                case .starred:
+                    response = try await driveService.listStarredFolders()
+                case .shared:
+                    response = try await driveService.listSharedFolders()
+                }
+                subfolders = response.files.filter { $0.name != "addit-data" }
+                audioFiles = []
+            } else {
+                async let foldersResponse = driveService.listSubfolders(inFolder: folderId!)
+                async let audioResponse = driveService.listAudioFiles(inFolder: folderId!)
+
+                let folders = try await foldersResponse
+                let audio = try await audioResponse
+
+                subfolders = folders.files.filter { $0.name != "addit-data" }
+                audioFiles = audio.files
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
+
         isLoading = false
     }
 }

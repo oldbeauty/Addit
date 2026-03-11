@@ -8,8 +8,26 @@ final class GoogleDriveService {
     private let baseURL = Constants.driveAPIBase
 
     func listFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
-        let query = "mimeType='application/vnd.google-apps.folder' and trashed=false"
+        let query = "'root' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
+                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+    }
+
+    func listStarredFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
+        let query = "starred=true and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
+                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+    }
+
+    func listSharedFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
+        let query = "mimeType='application/vnd.google-apps.folder' and trashed=false and not 'me' in owners"
+        return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
+                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+    }
+
+    func listSubfolders(inFolder folderId: String) async throws -> DriveFileListResponse {
+        let query = "'\(folderId)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        return try await listFiles(query: query, pageSize: 100, orderBy: "name",
                                    fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
@@ -52,6 +70,31 @@ final class GoogleDriveService {
     func listAllFilesInFolder(_ folderId: String) async throws -> DriveFileListResponse {
         let query = "'\(folderId)' in parents and trashed=false"
         return try await listFiles(query: query, pageSize: 1000, orderBy: "name")
+    }
+
+    // MARK: - Rename
+
+    @discardableResult
+    func renameFile(fileId: String, newName: String) async throws -> DriveItem {
+        let token = try await getToken()
+
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = ["name": newName]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response)
+        return try JSONDecoder().decode(DriveItem.self, from: data)
     }
 
     // MARK: - Folder Operations
