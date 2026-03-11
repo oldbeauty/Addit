@@ -15,7 +15,10 @@ struct NowPlayingBar: View {
 
     private var artworkTaskID: String? {
         guard let album = playerService.currentTrack?.album else { return nil }
-        return "\(album.coverArtTaskID)-\(albumArtService.refreshToken(for: album.googleFolderId))"
+        let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
+            ? albumArtService.artworkRefreshVersion
+            : 0
+        return "\(album.coverArtTaskID)-\(refreshMarker)"
     }
 
     var body: some View {

@@ -11,10 +11,11 @@ struct AlbumArtResolution {
 @Observable
 final class AlbumArtService {
     var driveService: GoogleDriveService?
+    private(set) var artworkRefreshVersion = 0
+    private(set) var lastUpdatedAlbumFolderId: String?
 
     private let fileManager = FileManager.default
     private let memoryCache = NSCache<NSString, UIImage>()
-    private var refreshTokens: [String: Int] = [:]
 
     private var cacheDirectory: URL {
         let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -66,12 +67,9 @@ final class AlbumArtService {
         try? fileManager.removeItem(at: localURL(for: fileId))
     }
 
-    func refreshToken(for albumFolderId: String) -> Int {
-        refreshTokens[albumFolderId, default: 0]
-    }
-
     func bumpRefreshToken(for albumFolderId: String) {
-        refreshTokens[albumFolderId, default: 0] += 1
+        lastUpdatedAlbumFolderId = albumFolderId
+        artworkRefreshVersion += 1
     }
 
     @MainActor
@@ -79,11 +77,15 @@ final class AlbumArtService {
         guard resolution.shouldPersistMetadata else { return }
 
         let previousCoverFileId = album.coverFileId
+        let previousCoverMimeType = album.coverMimeType
+        let previousCoverUpdatedAt = album.coverUpdatedAt
 
         if let coverItem = resolution.resolvedCoverItem {
             album.coverFileId = coverItem.id
             album.coverMimeType = coverItem.mimeType
-            album.coverUpdatedAt = .now
+            if previousCoverFileId != coverItem.id || previousCoverMimeType != coverItem.mimeType || previousCoverUpdatedAt == nil {
+                album.coverUpdatedAt = .now
+            }
         } else {
             album.coverFileId = nil
             album.coverMimeType = nil
@@ -94,9 +96,14 @@ final class AlbumArtService {
             invalidateImage(for: previousCoverFileId)
         }
 
-        bumpRefreshToken(for: album.googleFolderId)
+        let didChangeMetadata = previousCoverFileId != album.coverFileId
+            || previousCoverMimeType != album.coverMimeType
+            || previousCoverUpdatedAt != album.coverUpdatedAt
 
-        try? modelContext.save()
+        if didChangeMetadata {
+            bumpRefreshToken(for: album.googleFolderId)
+            try? modelContext.save()
+        }
     }
 
     func image(for fileId: String) async -> UIImage? {

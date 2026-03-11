@@ -23,6 +23,7 @@ Use Drive `capabilities.canEdit` to gate album file edits; `canAddChildren` is o
 Avoid disabling Drive-backed library actions solely from cached album permissions; prefer opening the flow and surfacing write failures at save/upload time.
 Avoid eager per-album Drive refreshes from list screens; prefer cached album metadata and only fall back to Drive when the cached file ID or image is missing.
 When replacing cover art, bump an explicit album-art refresh signal for library/player views; cache invalidation alone is not enough to guarantee SwiftUI reruns artwork-loading tasks.
+In this app, do not key `PhotosPicker`-driven upload tasks off `PhotosPickerItem.itemIdentifier`; trigger from concrete selection state because the identifier is optional and did not fire reliably here.
 
 ## Testing Guidelines
 There is currently no XCTest target in the project. New features should add focused tests when practical, ideally in a future `AdditTests/` target using XCTest. Until then, validate changes with simulator builds and manual checks for sign-in, album sync, playback controls, and track ordering.

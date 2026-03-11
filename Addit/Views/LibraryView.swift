@@ -132,7 +132,7 @@ struct LibraryView: View {
             selection: $selectedCoverPhoto,
             matching: .images
         )
-        .task(id: selectedCoverPhoto?.itemIdentifier) {
+        .task(id: selectedCoverPhoto != nil) {
             await uploadSelectedCoverIfNeeded()
         }
         .alert(
@@ -189,6 +189,9 @@ struct LibraryView: View {
             )
 
             albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            album.coverUpdatedAt = .now
+            try? modelContext.save()
+            albumArtService.bumpRefreshToken(for: album.googleFolderId)
         } catch {
             coverUploadErrorMessage = error.localizedDescription
         }
@@ -390,7 +393,10 @@ struct AlbumArtworkThumbnail: View {
     private let thumbnailSize: CGFloat = 148
 
     private var artworkTaskID: String {
-        "\(album.coverArtTaskID)-\(albumArtService.refreshToken(for: album.googleFolderId))"
+        let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
+            ? albumArtService.artworkRefreshVersion
+            : 0
+        return "\(album.coverArtTaskID)-\(refreshMarker)"
     }
 
     var body: some View {
