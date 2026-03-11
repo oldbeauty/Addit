@@ -15,12 +15,6 @@ struct AlbumDetailView: View {
     @State private var isSavingOrder = false
     @State private var editMode: EditMode = .inactive
     @State private var addiDataFolderId: String?
-    @State private var artistFileId: String?
-    @State private var albumTitleFileId: String?
-    @State private var isEditingArtist = false
-    @State private var isEditingAlbumTitle = false
-    @State private var editedArtistName = ""
-    @State private var editedAlbumTitle = ""
 
     init(album: Album, embeddedInPanel: Bool = false) {
         self.album = album
@@ -54,64 +48,12 @@ struct AlbumDetailView: View {
                     .deleteDisabled(true)
                 }
             } else {
-                // Album title section
-                if album.canEdit {
-                    Section {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Album Title")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(album.name)
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                            }
-                            Spacer()
-                            Image(systemName: "pencil")
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            editedAlbumTitle = album.name
-                            isEditingAlbumTitle = true
-                        }
-                    }
-                }
-
-                // Artist section
-                if album.artistName != nil || album.canEdit {
-                    Section {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Artist")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(album.artistName ?? "Unknown Artist")
-                                    .font(.headline)
-                                    .foregroundStyle(album.artistName != nil ? .primary : .secondary)
-                            }
-                            Spacer()
-                            if album.canEdit {
-                                Image(systemName: "pencil")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if album.canEdit {
-                                editedArtistName = album.artistName ?? ""
-                                isEditingArtist = true
-                            }
-                        }
-                    }
-                }
-
                 Section {
                     HStack(spacing: 12) {
                         Button {
                             playerService.playAlbum(album)
                         } label: {
-                            Label("Play All", systemImage: "play.fill")
+                            Label("Play", systemImage: "play.fill")
                         }
                         .buttonStyle(.bordered)
 
@@ -185,24 +127,6 @@ struct AlbumDetailView: View {
                 }
             }
         }
-        .alert("Artist Name", isPresented: $isEditingArtist) {
-            TextField("Artist name", text: $editedArtistName)
-            Button("Save") {
-                Task { await saveArtistName() }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Enter the artist or band name for this album")
-        }
-        .alert("Album Title", isPresented: $isEditingAlbumTitle) {
-            TextField("Album title", text: $editedAlbumTitle)
-            Button("Save") {
-                Task { await saveAlbumTitle() }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Enter the album title")
-        }
         .refreshable {
             await syncFromDrive()
         }
@@ -267,64 +191,6 @@ struct AlbumDetailView: View {
             reorderedTracks = []
         } catch {
             syncError = "Failed to save order: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: - Artist
-
-    private func saveAlbumTitle() async {
-        let trimmed = editedAlbumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        album.name = trimmed
-        try? modelContext.save()
-
-        guard let data = trimmed.data(using: .utf8) else { return }
-
-        do {
-            let folderId = try await ensureAdditDataFolder()
-
-            if let existingId = albumTitleFileId {
-                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
-            } else {
-                let item = try await driveService.createFile(
-                    name: ".addit-album-title",
-                    mimeType: "text/plain",
-                    inFolder: folderId,
-                    data: data
-                )
-                albumTitleFileId = item.id
-            }
-        } catch {
-            syncError = "Failed to save album title: \(error.localizedDescription)"
-        }
-    }
-
-    private func saveArtistName() async {
-        let trimmed = editedArtistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newName: String? = trimmed.isEmpty ? nil : trimmed
-
-        album.artistName = newName
-        try? modelContext.save()
-
-        guard let data = (newName ?? "").data(using: .utf8) else { return }
-
-        do {
-            let folderId = try await ensureAdditDataFolder()
-
-            if let existingId = artistFileId {
-                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
-            } else {
-                let item = try await driveService.createFile(
-                    name: ".addit-artist",
-                    mimeType: "text/plain",
-                    inFolder: folderId,
-                    data: data
-                )
-                artistFileId = item.id
-            }
-        } catch {
-            syncError = "Failed to save artist: \(error.localizedDescription)"
         }
     }
 
@@ -491,14 +357,11 @@ struct AlbumDetailView: View {
             }
 
             if let artistItem {
-                artistFileId = artistItem.id
                 let data = try await driveService.downloadFileData(fileId: artistItem.id)
                 if let content = String(data: data, encoding: .utf8) {
                     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                     album.artistName = trimmed.isEmpty ? nil : trimmed
                 }
-            } else {
-                artistFileId = nil
             }
         } catch {
             // Keep existing local value on error
@@ -520,7 +383,6 @@ struct AlbumDetailView: View {
             }
 
             if let titleItem {
-                albumTitleFileId = titleItem.id
                 let data = try await driveService.downloadFileData(fileId: titleItem.id)
                 if let content = String(data: data, encoding: .utf8) {
                     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -528,8 +390,6 @@ struct AlbumDetailView: View {
                         album.name = trimmed
                     }
                 }
-            } else {
-                albumTitleFileId = nil
             }
         } catch {
             // Keep existing local value on error

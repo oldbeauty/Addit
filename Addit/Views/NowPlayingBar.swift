@@ -1,10 +1,13 @@
 import SwiftUI
+import UIKit
 
 struct NowPlayingBar: View {
     @Binding var showFullPlayer: Bool
     @Environment(AudioPlayerService.self) private var playerService
+    @Environment(AlbumArtService.self) private var albumArtService
     @State private var seekValue: TimeInterval = 0
     @State private var isScrubbing = false
+    @State private var albumImage: UIImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,9 +38,18 @@ struct NowPlayingBar: View {
                     .fill(Color.accentColor.opacity(0.2))
                     .frame(width: 44, height: 44)
                     .overlay {
-                        Image(systemName: "music.note")
-                            .foregroundStyle(Color.accentColor)
+                        Group {
+                            if let albumImage {
+                                Image(uiImage: albumImage)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "music.note")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(playerService.currentTrack?.displayName ?? "")
@@ -77,6 +89,13 @@ struct NowPlayingBar: View {
             if !isScrubbing {
                 showFullPlayer = true
             }
+        }
+        .task(id: playerService.currentTrack?.album?.coverFileId) {
+            guard let coverFileId = playerService.currentTrack?.album?.coverFileId else {
+                albumImage = nil
+                return
+            }
+            albumImage = await albumArtService.image(for: coverFileId)
         }
     }
 

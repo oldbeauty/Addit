@@ -1,9 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct NowPlayingView: View {
     @Environment(AudioPlayerService.self) private var playerService
+    @Environment(AlbumArtService.self) private var albumArtService
     @Environment(\.dismiss) private var dismiss
     @State private var seekValue: TimeInterval = 0
+    @State private var albumImage: UIImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,10 +30,19 @@ struct NowPlayingView: View {
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: 320)
                 .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 80))
-                        .foregroundStyle(.white.opacity(0.7))
+                    Group {
+                        if let albumImage {
+                            Image(uiImage: albumImage)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 80))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .shadow(radius: 20, y: 10)
                 .padding(.horizontal, 40)
 
@@ -146,6 +158,13 @@ struct NowPlayingView: View {
             }
         }
         .padding()
+        .task(id: playerService.currentTrack?.album?.coverFileId) {
+            guard let coverFileId = playerService.currentTrack?.album?.coverFileId else {
+                albumImage = nil
+                return
+            }
+            albumImage = await albumArtService.image(for: coverFileId)
+        }
     }
 
     private var nowPlayingSubtitle: String {
