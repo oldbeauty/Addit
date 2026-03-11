@@ -151,9 +151,6 @@ struct LibraryView: View {
                 Color.clear.frame(height: 64)
             }
         }
-        .task {
-            await refreshAlbumPermissions()
-        }
         .animation(.spring(response: 0.32, dampingFraction: 0.9), value: selectedAlbum != nil)
     }
 
@@ -197,25 +194,6 @@ struct LibraryView: View {
         }
     }
 
-    @MainActor
-    private func refreshAlbumPermissions() async {
-        var hasChanges = false
-
-        for album in albums {
-            guard let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) else {
-                continue
-            }
-
-            if album.canEdit != folderInfo.canEdit {
-                album.canEdit = folderInfo.canEdit
-                hasChanges = true
-            }
-        }
-
-        if hasChanges {
-            try? modelContext.save()
-        }
-    }
 }
 
 struct FloatingAlbumPanel: View {

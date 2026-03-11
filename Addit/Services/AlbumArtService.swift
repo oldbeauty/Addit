@@ -25,6 +25,10 @@ final class AlbumArtService {
     }
 
     func resolveAlbumArt(for album: Album) async -> AlbumArtResolution {
+        if let coverFileId = album.coverFileId, let cachedImage = await image(for: coverFileId) {
+            return AlbumArtResolution(image: cachedImage, resolvedCoverItem: nil, shouldPersistMetadata: false)
+        }
+
         guard let driveService else {
             let fallbackImage = await fallbackImage(for: album)
             return AlbumArtResolution(image: fallbackImage, resolvedCoverItem: nil, shouldPersistMetadata: false)
