@@ -104,6 +104,7 @@ struct AlbumDetailView: View {
                             isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
                             isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying
                         )
+                        .listRowBackground(Color.clear)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             playerService.playTrack(track, inQueue: sortedTracks)
