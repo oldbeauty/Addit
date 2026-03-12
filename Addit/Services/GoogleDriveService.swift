@@ -10,32 +10,32 @@ final class GoogleDriveService {
     func listFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
         let query = "'root' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
-                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+                                   fields: "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
     func listStarredFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
         let query = "starred=true and mimeType='application/vnd.google-apps.folder' and trashed=false"
         return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
-                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+                                   fields: "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
     func listSharedFolders(pageToken: String? = nil) async throws -> DriveFileListResponse {
         let query = "mimeType='application/vnd.google-apps.folder' and trashed=false and not 'me' in owners"
         return try await listFiles(query: query, pageToken: pageToken, pageSize: 100, orderBy: "name",
-                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+                                   fields: "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
     func listSubfolders(inFolder folderId: String) async throws -> DriveFileListResponse {
         let query = "'\(folderId)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         return try await listFiles(query: query, pageSize: 100, orderBy: "name",
-                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+                                   fields: "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
     func searchFolders(query searchText: String) async throws -> DriveFileListResponse {
         let escaped = searchText.replacingOccurrences(of: "'", with: "\\'")
         let query = "mimeType='application/vnd.google-apps.folder' and trashed=false and name contains '\(escaped)'"
         return try await listFiles(query: query, pageSize: 50, orderBy: "name",
-                                   fields: "files(id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
+                                   fields: "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren),nextPageToken")
     }
 
     func listAudioFiles(inFolder folderId: String, pageToken: String? = nil) async throws -> DriveFileListResponse {
@@ -76,7 +76,7 @@ final class GoogleDriveService {
 
     func getFileMetadata(fileId: String) async throws -> DriveItem {
         let token = try await getToken()
-        let fields = "id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren"
+        let fields = "id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren"
         var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
         components.queryItems = [
             URLQueryItem(name: "fields", value: fields),
@@ -105,7 +105,7 @@ final class GoogleDriveService {
         var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
         components.queryItems = [
             URLQueryItem(name: "supportsAllDrives", value: "true"),
-            URLQueryItem(name: "fields", value: "id,name,mimeType,size,parents,capabilities/canEdit,capabilities/canAddChildren")
+            URLQueryItem(name: "fields", value: "id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren")
         ]
 
         var request = URLRequest(url: components.url!)
@@ -119,6 +119,29 @@ final class GoogleDriveService {
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(DriveItem.self, from: data)
+    }
+
+    // MARK: - Ownership
+
+    /// Removes a file from a folder without deleting it.
+    /// The file remains in the creator's Drive but is no longer in the specified folder.
+    func removeFileFromFolder(fileId: String, folderId: String) async throws {
+        let token = try await getToken()
+
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
+        components.queryItems = [
+            URLQueryItem(name: "removeParents", value: folderId),
+            URLQueryItem(name: "supportsAllDrives", value: "true")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = "{}".data(using: .utf8)
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
     }
 
     // MARK: - Folder Operations
@@ -235,7 +258,7 @@ final class GoogleDriveService {
 
     private func listFiles(query: String, pageToken: String? = nil,
                            pageSize: Int = 100, orderBy: String? = nil,
-                           fields: String = "files(id,name,mimeType,size,parents),nextPageToken") async throws -> DriveFileListResponse {
+                           fields: String = "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime),nextPageToken") async throws -> DriveFileListResponse {
         let token = try await getToken()
 
         var components = URLComponents(string: "\(baseURL)/files")!

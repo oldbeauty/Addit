@@ -9,6 +9,7 @@ struct LibraryView: View {
     @Environment(GoogleDriveService.self) private var driveService
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(AudioCacheService.self) private var cacheService
     @Query(sort: \Album.displayOrder) private var albums: [Album]
     @State private var showAddAlbum = false
     @State private var showSettings = false
@@ -113,7 +114,7 @@ struct LibraryView: View {
                         }
                         .tint(.secondary)
                         Button("Sign Out", role: .destructive) {
-                            authService.signOut()
+                            signOutAndClearData()
                         }
                     } label: {
                         Image(systemName: "person.crop.circle")
@@ -148,6 +149,27 @@ struct LibraryView: View {
             album.displayOrder = index
         }
         try? modelContext.save()
+    }
+
+    private func signOutAndClearData() {
+        // Stop playback
+        playerService.pause()
+        playerService.queue.removeAll()
+        playerService.userQueue.removeAll()
+        playerService.currentIndex = 0
+
+        // Delete all albums and tracks from SwiftData
+        for album in albums {
+            modelContext.delete(album)
+        }
+        try? modelContext.save()
+
+        // Clear caches
+        try? cacheService.clearCache()
+        albumArtService.clearCache()
+
+        // Sign out
+        authService.signOut()
     }
 
 }
@@ -195,7 +217,8 @@ struct AlbumMetadataEditorSheet: View {
     @State private var imageToCrop: CropItem?
     @State private var reorderedTracks: [Track] = []
     @State private var editedTrackNames: [String: String] = [:]
-    @State private var tracklistFileId: String?
+    @State private var additDataFileId: String?
+    @State private var additDataOwnedByMe: Bool = true
     @State private var isSavingOrder = false
     @FocusState private var focusedField: EditField?
 
@@ -344,7 +367,8 @@ struct AlbumMetadataEditorSheet: View {
                 reorderedTracks = album.tracks.sorted { $0.trackNumber < $1.trackNumber }
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
                 coverImage = resolution.image
-                await resolveTracklistFileId()
+                await resolveFolderOwnership()
+                await resolveAdditDataFileId()
             }
             .onChange(of: selectedCoverPhoto) { _, newValue in
                 guard let newValue else { return }
@@ -409,18 +433,11 @@ struct AlbumMetadataEditorSheet: View {
             // Rename the actual Drive folder
             try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
 
-            // Save artist metadata file
-            try await upsertMetadataFile(
-                named: ".addit-artist",
-                content: newArtist ?? "",
-                inFolder: album.googleFolderId
-            )
-
             // Rename changed tracks in Drive
             try await renameChangedTracks()
 
-            // Save track order (uses updated names)
-            try await saveTrackOrder(inFolder: album.googleFolderId)
+            // Save unified .addit-data (tracklist + artist)
+            try await saveAdditData(inFolder: album.googleFolderId, artist: newArtist)
 
             dismiss()
         } catch {
@@ -451,6 +468,14 @@ struct AlbumMetadataEditorSheet: View {
                 throw CoverUploadError.invalidImageData
             }
 
+            // If folder owner, remove unowned cover so the new one will be owned by us
+            if album.isFolderOwner {
+                if let existingCover = try await driveService.findCoverImage(inFolder: album.googleFolderId),
+                   existingCover.ownedByMe == false {
+                    try await driveService.removeFileFromFolder(fileId: existingCover.id, folderId: album.googleFolderId)
+                }
+            }
+
             let previousCoverFileId = album.coverFileId
             let coverItem = try await driveService.upsertCoverImage(inFolder: album.googleFolderId, data: jpegData)
 
@@ -467,6 +492,7 @@ struct AlbumMetadataEditorSheet: View {
             )
 
             albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            album.coverModifiedTime = nil
             album.coverUpdatedAt = .now
             try? modelContext.save()
             albumArtService.bumpRefreshToken(for: album.googleFolderId)
@@ -475,30 +501,69 @@ struct AlbumMetadataEditorSheet: View {
         }
     }
 
-    private func upsertMetadataFile(named name: String, content: String, inFolder folderId: String) async throws {
-        guard let data = content.data(using: .utf8) else { return }
-        if let existing = try await driveService.findFile(named: name, inFolder: folderId) {
-            try await driveService.updateFileData(fileId: existing.id, data: data, mimeType: "text/plain")
+    private func saveAdditData(inFolder folderId: String, artist: String?) async throws {
+        let metadata = AdditMetadata(
+            tracklist: reorderedTracks.map(\.name),
+            artist: artist
+        )
+        let data = try JSONEncoder().encode(metadata)
+
+        if let existingId = additDataFileId {
+            if album.isFolderOwner && !additDataOwnedByMe {
+                // Claim ownership: remove the file we don't own and create a new one
+                try await driveService.removeFileFromFolder(fileId: existingId, folderId: folderId)
+                let item = try await driveService.createFile(
+                    name: ".addit-data",
+                    mimeType: "application/json",
+                    inFolder: folderId,
+                    data: data
+                )
+                additDataFileId = item.id
+                additDataOwnedByMe = true
+            } else {
+                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "application/json")
+            }
         } else {
-            _ = try await driveService.createFile(
-                name: name,
-                mimeType: "text/plain",
+            let item = try await driveService.createFile(
+                name: ".addit-data",
+                mimeType: "application/json",
                 inFolder: folderId,
                 data: data
             )
+            additDataFileId = item.id
+            additDataOwnedByMe = true
+        }
+
+        for (index, track) in reorderedTracks.enumerated() {
+            track.trackNumber = index + 1
+        }
+        try? modelContext.save()
+    }
+
+    private func resolveFolderOwnership() async {
+        do {
+            let folderMeta = try await driveService.getFileMetadata(fileId: album.googleFolderId)
+            if let ownedByMe = folderMeta.ownedByMe, ownedByMe != album.isFolderOwner {
+                album.isFolderOwner = ownedByMe
+                try? modelContext.save()
+            }
+        } catch {
+            // Best effort — keep existing value
         }
     }
 
-    private func resolveTracklistFileId() async {
+    private func resolveAdditDataFileId() async {
         do {
-            if let item = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId) {
-                tracklistFileId = item.id
+            if let item = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId) {
+                additDataFileId = item.id
+                additDataOwnedByMe = item.ownedByMe ?? true
                 return
             }
         } catch {
             // Best effort
         }
-        tracklistFileId = nil
+        additDataFileId = nil
+        additDataOwnedByMe = true
     }
 
     private func renameChangedTracks() async throws {
@@ -518,27 +583,6 @@ struct AlbumMetadataEditorSheet: View {
         try? modelContext.save()
     }
 
-    private func saveTrackOrder(inFolder folderId: String) async throws {
-        let content = reorderedTracks.map(\.name).joined(separator: "\n")
-        guard let data = content.data(using: .utf8) else { return }
-
-        if let existingId = tracklistFileId {
-            try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "text/plain")
-        } else {
-            let item = try await driveService.createFile(
-                name: ".addit-tracklist",
-                mimeType: "text/plain",
-                inFolder: folderId,
-                data: data
-            )
-            tracklistFileId = item.id
-        }
-
-        for (index, track) in reorderedTracks.enumerated() {
-            track.trackNumber = index + 1
-        }
-        try? modelContext.save()
-    }
 }
 
 struct AlbumArtworkThumbnail: View {

@@ -131,7 +131,15 @@ struct AddAlbumView: View {
         do {
             try modelContext.save()
             Task {
-                await initializeTracklist(for: album, audioFiles: audioFiles)
+                // Resolve folder ownership
+                let folderMeta = try? await driveService.getFileMetadata(fileId: folder.id)
+                album.isFolderOwner = folderMeta?.ownedByMe ?? false
+                try? modelContext.save()
+
+                await initializeAdditData(for: album, audioFiles: audioFiles)
+                if album.isFolderOwner {
+                    await claimCoverOwnership(for: album)
+                }
                 await syncCoverArt(for: album, folderId: folder.id)
             }
             addedSuccessfully = true
@@ -140,18 +148,33 @@ struct AddAlbumView: View {
         }
     }
 
-    private func initializeTracklist(for album: Album, audioFiles: [DriveItem]) async {
+    private func initializeAdditData(for album: Album, audioFiles: [DriveItem]) async {
         do {
-            // Only create if it doesn't already exist — never overwrite existing metadata
-            let existing = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId)
-            guard existing == nil else { return }
+            let existing = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId)
 
-            let tracklistContent = audioFiles.map(\.name).joined(separator: "\n")
-            guard let data = tracklistContent.data(using: .utf8) else { return }
+            if let existing {
+                // File exists — claim ownership if we're the folder owner and don't own it
+                if album.isFolderOwner && existing.ownedByMe == false {
+                    let oldData = try await driveService.downloadFileData(fileId: existing.id)
+                    try await driveService.removeFileFromFolder(fileId: existing.id, folderId: album.googleFolderId)
+                    _ = try await driveService.createFile(
+                        name: ".addit-data",
+                        mimeType: "application/json",
+                        inFolder: album.googleFolderId,
+                        data: oldData
+                    )
+                }
+                // If we already own it or aren't the folder owner, nothing to do
+                return
+            }
+
+            // File doesn't exist — create it
+            let metadata = AdditMetadata(tracklist: audioFiles.map(\.name))
+            let data = try JSONEncoder().encode(metadata)
 
             _ = try await driveService.createFile(
-                name: ".addit-tracklist",
-                mimeType: "text/plain",
+                name: ".addit-data",
+                mimeType: "application/json",
                 inFolder: album.googleFolderId,
                 data: data
             )
@@ -160,15 +183,39 @@ struct AddAlbumView: View {
         }
     }
 
+    private func claimCoverOwnership(for album: Album) async {
+        do {
+            guard let existing = try await driveService.findCoverImage(inFolder: album.googleFolderId) else { return }
+            guard existing.ownedByMe == false else { return }
+
+            let data = try await driveService.downloadFileData(fileId: existing.id)
+            try await driveService.removeFileFromFolder(fileId: existing.id, folderId: album.googleFolderId)
+            let newCover = try await driveService.createFile(
+                name: existing.name,
+                mimeType: existing.mimeType,
+                inFolder: album.googleFolderId,
+                data: data
+            )
+            album.coverFileId = newCover.id
+            album.coverMimeType = newCover.mimeType
+            album.coverModifiedTime = newCover.modifiedTime
+            try? modelContext.save()
+        } catch {
+            // Best effort — cover still usable even if not owned
+        }
+    }
+
     private func syncCoverArt(for album: Album, folderId: String) async {
         let coverItem = try? await driveService.findCoverImage(inFolder: folderId)
         if let coverItem {
             album.coverFileId = coverItem.id
             album.coverMimeType = coverItem.mimeType
+            album.coverModifiedTime = coverItem.modifiedTime
             album.coverUpdatedAt = .now
         } else {
             album.coverFileId = nil
             album.coverMimeType = nil
+            album.coverModifiedTime = nil
             album.coverUpdatedAt = nil
         }
         try? modelContext.save()
@@ -198,7 +245,9 @@ struct FolderBrowserView: View {
             mimeType: "application/vnd.google-apps.folder",
             size: nil,
             parents: nil,
-            capabilities: nil
+            capabilities: nil,
+            ownedByMe: nil,
+            modifiedTime: nil
         )
     }
 

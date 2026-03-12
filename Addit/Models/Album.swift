@@ -8,10 +8,12 @@ final class Album {
     var artistName: String?
     var coverFileId: String?
     var coverMimeType: String?
+    var coverModifiedTime: String?
     var coverUpdatedAt: Date?
     var trackCount: Int
     var dateAdded: Date
     var canEdit: Bool
+    var isFolderOwner: Bool = false
     var displayOrder: Int = 0
 
     @Relationship(deleteRule: .cascade, inverse: \Track.album)
@@ -27,6 +29,7 @@ final class Album {
         trackCount: Int,
         dateAdded: Date = .now,
         canEdit: Bool = false,
+        isFolderOwner: Bool = false,
         displayOrder: Int = 0
     ) {
         self.googleFolderId = googleFolderId
@@ -38,11 +41,11 @@ final class Album {
         self.trackCount = trackCount
         self.dateAdded = dateAdded
         self.canEdit = canEdit
+        self.isFolderOwner = isFolderOwner
         self.displayOrder = displayOrder
     }
 
     var coverArtTaskID: String {
-        let timestamp = coverUpdatedAt?.timeIntervalSince1970 ?? 0
-        return "\(coverFileId ?? "none")-\(timestamp)"
+        return "\(coverFileId ?? "none")-\(coverModifiedTime ?? "unknown")"
     }
 }

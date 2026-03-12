@@ -195,6 +195,7 @@ struct AlbumDetailView: View {
             if let folderInfo = try? await driveService.getFileMetadata(fileId: album.googleFolderId) {
                 album.name = folderInfo.name
                 album.canEdit = folderInfo.canEdit
+                album.isFolderOwner = folderInfo.ownedByMe ?? false
             }
 
             let response = try await driveService.listAudioFiles(inFolder: album.googleFolderId)
@@ -230,11 +231,8 @@ struct AlbumDetailView: View {
                 }
             }
 
-            // Apply tracklist ordering
-            await applyTrackOrdering(driveFiles: driveFiles)
-
-            // Sync artist name
-            await syncArtistName()
+            // Sync addit metadata (tracklist ordering + artist name)
+            await syncAdditMetadata(driveFiles: driveFiles)
 
             // Sync JPEG cover art metadata
             await syncCoverArtMetadata()
@@ -246,62 +244,75 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func applyTrackOrdering(driveFiles: [DriveItem]) async {
+    private func syncAdditMetadata(driveFiles: [DriveItem]) async {
+        var metadata: AdditMetadata?
+
+        // Try .addit-data (JSON) first
         do {
-            let tracklistItem = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId)
-
-            if let tracklistItem {
-                let data = try await driveService.downloadFileData(fileId: tracklistItem.id)
-                if let content = String(data: data, encoding: .utf8) {
-                    let orderedNames = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                    var trackNumber = 1
-
-                    // Assign numbers to tracks listed in the tracklist
-                    for name in orderedNames {
-                        if let track = album.tracks.first(where: { $0.name == name }) {
-                            track.trackNumber = trackNumber
-                            trackNumber += 1
-                        }
-                    }
-
-                    // Append unlisted tracks alphabetically at the end
-                    let listedNames = Set(orderedNames)
-                    let unlistedTracks = album.tracks
-                        .filter { !listedNames.contains($0.name) }
-                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-
-                    for track in unlistedTracks {
-                        track.trackNumber = trackNumber
-                        trackNumber += 1
-                    }
-                    return
-                }
+            if let item = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId) {
+                let data = try await driveService.downloadFileData(fileId: item.id)
+                metadata = try? JSONDecoder().decode(AdditMetadata.self, from: data)
             }
         } catch {
-            // Fall back to default ordering
+            // Fall through to legacy
         }
 
-        // Default: alphabetical order from Drive API response
-        for (index, file) in driveFiles.enumerated() {
-            if let track = album.tracks.first(where: { $0.googleFileId == file.id }) {
-                track.trackNumber = index + 1
+        // Legacy fallback: read .addit-tracklist and .addit-artist separately
+        if metadata == nil {
+            var legacy = AdditMetadata()
+
+            if let item = try? await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId),
+               let data = try? await driveService.downloadFileData(fileId: item.id),
+               let content = String(data: data, encoding: .utf8) {
+                legacy.tracklist = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+            }
+
+            if let item = try? await driveService.findFile(named: ".addit-artist", inFolder: album.googleFolderId),
+               let data = try? await driveService.downloadFileData(fileId: item.id),
+               let content = String(data: data, encoding: .utf8) {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                legacy.artist = trimmed.isEmpty ? nil : trimmed
+            }
+
+            if legacy.tracklist != nil || legacy.artist != nil {
+                metadata = legacy
             }
         }
-    }
 
-    private func syncArtistName() async {
-        do {
-            let artistItem = try await driveService.findFile(named: ".addit-artist", inFolder: album.googleFolderId)
+        // Apply artist name
+        if let metadata {
+            if let artist = metadata.artist {
+                album.artistName = artist.isEmpty ? nil : artist
+            }
+        }
 
-            if let artistItem {
-                let data = try await driveService.downloadFileData(fileId: artistItem.id)
-                if let content = String(data: data, encoding: .utf8) {
-                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    album.artistName = trimmed.isEmpty ? nil : trimmed
+        // Apply track ordering
+        if let orderedNames = metadata?.tracklist, !orderedNames.isEmpty {
+            var trackNumber = 1
+
+            for name in orderedNames {
+                if let track = album.tracks.first(where: { $0.name == name }) {
+                    track.trackNumber = trackNumber
+                    trackNumber += 1
                 }
             }
-        } catch {
-            // Keep existing local value on error
+
+            let listedNames = Set(orderedNames)
+            let unlistedTracks = album.tracks
+                .filter { !listedNames.contains($0.name) }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+            for track in unlistedTracks {
+                track.trackNumber = trackNumber
+                trackNumber += 1
+            }
+        } else {
+            // Default: order from Drive API response
+            for (index, file) in driveFiles.enumerated() {
+                if let track = album.tracks.first(where: { $0.googleFileId == file.id }) {
+                    track.trackNumber = index + 1
+                }
+            }
         }
     }
 
@@ -310,12 +321,30 @@ struct AlbumDetailView: View {
             let coverItem = try await driveService.findCoverImage(inFolder: album.googleFolderId)
 
             if let coverItem {
+                let fileIdChanged = album.coverFileId != coverItem.id
+                let contentChanged = coverItem.modifiedTime != nil && coverItem.modifiedTime != album.coverModifiedTime
+
+                if fileIdChanged || contentChanged {
+                    // Invalidate cached image so it gets re-downloaded with fresh content
+                    if let oldId = album.coverFileId {
+                        albumArtService.invalidateImage(for: oldId)
+                    }
+                    if fileIdChanged {
+                        albumArtService.invalidateImage(for: coverItem.id)
+                    }
+                }
+
                 album.coverFileId = coverItem.id
                 album.coverMimeType = coverItem.mimeType
+                album.coverModifiedTime = coverItem.modifiedTime
                 album.coverUpdatedAt = .now
             } else {
+                if let oldId = album.coverFileId {
+                    albumArtService.invalidateImage(for: oldId)
+                }
                 album.coverFileId = nil
                 album.coverMimeType = nil
+                album.coverModifiedTime = nil
                 album.coverUpdatedAt = nil
             }
         } catch {

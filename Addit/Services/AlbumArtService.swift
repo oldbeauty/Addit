@@ -68,6 +68,13 @@ final class AlbumArtService {
         try? fileManager.removeItem(at: localURL(for: fileId))
     }
 
+    func clearCache() {
+        memoryCache.removeAllObjects()
+        if fileManager.fileExists(atPath: cacheDirectory.path) {
+            try? fileManager.removeItem(at: cacheDirectory)
+        }
+    }
+
     func bumpRefreshToken(for albumFolderId: String) {
         lastUpdatedAlbumFolderId = albumFolderId
         artworkRefreshVersion += 1

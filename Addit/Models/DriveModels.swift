@@ -12,6 +12,8 @@ struct DriveItem: Codable, Identifiable, Hashable {
     let size: String?
     let parents: [String]?
     let capabilities: DriveCapabilities?
+    let ownedByMe: Bool?
+    let modifiedTime: String?
 
     var isFolder: Bool {
         mimeType == "application/vnd.google-apps.folder"
