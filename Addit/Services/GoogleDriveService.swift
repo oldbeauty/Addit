@@ -308,6 +308,77 @@ final class GoogleDriveService {
         return result.permissions
     }
 
+    func updatePermissionRole(fileId: String, permissionId: String, role: String) async throws {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)/permissions/\(permissionId)")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["role": role])
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
+    }
+
+    func createPermission(fileId: String, email: String, role: String, sendNotification: Bool = true) async throws {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)/permissions")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "sendNotificationEmail", value: sendNotification ? "true" : "false")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: String] = ["type": "user", "role": role, "emailAddress": email]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
+    }
+
+    func deletePermission(fileId: String, permissionId: String) async throws {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)/permissions/\(permissionId)")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
+    }
+
+    func createAnyonePermission(fileId: String, role: String) async throws {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)/permissions")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: String] = ["type": "anyone", "role": role]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
+    }
+
     // MARK: - Private
 
     private func listFiles(query: String, pageToken: String? = nil,

@@ -13,6 +13,7 @@ struct LibraryView: View {
     @Environment(AudioCacheService.self) private var cacheService
     @Query(sort: \Album.displayOrder) private var albums: [Album]
     @State private var showAddAlbum = false
+    @State private var showCreateAlbum = false
     @State private var showSettings = false
     @State private var metadataEditorAlbum: Album?
     @State private var isArranging = false
@@ -99,7 +100,18 @@ struct LibraryView: View {
                 }
             } else {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showAddAlbum = true } label: {
+                    Menu {
+                        Button {
+                            showAddAlbum = true
+                        } label: {
+                            Label("Add Existing", systemImage: "folder.badge.plus")
+                        }
+                        Button {
+                            showCreateAlbum = true
+                        } label: {
+                            Label("Create New", systemImage: "plus.rectangle.on.folder")
+                        }
+                    } label: {
                         Image(systemName: "plus")
                     }
                 }
@@ -125,6 +137,11 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showAddAlbum) {
             AddAlbumView()
+        }
+        .sheet(isPresented: $showCreateAlbum) {
+            CreateAlbumView { newAlbum in
+                metadataEditorAlbum = newAlbum
+            }
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -313,8 +330,8 @@ struct AlbumMetadataEditorSheet: View {
                     }
 
                     // Arrange tracklist
-                    if !reorderedItems.isEmpty {
-                        HStack {
+                    HStack {
+                        if !reorderedItems.isEmpty {
                             Button {
                                 addDiscMarker()
                             } label: {
@@ -322,29 +339,32 @@ struct AlbumMetadataEditorSheet: View {
                                     .font(.subheadline)
                             }
                             .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
-
-                            Spacer()
-
-                            if album.canEdit {
-                                Menu {
-                                    Button {
-                                        showAddTrackSheet = true
-                                    } label: {
-                                        Label("From Google Drive", systemImage: "cloud")
-                                    }
-                                    Button {
-                                        showDocumentPicker = true
-                                    } label: {
-                                        Label("From iPhone", systemImage: "iphone")
-                                    }
-                                } label: {
-                                    Label("Add tracks", systemImage: "plus.circle")
-                                        .font(.subheadline)
-                                }
-                                .disabled(isUploadingTracks)
-                            }
                         }
-                        .padding(.horizontal)
+
+                        Spacer()
+
+                        if album.canEdit {
+                            Menu {
+                                Button {
+                                    showAddTrackSheet = true
+                                } label: {
+                                    Label("From Google Drive", systemImage: "cloud")
+                                }
+                                Button {
+                                    showDocumentPicker = true
+                                } label: {
+                                    Label("From iPhone", systemImage: "iphone")
+                                }
+                            } label: {
+                                Label("Add tracks", systemImage: "plus.circle")
+                                    .font(.subheadline)
+                            }
+                            .disabled(isUploadingTracks)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    if !reorderedItems.isEmpty {
 
                         VStack(alignment: .leading, spacing: 0) {
                             List {
@@ -902,9 +922,18 @@ struct AlbumArtworkThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .onAppear {
+                // Show cached image instantly — no async, no file I/O
+                if image == nil, let coverFileId = album.coverFileId {
+                    image = albumArtService.cachedImage(for: coverFileId)
+                }
+            }
             .task(id: artworkTaskID) {
+                // Resolve fully (disk cache + network) in background
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
-                image = resolution.image
+                if resolution.image != nil || image == nil {
+                    image = resolution.image
+                }
                 albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
             }
     }

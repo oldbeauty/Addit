@@ -61,6 +61,11 @@ final class AlbumArtService {
         return image
     }
 
+    /// Fast synchronous lookup — memory cache only, no file I/O or network.
+    func cachedImage(for fileId: String) -> UIImage? {
+        memoryCache.object(forKey: fileId as NSString)
+    }
+
     func invalidateImage(for fileId: String?) {
         guard let fileId else { return }
 
@@ -119,10 +124,15 @@ final class AlbumArtService {
             return cached
         }
 
-        let localURL = localURL(for: fileId)
-        if let data = try? Data(contentsOf: localURL), let image = UIImage(data: data) {
-            memoryCache.setObject(image, forKey: fileId as NSString)
-            return image
+        // Read disk cache off the main thread
+        let url = localURL(for: fileId)
+        let diskImage: UIImage? = await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return UIImage(data: data)
+        }.value
+        if let diskImage {
+            memoryCache.setObject(diskImage, forKey: fileId as NSString)
+            return diskImage
         }
 
         guard let driveService else { return nil }

@@ -26,6 +26,19 @@ struct AlbumDetailView: View {
         displayItems.compactMap(\.asTrack)
     }
 
+    /// Pre-computed track numbers keyed by track's googleFileId, avoiding O(n²) per-row filtering.
+    private var trackNumbers: [String: Int] {
+        var numbers: [String: Int] = [:]
+        var count = 0
+        for item in displayItems {
+            if case .track(let track) = item {
+                count += 1
+                numbers[track.googleFileId] = count
+            }
+        }
+        return numbers
+    }
+
     private var artworkTaskID: String? {
         let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
             ? albumArtService.artworkRefreshVersion
@@ -104,13 +117,12 @@ struct AlbumDetailView: View {
                 }
 
                 Section {
-                    ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(displayItems.enumerated()), id: \.element.id) { _, item in
                         switch item {
                         case .track(let track):
-                            let trackNumber = displayItems[0...index].filter({ !$0.isDiscMarker }).count
                             TrackRow(
                                 track: track,
-                                number: trackNumber,
+                                number: trackNumbers[track.googleFileId] ?? 0,
                                 isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
                                 isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying
                             )
