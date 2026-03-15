@@ -289,6 +289,25 @@ final class GoogleDriveService {
         try fm.moveItem(at: tempURL, to: destination)
     }
 
+    // MARK: - Permissions
+
+    func listPermissions(fileId: String) async throws -> [DrivePermission] {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)/permissions")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "permissions(id,role,type,emailAddress,displayName,photoLink)"),
+            URLQueryItem(name: "supportsAllDrives", value: "true")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response)
+        let result = try JSONDecoder().decode(DrivePermissionListResponse.self, from: data)
+        return result.permissions
+    }
+
     // MARK: - Private
 
     private func listFiles(query: String, pageToken: String? = nil,

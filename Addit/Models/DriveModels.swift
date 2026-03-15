@@ -45,3 +45,50 @@ struct DriveCapabilities: Codable, Hashable {
     let canEdit: Bool?
     let canAddChildren: Bool?
 }
+
+// MARK: - Permissions
+
+struct DrivePermissionListResponse: Codable {
+    let permissions: [DrivePermission]
+}
+
+struct DrivePermission: Codable, Identifiable {
+    let id: String
+    let role: String              // "owner", "writer", "commenter", "reader"
+    let type: String              // "user", "group", "domain", "anyone"
+    let emailAddress: String?
+    let displayName: String?
+    let photoLink: String?
+
+    var roleLabel: String {
+        switch role {
+        case "owner": return "Owner"
+        case "writer": return "Editor"
+        case "commenter": return "Commenter"
+        case "reader": return "Viewer"
+        default: return role.capitalized
+        }
+    }
+}
+
+enum GeneralAccess: Equatable {
+    case restricted
+    case anyoneViewer
+    case anyoneEditor
+
+    var label: String {
+        switch self {
+        case .restricted: return "Restricted"
+        case .anyoneViewer: return "Anyone with the link: Viewer"
+        case .anyoneEditor: return "Anyone with the link: Editor"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .restricted: return "Only people added can open"
+        case .anyoneViewer: return "Anyone with the link can view"
+        case .anyoneEditor: return "Anyone with the link can edit"
+        }
+    }
+}

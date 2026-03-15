@@ -11,6 +11,7 @@ struct AlbumDetailView: View {
     @State private var isSyncing = true
     @State private var syncError: String?
     @State private var showEditSheet = false
+    @State private var showSharingSheet = false
     @State private var albumImage: UIImage?
     @State private var queuedTrackId: String?
     @State private var displayItems: [TracklistItem] = []
@@ -168,12 +169,22 @@ struct AlbumDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showEditSheet = true
-                } label: {
-                    Label("Edit", systemImage: "pencil")
+                HStack(spacing: 16) {
+                    Button {
+                        showSharingSheet = true
+                    } label: {
+                        Label("Sharing", systemImage: "person.2")
+                    }
+                    Button {
+                        showEditSheet = true
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showSharingSheet) {
+            SharingSheet(album: album)
         }
         .sheet(isPresented: $showEditSheet, onDismiss: {
             Task { await syncFromDrive() }
