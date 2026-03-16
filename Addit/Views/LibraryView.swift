@@ -706,7 +706,7 @@ struct AlbumMetadataEditorSheet: View {
                 album.additDataFileId = item.id
                 additDataOwnedByMe = true
                 // Notify chat that history was reset due to ownership change
-                try? await driveService.createComment(
+                _ = try? await driveService.createComment(
                     fileId: item.id,
                     content: "File ownership data was changed. Previous chat history may not persist."
                 )

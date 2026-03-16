@@ -4,7 +4,6 @@ struct ChatView: View {
     let album: Album
     @Environment(GoogleDriveService.self) private var driveService
     @Environment(GoogleAuthService.self) private var authService
-    @Environment(ThemeService.self) private var themeService
     @Environment(\.dismiss) private var dismiss
 
     @State private var messages: [DriveComment] = []
@@ -14,9 +13,15 @@ struct ChatView: View {
     @State private var error: String?
     @State private var nextPageToken: String?
     @State private var hasLoadedAll = false
+    @State private var timestampDragOffset: CGFloat = 0
+    @State private var timestampGeneration = 0
 
     private var chatFileId: String? {
         album.additDataFileId
+    }
+
+    private var showTimestamps: Bool {
+        timestampDragOffset < -10
     }
 
     var body: some View {
@@ -76,13 +81,41 @@ struct ChatView: View {
 
                     ForEach(sortedMessages) { message in
                         let isMe = message.author.me
-                        ChatBubble(message: message, isMe: isMe, accentColor: themeService.accentColor)
+                        ChatBubble(message: message, isMe: isMe, showTimestamp: showTimestamps)
                             .id(message.id)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
+            .offset(x: timestampDragOffset)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 15)
+                    .onChanged { value in
+                        let horizontal = value.translation.width
+                        if horizontal < 0 {
+                            withAnimation(.interactiveSpring) {
+                                timestampDragOffset = max(horizontal, -70)
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        timestampGeneration += 1
+                        let gen = timestampGeneration
+                        withAnimation(.spring(duration: 0.3)) {
+                            timestampDragOffset = 0
+                        }
+                        // Auto-hide after releasing — give time for the spring to settle
+                        Task {
+                            try? await Task.sleep(for: .seconds(0.3))
+                            if timestampGeneration == gen {
+                                withAnimation(.easeIn(duration: 0.2)) {
+                                    timestampDragOffset = 0
+                                }
+                            }
+                        }
+                    }
+            )
             .onChange(of: messages.count) {
                 if let last = sortedMessages.last {
                     withAnimation {
@@ -118,7 +151,7 @@ struct ChatView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : themeService.accentColor)
+                    .foregroundStyle(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
             }
             .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
         }
@@ -183,7 +216,7 @@ struct ChatView: View {
 private struct ChatBubble: View {
     let message: DriveComment
     let isMe: Bool
-    let accentColor: Color
+    let showTimestamp: Bool
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -204,18 +237,21 @@ private struct ChatBubble: View {
                     .font(.body)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(isMe ? accentColor : Color(.systemGray5),
+                    .background(isMe ? Color(.systemBlue) : Color(.systemGray5),
                                 in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .foregroundStyle(isMe ? .white : .primary)
-
-                if let date = message.createdDate {
-                    Text(date, format: .dateTime.hour().minute())
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             if !isMe { Spacer(minLength: 48) }
+
+            // Timestamp sits off the right edge, revealed when the whole chat drags left
+            if let date = message.createdDate {
+                Text(date, format: .dateTime.hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+                    .opacity(showTimestamp ? 1 : 0)
+            }
         }
         .padding(.vertical, 2)
     }
