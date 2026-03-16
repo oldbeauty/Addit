@@ -87,8 +87,9 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .offset(x: timestampDragOffset)
             }
-            .offset(x: timestampDragOffset)
+            .clipped()
             .simultaneousGesture(
                 DragGesture(minimumDistance: 15)
                     .onChanged { value in
@@ -243,14 +244,16 @@ private struct ChatBubble: View {
             }
 
             if !isMe { Spacer(minLength: 48) }
-
-            // Timestamp sits off the right edge, revealed when the whole chat drags left
+        }
+        .overlay(alignment: .trailing) {
             if let date = message.createdDate {
                 Text(date, format: .dateTime.hour().minute())
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize()
                     .opacity(showTimestamp ? 1 : 0)
+                    // Position just past the right edge of the bubble row
+                    .offset(x: 55)
             }
         }
         .padding(.vertical, 2)
