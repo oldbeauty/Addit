@@ -17,6 +17,8 @@ struct ChatView: View {
     @State private var timestampGeneration = 0
     @State private var members: [DrivePermission] = []
     @State private var showSharingSheet = false
+    @State private var keyboardHeight: CGFloat = 0
+    @FocusState private var isComposerFocused: Bool
 
     private var chatFileId: String? {
         album.additDataFileId
@@ -105,8 +107,10 @@ struct ChatView: View {
                 Spacer()
 
                 composerBar
+                    .padding(.bottom, keyboardHeight)
             }
         }
+        .ignoresSafeArea(.keyboard)
         .navigationBarHidden(true)
         .sheet(isPresented: $showSharingSheet) {
             SharingSheet(album: album)
@@ -120,6 +124,18 @@ struct ChatView: View {
         }
         .onAppear { playerService.hideNowPlayingBar = true }
         .onDisappear { playerService.hideNowPlayingBar = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let windowScene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }.first
+            let screenHeight = windowScene?.screen.bounds.height ?? endFrame.maxY
+            let bottomInset = windowScene?.keyWindow?.safeAreaInsets.bottom ?? 0
+            let newHeight = max(0, screenHeight - endFrame.origin.y - bottomInset)
+            let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+            withAnimation(.easeOut(duration: duration)) {
+                keyboardHeight = newHeight
+            }
+        }
     }
 
     // MARK: - Chat Header
@@ -205,14 +221,18 @@ struct ChatView: View {
                         ChatBubble(message: message, isMe: isMe, showName: showName, showAvatar: showAvatar, showTimestamp: showTimestamps)
                             .id(message.id)
                     }
+
+                    // Anchor point for scrolling – sits just above the composer
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 70)
-                .padding(.bottom, 60)
+                .padding(.bottom, keyboardHeight > 0 ? keyboardHeight + 60 : 60)
                 .offset(x: timestampDragOffset)
             }
             .clipped()
-            .ignoresSafeArea(.keyboard)
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 30)
@@ -242,16 +262,21 @@ struct ChatView: View {
                     }
             )
             .onChange(of: messages.count) {
-                if let last = sortedMessages.last {
-                    withAnimation {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                withAnimation {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+            .onChange(of: isComposerFocused) {
+                if isComposerFocused {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        withAnimation {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
                     }
                 }
             }
             .onAppear {
-                if let last = sortedMessages.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }
@@ -271,6 +296,7 @@ struct ChatView: View {
             TextField("Message", text: $messageText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
+                .focused($isComposerFocused)
 
             if hasText {
                 Button {
@@ -433,3 +459,4 @@ private struct ChatBubble: View {
             }
     }
 }
+
