@@ -7,8 +7,10 @@ struct AlbumDetailView: View {
     @Environment(GoogleDriveService.self) private var driveService
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(ThemeService.self) private var themeService
+    @Environment(AudioCacheService.self) private var cacheService
     @Environment(\.modelContext) private var modelContext
     @State private var isSyncing = true
+    @State private var cachedTrackIds: Set<String> = []
     @State private var syncError: String?
     @State private var showEditSheet = false
     @State private var showSharingSheet = false
@@ -127,8 +129,13 @@ struct AlbumDetailView: View {
                                 track: track,
                                 number: trackNumbers[track.googleFileId] ?? 0,
                                 isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
-                                isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying
+                                isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying,
+                                isCached: cachedTrackIds.contains(track.googleFileId),
+                                onToggleCache: {
+                                    toggleCache(for: track)
+                                }
                             )
+                            .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                             .listRowBackground(Color.clear)
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -165,6 +172,7 @@ struct AlbumDetailView: View {
                             .animation(.easeInOut(duration: 0.2), value: queuedTrackId)
                         case .discMarker(_, let label):
                             DiscMarkerRow(label: label)
+                                .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
                         }
@@ -253,8 +261,23 @@ struct AlbumDetailView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
+
+                    Divider()
+
+                    Button {
+                        toggleAllCache()
+                        withAnimation { showToolbarActions = false }
+                    } label: {
+                        Label(
+                            allTracksCached ? "Remove Offline Access" : "Make Available Offline",
+                            systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
-                .frame(width: 170)
+                .frame(width: 230)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
                 .padding(.trailing, 16)
@@ -278,6 +301,13 @@ struct AlbumDetailView: View {
         }
         .task {
             await syncFromDrive()
+            refreshCachedState()
+        }
+        .onChange(of: playerService.currentTrack?.googleFileId) {
+            refreshCachedState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .audioCacheDidChange)) { _ in
+            refreshCachedState()
         }
         .task(id: artworkTaskID) {
             let resolution = await albumArtService.resolveAlbumArt(for: album)
@@ -287,6 +317,56 @@ struct AlbumDetailView: View {
         .safeAreaInset(edge: .bottom) {
             if playerService.currentTrack != nil {
                 Color.clear.frame(height: 64)
+            }
+        }
+    }
+
+    // MARK: - Cache
+
+    private var allTracksCached: Bool {
+        !album.tracks.isEmpty && cachedTrackIds.count == album.tracks.count
+    }
+
+    private func toggleAllCache() {
+        if allTracksCached {
+            for track in album.tracks {
+                cacheService.removeTrack(track)
+            }
+            cachedTrackIds.removeAll()
+        } else {
+            Task {
+                for track in album.tracks where !cachedTrackIds.contains(track.googleFileId) {
+                    do {
+                        _ = try await cacheService.cacheTrack(track)
+                        cachedTrackIds.insert(track.googleFileId)
+                    } catch {
+                        // Skip failed tracks
+                    }
+                }
+            }
+        }
+    }
+
+    private func refreshCachedState() {
+        cachedTrackIds = Set(
+            album.tracks
+                .filter { cacheService.cachedFileURL(for: $0) != nil }
+                .map(\.googleFileId)
+        )
+    }
+
+    private func toggleCache(for track: Track) {
+        if cachedTrackIds.contains(track.googleFileId) {
+            cacheService.removeTrack(track)
+            cachedTrackIds.remove(track.googleFileId)
+        } else {
+            Task {
+                do {
+                    _ = try await cacheService.cacheTrack(track)
+                    cachedTrackIds.insert(track.googleFileId)
+                } catch {
+                    // Download failed silently
+                }
             }
         }
     }
@@ -513,6 +593,8 @@ struct TrackRow: View {
     let number: Int
     let isCurrentTrack: Bool
     let isPlaying: Bool
+    let isCached: Bool
+    var onToggleCache: (() -> Void)?
     @Environment(ThemeService.self) private var themeService
 
     var body: some View {
@@ -535,14 +617,39 @@ struct TrackRow: View {
                     .foregroundStyle(isCurrentTrack ? themeService.accentColor : .primary)
                     .lineLimit(1)
 
-                if let size = track.fileSize {
-                    Text(formatFileSize(size))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    if isCached {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let size = track.fileSize {
+                        Text(formatFileSize(size))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             Spacer()
+
+            Menu {
+                Button {
+                    onToggleCache?()
+                } label: {
+                    if isCached {
+                        Label("Remove Offline Access", systemImage: "xmark.circle")
+                    } else {
+                        Label("Make Available Offline", systemImage: "arrow.down.circle")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
         }
         .padding(.vertical, 2)
     }

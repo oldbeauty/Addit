@@ -28,7 +28,16 @@ final class AudioCacheService {
 
         guard let driveService else { throw CacheError.notConfigured }
         try await driveService.downloadFile(fileId: track.googleFileId, to: destination)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
+        }
         return destination
+    }
+
+    func removeTrack(_ track: Track) {
+        let url = cacheFilePath(for: track)
+        try? fileManager.removeItem(at: url)
+        NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
     }
 
     func clearCache() throws {
@@ -70,6 +79,10 @@ final class AudioCacheService {
         default: return "audio"
         }
     }
+}
+
+extension Notification.Name {
+    static let audioCacheDidChange = Notification.Name("audioCacheDidChange")
 }
 
 enum CacheError: LocalizedError {
