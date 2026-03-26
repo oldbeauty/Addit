@@ -20,12 +20,24 @@ struct LibraryView: View {
     @AppStorage("libraryViewMode") private var isListMode = false
     @State private var accountToSignOut: String?
     @State private var showSignOutConfirmation = false
+    @State private var searchText = ""
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
+    private var filteredAlbums: [Album] {
+        if searchText.isEmpty { return albums }
+        let query = searchText.lowercased()
+        return albums.filter {
+            $0.name.lowercased().contains(query) ||
+            ($0.artistName?.lowercased().contains(query) ?? false)
+        }
+    }
+
     var body: some View {
         Group {
-            if albums.isEmpty {
+            if !searchText.isEmpty && filteredAlbums.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+            } else if albums.isEmpty {
                 ScrollView {
                     ContentUnavailableView(
                         "No Albums Yet",
@@ -62,7 +74,7 @@ struct LibraryView: View {
                 .environment(\.editMode, .constant(.active))
             } else if isListMode {
                 List {
-                    ForEach(albums) { album in
+                    ForEach(filteredAlbums) { album in
                         NavigationLink(value: album) {
                             HStack(spacing: 12) {
                                 AlbumArtworkThumbnail(album: album, size: 48)
@@ -99,7 +111,7 @@ struct LibraryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(albums) { album in
+                        ForEach(filteredAlbums) { album in
                             NavigationLink(value: album) {
                                 AlbumCard(album: album)
                             }
@@ -125,6 +137,7 @@ struct LibraryView: View {
                 }
             }
         }
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search albums")
         .navigationTitle(isArranging ? "Arrange Library" : "Library")
         .navigationDestination(for: Album.self) { album in
             AlbumDetailView(album: album)
@@ -360,50 +373,56 @@ struct AlbumMetadataEditorSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Cover art
-                    PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .frame(width: coverSize, height: coverSize)
-                                .overlay {
-                                    if let coverImage {
-                                        Image(uiImage: coverImage)
-                                            .resizable()
-                                            .scaledToFill()
-                                    } else {
-                                        Image(systemName: "music.note")
-                                            .font(.system(size: 48))
-                                            .foregroundStyle(.white.opacity(0.8))
-                                    }
-                                }
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .padding(4)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-                                        .foregroundStyle(.secondary.opacity(0.6))
-                                }
-
-                            if isUploadingCover {
+            List {
+                // Cover art section
+                Section {
+                    HStack {
+                        Spacer()
+                        PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
+                            ZStack {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(.ultraThinMaterial)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
                                     .frame(width: coverSize, height: coverSize)
-                                ProgressView()
+                                    .overlay {
+                                        if let coverImage {
+                                            Image(uiImage: coverImage)
+                                                .resizable()
+                                                .scaledToFill()
+                                        } else {
+                                            Image(systemName: "music.note")
+                                                .font(.system(size: 48))
+                                                .foregroundStyle(.white.opacity(0.8))
+                                        }
+                                    }
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .padding(4)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                                            .foregroundStyle(.secondary.opacity(0.6))
+                                    }
+
+                                if isUploadingCover {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(.ultraThinMaterial)
+                                        .frame(width: coverSize, height: coverSize)
+                                    ProgressView()
+                                }
                             }
                         }
+                        .disabled(isUploadingCover)
+                        Spacer()
                     }
-                    .disabled(isUploadingCover)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
 
-                    // Title and artist – left-aligned with cover edge
+                    // Title and artist
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             TextField("Album title", text: $editedTitle)
@@ -428,117 +447,109 @@ struct AlbumMetadataEditorSheet: View {
                                 .foregroundStyle(.tertiary)
                         }
                     }
-                    .frame(width: coverSize + 8, alignment: .leading)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
 
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal)
-                    }
-
-                    // Arrange tracklist
-                    HStack {
-                        if !reorderedItems.isEmpty {
-                            Button {
-                                addDiscMarker()
-                            } label: {
-                                Label("Add disc marker", systemImage: "plus")
-                                    .font(.subheadline)
-                            }
-                            .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
-                        }
-
-                        Spacer()
-
-                        if album.canEdit {
-                            Menu {
-                                Button {
-                                    showAddTrackSheet = true
-                                } label: {
-                                    Label("From Google Drive", systemImage: "cloud")
-                                }
-                                Button {
-                                    showDocumentPicker = true
-                                } label: {
-                                    Label("From iPhone", systemImage: "iphone")
-                                }
-                            } label: {
-                                Label("Add tracks", systemImage: "plus.circle")
-                                    .font(.subheadline)
-                            }
-                            .disabled(isUploadingTracks)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                    if !reorderedItems.isEmpty {
-
-                        VStack(alignment: .leading, spacing: 0) {
-                            List {
-                                ForEach(Array(reorderedItems.enumerated()), id: \.element.id) { index, item in
-                                    Group {
-                                        switch item {
-                                        case .track(let track):
-                                            HStack(spacing: 6) {
-                                                TextField(
-                                                    track.displayName,
-                                                    text: Binding(
-                                                        get: { editedTrackNames[track.googleFileId] ?? track.displayName },
-                                                        set: { editedTrackNames[track.googleFileId] = $0 }
-                                                    )
-                                                )
-                                                .font(.body)
-                                                .lineLimit(1)
-                                                .focused($focusedField, equals: .track(track.googleFileId))
-
-                                                Image(systemName: "pencil")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.tertiary)
-
-                                                if album.canEdit {
-                                                    Button {
-                                                        trackToDelete = track
-                                                    } label: {
-                                                        Image(systemName: "trash")
-                                                            .font(.caption)
-                                                            .foregroundStyle(.red)
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                            }
-                                        case .discMarker:
-                                            let discNumber = reorderedItems[0...index].filter(\.isDiscMarker).count
-                                            HStack {
-                                                Text("Disc \(discNumber)")
-                                                    .font(.subheadline.bold())
-                                                    .foregroundStyle(.secondary)
-                                                Spacer()
-                                                Button {
-                                                    reorderedItems.remove(at: index)
-                                                } label: {
-                                                    Image(systemName: "xmark.circle.fill")
-                                                        .foregroundStyle(.tertiary)
-                                                        .font(.body)
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-                                    }
-                                }
-                                .onMove { source, destination in
-                                    reorderedItems.move(fromOffsets: source, toOffset: destination)
-                                }
-                            }
-                            .listStyle(.plain)
-                            .environment(\.editMode, .constant(.active))
-                            .frame(height: CGFloat(reorderedItems.count) * 44)
-                        }
-                        .padding(.horizontal)
+                            .listRowBackground(Color.clear)
                     }
                 }
-                .padding(.top, 24)
+
+                // Tracklist section
+                if !reorderedItems.isEmpty {
+                    Section {
+                        ForEach(Array(reorderedItems.enumerated()), id: \.element.id) { index, item in
+                            switch item {
+                            case .track(let track):
+                                HStack(spacing: 6) {
+                                    TextField(
+                                        track.displayName,
+                                        text: Binding(
+                                            get: { editedTrackNames[track.googleFileId] ?? track.displayName },
+                                            set: { editedTrackNames[track.googleFileId] = $0 }
+                                        )
+                                    )
+                                    .font(.body)
+                                    .lineLimit(1)
+                                    .focused($focusedField, equals: .track(track.googleFileId))
+
+                                    Image(systemName: "pencil")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+
+                                    if album.canEdit {
+                                        Button {
+                                            trackToDelete = track
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                                .foregroundStyle(.red)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            case .discMarker:
+                                let discNumber = reorderedItems[0...index].filter(\.isDiscMarker).count
+                                HStack {
+                                    Text("Disc \(discNumber)")
+                                        .font(.subheadline.bold())
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button {
+                                        reorderedItems.remove(at: index)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.tertiary)
+                                            .font(.body)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .onMove { source, destination in
+                            reorderedItems.move(fromOffsets: source, toOffset: destination)
+                        }
+                    } header: {
+                        HStack {
+                            if !reorderedItems.isEmpty {
+                                Button {
+                                    addDiscMarker()
+                                } label: {
+                                    Label("Add disc marker", systemImage: "plus")
+                                        .font(.subheadline)
+                                }
+                                .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
+                            }
+
+                            Spacer()
+
+                            if album.canEdit {
+                                Menu {
+                                    Button {
+                                        showAddTrackSheet = true
+                                    } label: {
+                                        Label("From Google Drive", systemImage: "cloud")
+                                    }
+                                    Button {
+                                        showDocumentPicker = true
+                                    } label: {
+                                        Label("From iPhone", systemImage: "iphone")
+                                    }
+                                } label: {
+                                    Label("Add tracks", systemImage: "plus.circle")
+                                        .font(.subheadline)
+                                }
+                                .disabled(isUploadingTracks)
+                            }
+                        }
+                    }
+                }
             }
+            .listStyle(.plain)
+            .environment(\.editMode, .constant(.active))
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Edit Album")
             .navigationBarTitleDisplayMode(.inline)
