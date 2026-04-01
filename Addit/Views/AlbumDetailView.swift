@@ -51,7 +51,7 @@ struct AlbumDetailView: View {
         let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
             ? albumArtService.artworkRefreshVersion
             : 0
-        return "\(album.coverArtTaskID)-\(refreshMarker)"
+        return "\(album.coverArtTaskID)-\(refreshMarker)-\(album.localCoverPath ?? "")"
     }
 
     var body: some View {
@@ -314,7 +314,15 @@ struct AlbumDetailView: View {
             }
         }
         .sheet(isPresented: $showEditSheet, onDismiss: {
-            Task { await syncFromDrive() }
+            if album.isLocal {
+                if !album.cachedTracklist.isEmpty {
+                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
+                } else {
+                    buildDisplayItems(from: nil)
+                }
+            } else {
+                Task { await syncFromDrive() }
+            }
         }) {
             AlbumMetadataEditorSheet(album: album)
         }
@@ -324,7 +332,11 @@ struct AlbumDetailView: View {
         .task {
             if album.isLocal {
                 isSyncing = false
-                buildDisplayItems(from: nil)
+                if !album.cachedTracklist.isEmpty {
+                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
+                } else {
+                    buildDisplayItems(from: nil)
+                }
             } else {
                 await syncFromDrive()
             }

@@ -20,6 +20,7 @@ struct LibraryView: View {
     @AppStorage("libraryViewMode") private var isListMode = false
     @State private var accountToSignOut: String?
     @State private var showSignOutConfirmation = false
+    @State private var showClearLocalConfirmation = false
     @State private var searchText = ""
     @State private var isSearchExpanded = false
     @FocusState private var isSearchFocused: Bool
@@ -143,7 +144,7 @@ struct LibraryView: View {
                                 Label("Arrange", systemImage: "arrow.up.arrow.down")
                             }
                             Button("Remove from Library", role: .destructive) {
-                                modelContext.delete(album)
+                                removeAlbum(album)
                             }
                         }
                         .listRowBackground(Color.clear)
@@ -277,40 +278,41 @@ struct LibraryView: View {
                         }
                     }
                 }
-                if currentSource == .googleDrive {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
-                        // Account list
-                        Section {
-                            ForEach(authService.accountManager.accounts) { account in
-                                Menu {
-                                    if account.email != authService.userEmail {
-                                        Button {
-                                            Task { await authService.switchAccount(to: account.email) }
-                                        } label: {
-                                            Label("Switch to", systemImage: "arrow.right.arrow.left")
+                        if currentSource == .googleDrive {
+                            // Account list
+                            Section {
+                                ForEach(authService.accountManager.accounts) { account in
+                                    Menu {
+                                        if account.email != authService.userEmail {
+                                            Button {
+                                                Task { await authService.switchAccount(to: account.email) }
+                                            } label: {
+                                                Label("Switch to", systemImage: "arrow.right.arrow.left")
+                                            }
                                         }
-                                    }
-                                    Button(role: .destructive) {
-                                        accountToSignOut = account.email
-                                        showSignOutConfirmation = true
+                                        Button(role: .destructive) {
+                                            accountToSignOut = account.email
+                                            showSignOutConfirmation = true
+                                        } label: {
+                                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                                        }
                                     } label: {
-                                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                                    }
-                                } label: {
-                                    Label {
-                                        Text(account.name)
-                                    } icon: {
-                                        if account.email == authService.userEmail {
-                                            Image(systemName: "checkmark")
+                                        Label {
+                                            Text(account.name)
+                                        } icon: {
+                                            if account.email == authService.userEmail {
+                                                Image(systemName: "checkmark")
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Button {
-                                Task { await authService.addAccount() }
-                            } label: {
-                                Label("Add Account", systemImage: "plus")
+                                Button {
+                                    Task { await authService.addAccount() }
+                                } label: {
+                                    Label("Add Account", systemImage: "plus")
+                                }
                             }
                         }
 
@@ -321,10 +323,19 @@ struct LibraryView: View {
                                 Label("Settings", systemImage: "gearshape")
                             }
                         }
+
+                        if currentSource == .localStorage {
+                            Section {
+                                Button(role: .destructive) {
+                                    showClearLocalConfirmation = true
+                                } label: {
+                                    Label("Erase \"iPhone Storage\" Library in Addit", systemImage: "trash")
+                                }
+                            }
+                        }
                     } label: {
                         Image(systemName: "person.crop.circle")
                     }
-                }
                 }
             }
         }
@@ -370,6 +381,14 @@ struct LibraryView: View {
         } message: {
             Text("Your library and downloads for this account will be erased, but no Google Drive data will be modified.")
         }
+        .alert("Erase \"iPhone Storage\" Library?", isPresented: $showClearLocalConfirmation) {
+            Button("Erase", role: .destructive) {
+                clearLocalStorage()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("All imported albums and audio files will be permanently deleted.\n\nThis applies only to your \"iPhone Storage\" library within Addit, and will not modify any data outside of Addit, or data in your other Addit libraries.")
+        }
         .task {
             initializeDisplayOrder()
         }
@@ -378,6 +397,41 @@ struct LibraryView: View {
                 Color.clear.frame(height: 64)
             }
         }
+    }
+
+    private func clearLocalStorage() {
+        // Stop playback if current track is local
+        if playerService.currentTrack?.isLocal == true {
+            playerService.pause()
+            playerService.queue.removeAll()
+            playerService.userQueue.removeAll()
+            playerService.currentIndex = 0
+        }
+
+        // Delete all local albums from SwiftData
+        let localAlbums = albums.filter { $0.isLocal }
+        for album in localAlbums {
+            modelContext.delete(album)
+        }
+        try? modelContext.save()
+
+        // Wipe the entire LocalAlbums directory
+        let localBase = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalAlbums", isDirectory: true)
+        try? FileManager.default.removeItem(at: localBase)
+    }
+
+    private func removeAlbum(_ album: Album) {
+        // Clean up local files if it's a local album
+        if album.isLocal {
+            let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+            let localBase = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("LocalAlbums", isDirectory: true)
+                .appendingPathComponent(albumId, isDirectory: true)
+            try? FileManager.default.removeItem(at: localBase)
+        }
+        modelContext.delete(album)
+        try? modelContext.save()
     }
 
     private func handleLocalImport(_ result: Result<[URL], Error>) async {
@@ -392,13 +446,23 @@ struct LibraryView: View {
 
         let audioExtensions: Set<String> = ["mp3", "m4a", "wav", "aac", "aiff", "flac", "alac", "ogg", "wma", "caf"]
 
+        // Start accessing all security-scoped resources upfront
+        var accessedURLs: [URL] = []
+        for url in urls {
+            if url.startAccessingSecurityScopedResource() {
+                accessedURLs.append(url)
+            }
+        }
+        defer {
+            for url in accessedURLs {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
         // Collect audio files — if a folder was selected, scan it; otherwise use files directly
         var audioFilesByAlbum: [(albumName: String, files: [URL])] = []
 
-        for url in urls {
-            guard url.startAccessingSecurityScopedResource() else { continue }
-            defer { url.stopAccessingSecurityScopedResource() }
-
+        for url in accessedURLs {
             var isDir: ObjCBool = false
             fm.fileExists(atPath: url.path, isDirectory: &isDir)
 
@@ -418,7 +482,7 @@ struct LibraryView: View {
         }
 
         // Merge individual files selected together into one album if multiple
-        let singleFiles = audioFilesByAlbum.filter { $0.files.count == 1 && !urls.contains(where: { u in
+        let singleFiles = audioFilesByAlbum.filter { $0.files.count == 1 && !accessedURLs.contains(where: { u in
             var isDir: ObjCBool = false
             fm.fileExists(atPath: u.path, isDirectory: &isDir)
             return isDir.boolValue
@@ -426,7 +490,8 @@ struct LibraryView: View {
         if singleFiles.count > 1 {
             let merged = singleFiles.flatMap { $0.files }
             audioFilesByAlbum.removeAll { $0.files.count == 1 }
-            audioFilesByAlbum.append((albumName: "Imported Album", files: merged))
+            let existingCount = albums.filter { $0.isLocal }.count
+            audioFilesByAlbum.append((albumName: "Imported Album \(existingCount + 1)", files: merged))
         }
 
         for (albumName, files) in audioFilesByAlbum {
@@ -450,9 +515,11 @@ struct LibraryView: View {
                 let fileName = fileURL.lastPathComponent
                 let destURL = albumDir.appendingPathComponent(fileName)
 
-                // Copy file to app's local storage
+                // Copy file to app's local storage (read/write to avoid sandbox restrictions)
                 if !fm.fileExists(atPath: destURL.path) {
-                    try? fm.copyItem(at: fileURL, to: destURL)
+                    if let data = try? Data(contentsOf: fileURL) {
+                        try? data.write(to: destURL)
+                    }
                 }
 
                 let fileSize = (try? fm.attributesOfItem(atPath: destURL.path)[.size] as? Int64) ?? 0
@@ -514,9 +581,8 @@ struct LibraryView: View {
 
             // Delete all albums and tracks from SwiftData for this account
             for album in albums {
-                modelContext.delete(album)
+                removeAlbum(album)
             }
-            try? modelContext.save()
         }
 
         // Clear this account's caches
@@ -804,10 +870,16 @@ struct AlbumMetadataEditorSheet: View {
             .task {
                 editedTitle = album.name
                 editedArtist = album.artistName ?? ""
-                let resolution = await albumArtService.resolveAlbumArt(for: album)
-                coverImage = resolution.image
-                await resolveFolderOwnership()
-                await resolveAdditDataFileId()
+                if album.isLocal {
+                    if let path = album.localCoverPath {
+                        coverImage = UIImage(contentsOfFile: path)
+                    }
+                } else {
+                    let resolution = await albumArtService.resolveAlbumArt(for: album)
+                    coverImage = resolution.image
+                    await resolveFolderOwnership()
+                    await resolveAdditDataFileId()
+                }
                 await loadTracklistItems()
             }
             .onChange(of: selectedCoverPhoto) { _, newValue in
@@ -900,23 +972,34 @@ struct AlbumMetadataEditorSheet: View {
             album.name = trimmedTitle
             album.artistName = newArtist
 
-            // Update track names and numbers
-            let allTracks = reorderedItems.compactMap(\.asTrack)
-            for (index, track) in allTracks.enumerated() {
-                if let newName = editedTrackNames[track.googleFileId], newName != track.name {
-                    // Rename file on disk
-                    if let oldPath = track.localFilePath {
-                        let oldURL = URL(fileURLWithPath: oldPath)
-                        let ext = oldURL.pathExtension
-                        let newFileName = newName.hasSuffix(".\(ext)") ? newName : "\(newName).\(ext)"
-                        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(newFileName)
-                        try? FileManager.default.moveItem(at: oldURL, to: newURL)
-                        track.localFilePath = newURL.path
-                        track.name = newFileName
+            // Update track names, numbers, and persist tracklist with disc markers
+            var tracklist: [String] = []
+            var trackIndex = 0
+            for item in reorderedItems {
+                switch item {
+                case .track(let track):
+                    if let newName = editedTrackNames[track.googleFileId], newName != track.displayName {
+                        // Rename file on disk
+                        if let oldPath = track.localFilePath {
+                            let oldURL = URL(fileURLWithPath: oldPath)
+                            let ext = oldURL.pathExtension
+                            let newFileName = "\(newName).\(ext)"
+                            let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(newFileName)
+                            if oldURL != newURL {
+                                try? FileManager.default.moveItem(at: oldURL, to: newURL)
+                                track.localFilePath = newURL.path
+                                track.name = newFileName
+                            }
+                        }
                     }
+                    trackIndex += 1
+                    track.trackNumber = trackIndex
+                    tracklist.append(track.name)
+                case .discMarker:
+                    tracklist.append("---disc---")
                 }
-                track.trackNumber = index + 1
             }
+            album.cachedTracklist = tracklist
             try? modelContext.save()
             dismiss()
             return
@@ -980,6 +1063,7 @@ struct AlbumMetadataEditorSheet: View {
             let coverURL = localBase.appendingPathComponent("cover.jpg")
             try? jpegData.write(to: coverURL)
             album.localCoverPath = coverURL.path
+            coverImage = croppedImage
             try? modelContext.save()
             return
         }
@@ -1098,15 +1182,27 @@ struct AlbumMetadataEditorSheet: View {
     }
 
     private func deleteTrack(_ track: Track) async {
-        do {
-            try await driveService.deleteFile(fileId: track.googleFileId)
+        if track.isLocal {
+            // Delete local file from disk
+            if let path = track.localFilePath {
+                try? FileManager.default.removeItem(atPath: path)
+            }
             reorderedItems.removeAll { $0.id == track.googleFileId }
             editedTrackNames.removeValue(forKey: track.googleFileId)
             modelContext.delete(track)
             album.trackCount = max(0, album.trackCount - 1)
             try? modelContext.save()
-        } catch {
-            errorMessage = "Failed to delete: \(error.localizedDescription)"
+        } else {
+            do {
+                try await driveService.deleteFile(fileId: track.googleFileId)
+                reorderedItems.removeAll { $0.id == track.googleFileId }
+                editedTrackNames.removeValue(forKey: track.googleFileId)
+                modelContext.delete(track)
+                album.trackCount = max(0, album.trackCount - 1)
+                try? modelContext.save()
+            } catch {
+                errorMessage = "Failed to delete: \(error.localizedDescription)"
+            }
         }
         trackToDelete = nil
     }
@@ -1294,7 +1390,7 @@ struct AlbumArtworkThumbnail: View {
         let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
             ? albumArtService.artworkRefreshVersion
             : 0
-        return "\(album.coverArtTaskID)-\(refreshMarker)"
+        return "\(album.coverArtTaskID)-\(refreshMarker)-\(album.localCoverPath ?? "")"
     }
 
     var body: some View {

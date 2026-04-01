@@ -277,6 +277,8 @@ final class AudioPlayerService {
             let fileURL: URL
             if let localURL = track.localFileURL {
                 fileURL = localURL
+                let exists = FileManager.default.fileExists(atPath: localURL.path)
+                print("[Player] Local track: \(track.name), path: \(localURL.path), exists: \(exists)")
             } else {
                 guard let cacheService else { throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Cache service not available"]) }
                 fileURL = try await cacheService.cacheTrack(track)
