@@ -741,7 +741,14 @@ final class AudioPlayerService {
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
-        if let coverFileId = currentTrack?.album?.coverFileId, let albumArtService {
+        if let album = currentTrack?.album, album.isLocal {
+            if let path = album.resolvedLocalCoverPath, let image = UIImage(contentsOfFile: path) {
+                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                var updatedInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                updatedInfo[MPMediaItemPropertyArtwork] = artwork
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
+            }
+        } else if let coverFileId = currentTrack?.album?.coverFileId, let albumArtService {
             Task {
                 if let image = await albumArtService.image(for: coverFileId) {
                     let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }

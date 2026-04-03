@@ -32,7 +32,26 @@ final class Track {
 
     var localFileURL: URL? {
         guard let localFilePath else { return nil }
-        return URL(fileURLWithPath: localFilePath)
+        // If it's already an absolute path, use it directly (legacy data)
+        // Otherwise treat it as relative to Documents directory
+        if localFilePath.hasPrefix("/") {
+            // Legacy absolute path — check if it still works
+            if FileManager.default.fileExists(atPath: localFilePath) {
+                return URL(fileURLWithPath: localFilePath)
+            }
+            // Absolute path is stale (container UUID changed) — try to extract relative portion
+            if let range = localFilePath.range(of: "Documents/") {
+                let relativePath = String(localFilePath[range.upperBound...])
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let resolved = docs.appendingPathComponent(relativePath)
+                if FileManager.default.fileExists(atPath: resolved.path) {
+                    return resolved
+                }
+            }
+            return URL(fileURLWithPath: localFilePath)
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent(localFilePath)
     }
 
     var fileExtension: String {

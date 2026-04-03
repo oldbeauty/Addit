@@ -350,7 +350,7 @@ struct AlbumDetailView: View {
         }
         .task(id: artworkTaskID) {
             if album.isLocal {
-                if let coverPath = album.localCoverPath {
+                if let coverPath = album.resolvedLocalCoverPath {
                     albumImage = UIImage(contentsOfFile: coverPath)
                 }
             } else {
@@ -427,36 +427,62 @@ struct AlbumDetailView: View {
                 let albumDir = tempDir.appendingPathComponent(album.name)
                 try fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
 
-                // Download all tracks
-                for track in sortedTracks {
-                    let fileURL = try await cacheService.cacheTrack(track)
-                    cachedTrackIds.insert(track.googleFileId)
-                    let destination = albumDir.appendingPathComponent(track.name)
-                    try fm.copyItem(at: fileURL, to: destination)
-                }
-
-                // Download cover if present
-                if let coverFileId = album.coverFileId {
-                    let coverData = try await driveService.downloadFileData(fileId: coverFileId)
-                    let ext: String
-                    switch album.coverMimeType {
-                    case "image/png": ext = "png"
-                    case "image/gif": ext = "gif"
-                    case "image/webp": ext = "webp"
-                    default: ext = "jpg"
+                if album.isLocal {
+                    // Copy all local tracks
+                    for track in sortedTracks {
+                        guard let sourceURL = track.localFileURL,
+                              fm.fileExists(atPath: sourceURL.path) else { continue }
+                        let destination = albumDir.appendingPathComponent(track.name)
+                        try fm.copyItem(at: sourceURL, to: destination)
                     }
-                    let coverURL = albumDir.appendingPathComponent("cover.\(ext)")
-                    try coverData.write(to: coverURL)
-                }
 
-                // Download addit-data if present
-                if let additDataId = album.additDataFileId {
-                    let additData = try await driveService.downloadFileData(fileId: additDataId)
+                    // Copy cover if present
+                    if let coverPath = album.resolvedLocalCoverPath,
+                       fm.fileExists(atPath: coverPath) {
+                        let coverURL = albumDir.appendingPathComponent("cover.jpg")
+                        try fm.copyItem(atPath: coverPath, toPath: coverURL.path)
+                    }
+
+                    // Generate .addit-data from cachedTracklist + artist
+                    let metadata = AdditMetadata(
+                        tracklist: album.cachedTracklist.isEmpty ? sortedTracks.map(\.name) : album.cachedTracklist,
+                        artist: album.artistName
+                    )
+                    let additData = try JSONEncoder().encode(metadata)
                     let additURL = albumDir.appendingPathComponent(".addit-data")
                     try additData.write(to: additURL)
+                } else {
+                    // Download all tracks from Drive
+                    for track in sortedTracks {
+                        let fileURL = try await cacheService.cacheTrack(track)
+                        cachedTrackIds.insert(track.googleFileId)
+                        let destination = albumDir.appendingPathComponent(track.name)
+                        try fm.copyItem(at: fileURL, to: destination)
+                    }
+
+                    // Download cover if present
+                    if let coverFileId = album.coverFileId {
+                        let coverData = try await driveService.downloadFileData(fileId: coverFileId)
+                        let ext: String
+                        switch album.coverMimeType {
+                        case "image/png": ext = "png"
+                        case "image/gif": ext = "gif"
+                        case "image/webp": ext = "webp"
+                        default: ext = "jpg"
+                        }
+                        let coverURL = albumDir.appendingPathComponent("cover.\(ext)")
+                        try coverData.write(to: coverURL)
+                    }
+
+                    // Download addit-data if present
+                    if let additDataId = album.additDataFileId {
+                        let additData = try await driveService.downloadFileData(fileId: additDataId)
+                        let additURL = albumDir.appendingPathComponent(".addit-data")
+                        try additData.write(to: additURL)
+                    }
                 }
 
-                // Create zip using FileManager's built-in support (NSFileCoordinator)
+                // Create zip using NSFileCoordinator
                 let zipURL = tempDir.appendingPathComponent("\(album.name).zip")
                 let coordinator = NSFileCoordinator()
                 var coordinatorError: NSError?

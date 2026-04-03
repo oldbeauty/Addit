@@ -19,7 +19,7 @@ struct NowPlayingView: View {
         let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId
             ? albumArtService.artworkRefreshVersion
             : 0
-        return "\(album.coverArtTaskID)-\(refreshMarker)"
+        return "\(album.coverArtTaskID)-\(refreshMarker)-\(album.localCoverPath ?? "")"
     }
 
     var body: some View {
@@ -211,9 +211,17 @@ struct NowPlayingView: View {
                 albumImage = nil
                 return
             }
-            let resolution = await albumArtService.resolveAlbumArt(for: album)
-            albumImage = resolution.image
-            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            if album.isLocal {
+                if let path = album.resolvedLocalCoverPath {
+                    albumImage = UIImage(contentsOfFile: path)
+                } else {
+                    albumImage = nil
+                }
+            } else {
+                let resolution = await albumArtService.resolveAlbumArt(for: album)
+                albumImage = resolution.image
+                albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            }
         }
     }
 

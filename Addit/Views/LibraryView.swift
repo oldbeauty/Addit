@@ -218,6 +218,7 @@ struct LibraryView: View {
                                 .font(.caption.weight(.semibold))
                         }
                         .foregroundStyle(.primary)
+                        .fixedSize()
                     }
                 }
             }
@@ -532,7 +533,7 @@ struct LibraryView: View {
                     mimeType: mimeType,
                     fileSize: fileSize,
                     trackNumber: index + 1,
-                    localFilePath: destURL.path
+                    localFilePath: "LocalAlbums/\(albumId)/\(fileName)"
                 )
                 modelContext.insert(track)
             }
@@ -871,7 +872,7 @@ struct AlbumMetadataEditorSheet: View {
                 editedTitle = album.name
                 editedArtist = album.artistName ?? ""
                 if album.isLocal {
-                    if let path = album.localCoverPath {
+                    if let path = album.resolvedLocalCoverPath {
                         coverImage = UIImage(contentsOfFile: path)
                     }
                 } else {
@@ -980,14 +981,17 @@ struct AlbumMetadataEditorSheet: View {
                 case .track(let track):
                     if let newName = editedTrackNames[track.googleFileId], newName != track.displayName {
                         // Rename file on disk
-                        if let oldPath = track.localFilePath {
-                            let oldURL = URL(fileURLWithPath: oldPath)
+                        if let oldURL = track.localFileURL {
                             let ext = oldURL.pathExtension
                             let newFileName = "\(newName).\(ext)"
                             let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(newFileName)
                             if oldURL != newURL {
                                 try? FileManager.default.moveItem(at: oldURL, to: newURL)
-                                track.localFilePath = newURL.path
+                                // Store relative path
+                                if let localFilePath = track.localFilePath,
+                                   let lastSlash = localFilePath.range(of: "/", options: .backwards) {
+                                    track.localFilePath = localFilePath[localFilePath.startIndex..<lastSlash.upperBound] + newFileName
+                                }
                                 track.name = newFileName
                             }
                         }
@@ -1062,7 +1066,7 @@ struct AlbumMetadataEditorSheet: View {
             try? FileManager.default.createDirectory(at: localBase, withIntermediateDirectories: true)
             let coverURL = localBase.appendingPathComponent("cover.jpg")
             try? jpegData.write(to: coverURL)
-            album.localCoverPath = coverURL.path
+            album.localCoverPath = "LocalAlbums/\(albumId)/cover.jpg"
             coverImage = croppedImage
             try? modelContext.save()
             return
@@ -1184,8 +1188,8 @@ struct AlbumMetadataEditorSheet: View {
     private func deleteTrack(_ track: Track) async {
         if track.isLocal {
             // Delete local file from disk
-            if let path = track.localFilePath {
-                try? FileManager.default.removeItem(atPath: path)
+            if let url = track.localFileURL {
+                try? FileManager.default.removeItem(at: url)
             }
             reorderedItems.removeAll { $0.id == track.googleFileId }
             editedTrackNames.removeValue(forKey: track.googleFileId)
@@ -1421,7 +1425,7 @@ struct AlbumArtworkThumbnail: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .onAppear {
                 if album.isLocal {
-                    if image == nil, let coverPath = album.localCoverPath {
+                    if image == nil, let coverPath = album.resolvedLocalCoverPath {
                         image = UIImage(contentsOfFile: coverPath)
                     }
                 } else {
