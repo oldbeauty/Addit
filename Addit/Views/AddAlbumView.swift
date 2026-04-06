@@ -378,3 +378,58 @@ struct FolderBrowserView: View {
         isLoading = false
     }
 }
+
+struct CopyAlbumFromDriveView: View {
+    let onCopy: (DriveItem, [DriveItem]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedSource: FolderSource = .personal
+    @State private var searchText = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Source", selection: $selectedSource) {
+                    ForEach(FolderSource.allCases, id: \.self) { source in
+                        Text(source.rawValue).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                FolderBrowserView(
+                    folderId: nil,
+                    folderName: selectedSource.rawValue,
+                    source: selectedSource,
+                    existingFolderIds: [],
+                    onAdd: { folder, audioFiles in
+                        onCopy(folder, audioFiles)
+                        dismiss()
+                    }
+                )
+                .id(selectedSource)
+            }
+            .navigationDestination(for: DriveItem.self) { folder in
+                FolderBrowserView(
+                    folderId: folder.id,
+                    folderName: folder.name,
+                    source: selectedSource,
+                    existingFolderIds: [],
+                    onAdd: { folder, audioFiles in
+                        onCopy(folder, audioFiles)
+                        dismiss()
+                    }
+                )
+            }
+            .searchable(text: $searchText, prompt: "Search folders")
+            .navigationTitle("Copy from Google Drive")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}

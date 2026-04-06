@@ -32,6 +32,16 @@ struct AlbumDetailView: View {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
     }
 
+    /// Fetches tracks directly from the model context, bypassing the potentially stale relationship
+    private func fetchAllTracks() -> [Track] {
+        let folderId = album.googleFolderId
+        let descriptor = FetchDescriptor<Track>(
+            predicate: #Predicate { $0.album?.googleFolderId == folderId },
+            sortBy: [SortDescriptor(\.trackNumber)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? album.tracks.sorted { $0.trackNumber < $1.trackNumber }
+    }
+
     private var filteredDisplayItems: [TracklistItem] {
         if album.showHiddenTracks { return displayItems }
         return displayItems.filter {
@@ -386,10 +396,11 @@ struct AlbumDetailView: View {
         .task {
             if album.isLocal {
                 isSyncing = false
+                let allTracks = fetchAllTracks()
                 if !album.cachedTracklist.isEmpty {
-                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
+                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
                 } else {
-                    buildDisplayItems(from: nil)
+                    buildDisplayItems(from: nil, tracks: allTracks)
                 }
             } else {
                 await syncFromDrive()
@@ -398,6 +409,16 @@ struct AlbumDetailView: View {
         }
         .task(id: "\(playableTracks.map(\.googleFileId))") {
             await calculateAlbumDuration()
+        }
+        .onChange(of: album.tracks.count) {
+            if album.isLocal {
+                let allTracks = fetchAllTracks()
+                if !album.cachedTracklist.isEmpty {
+                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
+                } else {
+                    buildDisplayItems(from: nil, tracks: allTracks)
+                }
+            }
         }
         .onChange(of: playerService.currentTrack?.googleFileId) {
             refreshCachedState()
@@ -605,6 +626,17 @@ struct AlbumDetailView: View {
     // MARK: - Sync
 
     private func syncFromDrive() async {
+        // Safety: never sync local albums against Drive
+        guard !album.isLocal, !album.googleFolderId.hasPrefix("local_") else {
+            isSyncing = false
+            if !album.cachedTracklist.isEmpty {
+                buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
+            } else {
+                buildDisplayItems(from: nil)
+            }
+            return
+        }
+
         isSyncing = true
         syncError = nil
         defer { isSyncing = false }
@@ -754,9 +786,10 @@ struct AlbumDetailView: View {
         album.cachedTracklist = metadata?.tracklist ?? []
     }
 
-    private func buildDisplayItems(from metadata: AdditMetadata?) {
+    private func buildDisplayItems(from metadata: AdditMetadata?, tracks: [Track]? = nil) {
+        let allTracks = tracks ?? album.tracks.sorted { $0.trackNumber < $1.trackNumber }
         guard let orderedNames = metadata?.tracklist, !orderedNames.isEmpty else {
-            displayItems = sortedTracks.map { .track($0) }
+            displayItems = allTracks.map { .track($0) }
             return
         }
 
@@ -767,16 +800,15 @@ struct AlbumDetailView: View {
             if name.hasPrefix(AdditMetadata.discMarkerPrefix) {
                 let label = String(name.dropFirst(AdditMetadata.discMarkerPrefix.count))
                 items.append(.discMarker(id: UUID(), label: label))
-            } else if let track = album.tracks.first(where: { $0.name == name && !matchedIds.contains($0.googleFileId) }) {
+            } else if let track = allTracks.first(where: { $0.name == name && !matchedIds.contains($0.googleFileId) }) {
                 items.append(.track(track))
                 matchedIds.insert(track.googleFileId)
             }
         }
 
         // Append any tracks not in the tracklist
-        let unmatched = album.tracks
+        let unmatched = allTracks
             .filter { !matchedIds.contains($0.googleFileId) }
-            .sorted { $0.trackNumber < $1.trackNumber }
         for track in unmatched {
             items.append(.track(track))
         }

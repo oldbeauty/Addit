@@ -27,6 +27,9 @@ struct LibraryView: View {
     @AppStorage("storageSource") private var storageSource: String = StorageSource.googleDrive.rawValue
     @State private var showLocalImporter = false
     @State private var isImportingLocal = false
+    @State private var importProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
+    @State private var showLocalDriveAudioPicker = false
+    @State private var showCopyFromDrive = false
 
     private var currentSource: StorageSource {
         StorageSource(rawValue: storageSource) ?? .googleDrive
@@ -271,8 +274,32 @@ struct LibraryView: View {
                                 Image(systemName: "plus")
                             }
                         } else {
-                            Button {
-                                showLocalImporter = true
+                            Menu {
+                                Menu {
+                                    Button {
+                                        // Create empty local album
+                                        createEmptyLocalAlbum()
+                                    } label: {
+                                        Label("Create Empty", systemImage: "rectangle.badge.plus")
+                                    }
+                                    Button {
+                                        showLocalImporter = true
+                                    } label: {
+                                        Label("Add from iPhone", systemImage: "iphone")
+                                    }
+                                    Button {
+                                        showLocalDriveAudioPicker = true
+                                    } label: {
+                                        Label("Add from Google Drive", systemImage: "cloud")
+                                    }
+                                } label: {
+                                    Label("Create New", systemImage: "plus.rectangle.on.folder")
+                                }
+                                Button {
+                                    showCopyFromDrive = true
+                                } label: {
+                                    Label("Copy from Google Drive", systemImage: "folder.badge.plus")
+                                }
                             } label: {
                                 Image(systemName: "plus")
                             }
@@ -348,6 +375,16 @@ struct LibraryView: View {
                 metadataEditorAlbum = newAlbum
             }
         }
+        .sheet(isPresented: $showLocalDriveAudioPicker) {
+            DriveAudioPickerView(targetFolderId: "") { files in
+                Task { await createLocalAlbumFromDriveFiles(files) }
+            }
+        }
+        .sheet(isPresented: $showCopyFromDrive) {
+            CopyAlbumFromDriveView { folder, audioFiles in
+                Task { await copyDriveAlbumToLocal(folder: folder, audioFiles: audioFiles) }
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
@@ -366,9 +403,41 @@ struct LibraryView: View {
                 Color.black.opacity(0.3)
                     .ignoresSafeArea()
                     .overlay {
-                        ProgressView("Importing...")
-                            .padding(24)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.2)
+
+                            if importProgress.total > 0 {
+                                Text("Track \(importProgress.current) of \(importProgress.total)")
+                                    .font(.subheadline.bold())
+
+                                Text(importProgress.trackName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+
+                                // Progress bar
+                                GeometryReader { geo in
+                                    let fraction = CGFloat(importProgress.current) / CGFloat(max(importProgress.total, 1))
+                                    ZStack(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.primary.opacity(0.1))
+                                        Capsule()
+                                            .fill(Color.primary.opacity(0.5))
+                                            .frame(width: geo.size.width * fraction)
+                                            .animation(.easeInOut(duration: 0.3), value: importProgress.current)
+                                    }
+                                }
+                                .frame(height: 4)
+                                .padding(.horizontal, 4)
+                            } else {
+                                Text("Importing...")
+                                    .font(.subheadline)
+                            }
+                        }
+                        .frame(width: 220)
+                        .padding(24)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
             }
         }
@@ -431,8 +500,23 @@ struct LibraryView: View {
                 .appendingPathComponent(albumId, isDirectory: true)
             try? FileManager.default.removeItem(at: localBase)
         }
+        // Delete all tracks using direct query to avoid stale relationship
+        let folderId = album.googleFolderId
+        let descriptor = FetchDescriptor<Track>(
+            predicate: #Predicate { $0.album?.googleFolderId == folderId }
+        )
+        if let tracks = try? modelContext.fetch(descriptor) {
+            for track in tracks {
+                modelContext.delete(track)
+            }
+        }
         modelContext.delete(album)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            print("[Library] Album deleted successfully: \(album.name)")
+        } catch {
+            print("[Library] Failed to save after delete: \(error)")
+        }
     }
 
     private func handleLocalImport(_ result: Result<[URL], Error>) async {
@@ -495,6 +579,7 @@ struct LibraryView: View {
             audioFilesByAlbum.append((albumName: "Imported Album \(existingCount + 1)", files: merged))
         }
 
+        var createdAlbums: [Album] = []
         for (albumName, files) in audioFilesByAlbum {
             let albumId = UUID().uuidString
             let albumDir = localBase.appendingPathComponent(albumId, isDirectory: true)
@@ -511,9 +596,13 @@ struct LibraryView: View {
                 storageSource: .localStorage
             )
             modelContext.insert(album)
+            createdAlbums.append(album)
 
             for (index, fileURL) in files.enumerated() {
                 let fileName = fileURL.lastPathComponent
+                await MainActor.run {
+                    importProgress = (current: index + 1, total: files.count, trackName: fileName)
+                }
                 let destURL = albumDir.appendingPathComponent(fileName)
 
                 // Copy file to app's local storage (read/write to avoid sandbox restrictions)
@@ -540,7 +629,216 @@ struct LibraryView: View {
         }
 
         try? modelContext.save()
-        await MainActor.run { isImportingLocal = false }
+        await MainActor.run { isImportingLocal = false; importProgress = (0, 0, "") }
+    }
+
+    private func createEmptyLocalAlbum() {
+        let existingCount = albums.filter { $0.isLocal }.count
+        let albumId = UUID().uuidString
+        let fm = FileManager.default
+        let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalAlbums", isDirectory: true)
+            .appendingPathComponent(albumId, isDirectory: true)
+        try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+        let album = Album(
+            googleFolderId: "local_\(albumId)",
+            name: "Imported Album \(existingCount + 1)",
+            trackCount: 0,
+            dateAdded: .now,
+            canEdit: true,
+            isFolderOwner: true,
+            displayOrder: (albums.map(\.displayOrder).max() ?? 0) + 1,
+            storageSource: .localStorage
+        )
+        modelContext.insert(album)
+        try? modelContext.save()
+        metadataEditorAlbum = album
+    }
+
+    private func createLocalAlbumFromDriveFiles(_ files: [DriveItem]) async {
+        guard !files.isEmpty else { return }
+        await MainActor.run { isImportingLocal = true }
+
+        let fm = FileManager.default
+        let existingCount = albums.filter { $0.isLocal }.count
+        let albumId = UUID().uuidString
+        let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalAlbums", isDirectory: true)
+            .appendingPathComponent(albumId, isDirectory: true)
+        try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+        let album = Album(
+            googleFolderId: "local_\(albumId)",
+            name: "Imported Album \(existingCount + 1)",
+            trackCount: files.count,
+            dateAdded: .now,
+            canEdit: true,
+            isFolderOwner: true,
+            displayOrder: (albums.map(\.displayOrder).max() ?? 0) + 1,
+            storageSource: .localStorage
+        )
+        modelContext.insert(album)
+
+        for (index, file) in files.enumerated() {
+            do {
+                await MainActor.run {
+                    importProgress = (current: index + 1, total: files.count, trackName: file.name)
+                }
+                let data = try await driveService.downloadFileData(fileId: file.id)
+                let destURL = albumDir.appendingPathComponent(file.name)
+                try data.write(to: destURL)
+
+                let track = Track(
+                    googleFileId: "local_\(UUID().uuidString)",
+                    name: file.name,
+                    album: album,
+                    mimeType: file.mimeType,
+                    fileSize: Int64(data.count),
+                    trackNumber: index + 1,
+                    localFilePath: "LocalAlbums/\(albumId)/\(file.name)"
+                )
+                modelContext.insert(track)
+            } catch {
+                print("Failed to download Drive file \(file.name): \(error)")
+            }
+        }
+
+        try? modelContext.save()
+        await MainActor.run { isImportingLocal = false; importProgress = (0, 0, "") }
+    }
+
+    private func copyDriveAlbumToLocal(folder: DriveItem, audioFiles: [DriveItem]) async {
+        await MainActor.run { isImportingLocal = true }
+
+        let fm = FileManager.default
+        let albumId = UUID().uuidString
+        let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalAlbums", isDirectory: true)
+            .appendingPathComponent(albumId, isDirectory: true)
+        try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+        // Fetch all audio files from the folder (handle pagination)
+        var allAudioFiles: [DriveItem] = []
+        var pageToken: String? = nil
+        repeat {
+            do {
+                let response = try await driveService.listAudioFiles(inFolder: folder.id, pageToken: pageToken)
+                allAudioFiles.append(contentsOf: response.files)
+                pageToken = response.nextPageToken
+            } catch {
+                print("[CopyFromDrive] Failed to list audio files: \(error)")
+                break
+            }
+        } while pageToken != nil
+
+        print("[CopyFromDrive] Found \(allAudioFiles.count) audio files in \(folder.name)")
+
+        // Download all audio files to disk first, before inserting anything into SwiftData
+        struct DownloadedTrack {
+            let name: String
+            let mimeType: String
+            let fileSize: Int64
+            let relativePath: String
+        }
+        var downloadedTracks: [DownloadedTrack] = []
+
+        for (index, file) in allAudioFiles.enumerated() {
+            do {
+                await MainActor.run {
+                    importProgress = (current: index + 1, total: allAudioFiles.count, trackName: file.name)
+                }
+                let data = try await driveService.downloadFileData(fileId: file.id)
+                guard !data.isEmpty else {
+                    print("[CopyFromDrive] Empty data for \(file.name), skipping")
+                    continue
+                }
+                let destURL = albumDir.appendingPathComponent(file.name)
+                try data.write(to: destURL)
+                downloadedTracks.append(DownloadedTrack(
+                    name: file.name,
+                    mimeType: file.mimeType,
+                    fileSize: Int64(data.count),
+                    relativePath: "LocalAlbums/\(albumId)/\(file.name)"
+                ))
+            } catch {
+                print("[CopyFromDrive] Failed to download \(file.name): \(error)")
+            }
+        }
+        print("[CopyFromDrive] Downloaded \(downloadedTracks.count)/\(allAudioFiles.count) tracks")
+
+        // Fetch metadata from .addit-data
+        var albumArtist: String?
+        var tracklist: [String]?
+        do {
+            if let additDataItem = try await driveService.findFile(named: ".addit-data", inFolder: folder.id) {
+                let data = try await driveService.downloadFileData(fileId: additDataItem.id)
+                let metadata = try JSONDecoder().decode(AdditMetadata.self, from: data)
+                albumArtist = metadata.artist
+                tracklist = metadata.tracklist
+            }
+        } catch {
+            print("[CopyFromDrive] Failed to fetch .addit-data: \(error)")
+        }
+
+        // Fetch cover image
+        var coverRelativePath: String?
+        do {
+            if let coverItem = try await driveService.findCoverImage(inFolder: folder.id) {
+                let coverData = try await driveService.downloadFileData(fileId: coverItem.id)
+                let coverURL = albumDir.appendingPathComponent("cover.jpg")
+                try coverData.write(to: coverURL)
+                coverRelativePath = "LocalAlbums/\(albumId)/cover.jpg"
+            }
+        } catch {
+            print("[CopyFromDrive] Failed to fetch cover: \(error)")
+        }
+
+        // Now insert everything into SwiftData in one batch
+        let album = Album(
+            googleFolderId: "local_\(albumId)",
+            name: folder.name,
+            artistName: albumArtist,
+            trackCount: downloadedTracks.count,
+            dateAdded: .now,
+            canEdit: true,
+            isFolderOwner: true,
+            displayOrder: (albums.map(\.displayOrder).max() ?? 0) + 1,
+            storageSource: .localStorage
+        )
+        album.localCoverPath = coverRelativePath
+        if let tracklist, !tracklist.isEmpty {
+            album.cachedTracklist = tracklist
+        }
+        modelContext.insert(album)
+
+        // Determine track order from tracklist
+        let orderedTrackNames: [String]? = tracklist?.filter { !$0.hasPrefix(AdditMetadata.discMarkerPrefix) }
+
+        for (index, dl) in downloadedTracks.enumerated() {
+            let trackNumber: Int
+            if let orderedNames = orderedTrackNames,
+               let pos = orderedNames.firstIndex(of: dl.name) {
+                trackNumber = pos + 1
+            } else {
+                trackNumber = index + 1
+            }
+
+            let track = Track(
+                googleFileId: "local_\(UUID().uuidString)",
+                name: dl.name,
+                album: album,
+                mimeType: dl.mimeType,
+                fileSize: dl.fileSize,
+                trackNumber: trackNumber,
+                localFilePath: dl.relativePath
+            )
+            modelContext.insert(track)
+        }
+
+        try? modelContext.save()
+        print("[CopyFromDrive] Saved album with \(downloadedTracks.count) tracks")
+        await MainActor.run { isImportingLocal = false; importProgress = (0, 0, "") }
     }
 
     private func mimeTypeForExtension(_ ext: String) -> String {
@@ -758,8 +1056,8 @@ struct AlbumMetadataEditorSheet: View {
                 }
 
                 // Tracklist section
-                if !reorderedItems.isEmpty {
-                    Section {
+                Section {
+                    if !reorderedItems.isEmpty {
                         ForEach(Array(reorderedItems.enumerated()), id: \.element.id) { index, item in
                             switch item {
                             case .track(let track):
@@ -811,38 +1109,38 @@ struct AlbumMetadataEditorSheet: View {
                         .onMove { source, destination in
                             reorderedItems.move(fromOffsets: source, toOffset: destination)
                         }
-                    } header: {
-                        HStack {
-                            if !reorderedItems.isEmpty {
+                    }
+                } header: {
+                    HStack {
+                        if !reorderedItems.isEmpty {
+                            Button {
+                                addDiscMarker()
+                            } label: {
+                                Label("Add disc marker", systemImage: "plus")
+                                    .font(.subheadline)
+                            }
+                            .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
+                        }
+
+                        Spacer()
+
+                        if album.canEdit {
+                            Menu {
                                 Button {
-                                    addDiscMarker()
+                                    showAddTrackSheet = true
                                 } label: {
-                                    Label("Add disc marker", systemImage: "plus")
-                                        .font(.subheadline)
+                                    Label("From Google Drive", systemImage: "cloud")
                                 }
-                                .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
-                            }
-
-                            Spacer()
-
-                            if album.canEdit {
-                                Menu {
-                                    Button {
-                                        showAddTrackSheet = true
-                                    } label: {
-                                        Label("From Google Drive", systemImage: "cloud")
-                                    }
-                                    Button {
-                                        showDocumentPicker = true
-                                    } label: {
-                                        Label("From iPhone", systemImage: "iphone")
-                                    }
+                                Button {
+                                    showDocumentPicker = true
                                 } label: {
-                                    Label("Add tracks", systemImage: "plus.circle")
-                                        .font(.subheadline)
+                                    Label("From iPhone", systemImage: "iphone")
                                 }
-                                .disabled(isUploadingTracks)
+                            } label: {
+                                Label("Add tracks", systemImage: "plus.circle")
+                                    .font(.subheadline)
                             }
+                            .disabled(isUploadingTracks)
                         }
                     }
                 }
@@ -1226,25 +1524,51 @@ struct AlbumMetadataEditorSheet: View {
                 let fileName = url.lastPathComponent
                 let mimeType = mimeTypeForExtension(url.pathExtension)
 
-                let driveItem = try await driveService.createFile(
-                    name: fileName,
-                    mimeType: mimeType,
-                    inFolder: album.googleFolderId,
-                    data: data
-                )
+                if album.isLocal {
+                    // Save file locally
+                    let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+                    let fm = FileManager.default
+                    let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("LocalAlbums", isDirectory: true)
+                        .appendingPathComponent(albumId, isDirectory: true)
+                    try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
 
-                let track = Track(
-                    googleFileId: driveItem.id,
-                    name: driveItem.name,
-                    album: album,
-                    mimeType: driveItem.mimeType,
-                    fileSize: driveItem.fileSizeBytes,
-                    trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
-                    modifiedTime: driveItem.modifiedTime
-                )
-                modelContext.insert(track)
-                reorderedItems.append(.track(track))
-                album.trackCount += 1
+                    let destURL = albumDir.appendingPathComponent(fileName)
+                    try data.write(to: destURL)
+
+                    let track = Track(
+                        googleFileId: "local_\(UUID().uuidString)",
+                        name: fileName,
+                        album: album,
+                        mimeType: mimeType,
+                        fileSize: Int64(data.count),
+                        trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
+                        localFilePath: "LocalAlbums/\(albumId)/\(fileName)"
+                    )
+                    modelContext.insert(track)
+                    reorderedItems.append(.track(track))
+                    album.trackCount += 1
+                } else {
+                    let driveItem = try await driveService.createFile(
+                        name: fileName,
+                        mimeType: mimeType,
+                        inFolder: album.googleFolderId,
+                        data: data
+                    )
+
+                    let track = Track(
+                        googleFileId: driveItem.id,
+                        name: driveItem.name,
+                        album: album,
+                        mimeType: driveItem.mimeType,
+                        fileSize: driveItem.fileSizeBytes,
+                        trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
+                        modifiedTime: driveItem.modifiedTime
+                    )
+                    modelContext.insert(track)
+                    reorderedItems.append(.track(track))
+                    album.trackCount += 1
+                }
             } catch {
                 errorMessage = "Upload failed: \(error.localizedDescription)"
             }
@@ -1258,23 +1582,53 @@ struct AlbumMetadataEditorSheet: View {
 
         for file in files {
             do {
-                let copiedItem = try await driveService.copyFile(
-                    fileId: file.id,
-                    toFolder: album.googleFolderId
-                )
+                if album.isLocal {
+                    // Download from Drive and save locally
+                    let data = try await driveService.downloadFileData(fileId: file.id)
+                    let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+                    let fm = FileManager.default
+                    let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("LocalAlbums", isDirectory: true)
+                        .appendingPathComponent(albumId, isDirectory: true)
+                    try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
 
-                let track = Track(
-                    googleFileId: copiedItem.id,
-                    name: copiedItem.name,
-                    album: album,
-                    mimeType: copiedItem.mimeType,
-                    fileSize: copiedItem.fileSizeBytes,
-                    trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
-                    modifiedTime: copiedItem.modifiedTime
-                )
-                modelContext.insert(track)
-                reorderedItems.append(.track(track))
-                album.trackCount += 1
+                    let destURL = albumDir.appendingPathComponent(file.name)
+                    try data.write(to: destURL)
+
+                    let fileSize = Int64(data.count)
+                    let mimeType = file.mimeType
+
+                    let track = Track(
+                        googleFileId: "local_\(UUID().uuidString)",
+                        name: file.name,
+                        album: album,
+                        mimeType: mimeType,
+                        fileSize: fileSize,
+                        trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
+                        localFilePath: "LocalAlbums/\(albumId)/\(file.name)"
+                    )
+                    modelContext.insert(track)
+                    reorderedItems.append(.track(track))
+                    album.trackCount += 1
+                } else {
+                    let copiedItem = try await driveService.copyFile(
+                        fileId: file.id,
+                        toFolder: album.googleFolderId
+                    )
+
+                    let track = Track(
+                        googleFileId: copiedItem.id,
+                        name: copiedItem.name,
+                        album: album,
+                        mimeType: copiedItem.mimeType,
+                        fileSize: copiedItem.fileSizeBytes,
+                        trackNumber: reorderedItems.compactMap(\.asTrack).count + 1,
+                        modifiedTime: copiedItem.modifiedTime
+                    )
+                    modelContext.insert(track)
+                    reorderedItems.append(.track(track))
+                    album.trackCount += 1
+                }
             } catch {
                 errorMessage = "Copy failed: \(error.localizedDescription)"
             }
@@ -1436,7 +1790,12 @@ struct AlbumArtworkThumbnail: View {
                 }
             }
             .task(id: artworkTaskID) {
-                guard !album.isLocal else { return }
+                if album.isLocal {
+                    if let coverPath = album.resolvedLocalCoverPath {
+                        image = UIImage(contentsOfFile: coverPath)
+                    }
+                    return
+                }
                 // Resolve fully (disk cache + network) in background
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
                 if resolution.image != nil || image == nil {
