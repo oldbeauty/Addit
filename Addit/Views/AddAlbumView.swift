@@ -35,6 +35,7 @@ struct AddAlbumView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(GoogleDriveService.self) private var driveService
+    @Environment(GoogleAuthService.self) private var authService
 
     @State private var selectedSource: FolderSource = .personal
     @State private var searchText = ""
@@ -98,7 +99,10 @@ struct AddAlbumView: View {
     }
 
     private func existingFolderIds() -> Set<String> {
-        let descriptor = FetchDescriptor<Album>()
+        let accountId = authService.userEmail.map { AccountManager.storageIdentifier(for: $0) }
+        let descriptor = FetchDescriptor<Album>(
+            predicate: #Predicate { $0.accountId == accountId }
+        )
         let albums = (try? modelContext.fetch(descriptor)) ?? []
         return Set(albums.map(\.googleFolderId))
     }
@@ -114,6 +118,9 @@ struct AddAlbumView: View {
             canEdit: folder.canEdit,
             displayOrder: nextOrder
         )
+        if let email = authService.userEmail {
+            album.accountId = AccountManager.storageIdentifier(for: email)
+        }
         modelContext.insert(album)
 
         for (index, file) in audioFiles.enumerated() {

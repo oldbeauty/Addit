@@ -8,7 +8,7 @@ enum StorageSource: String, Codable {
 
 @Model
 final class Album {
-    @Attribute(.unique) var googleFolderId: String
+    var googleFolderId: String
     var name: String
     var artistName: String?
     var coverFileId: String?
@@ -25,6 +25,7 @@ final class Album {
     var storageSourceRaw: String? = StorageSource.googleDrive.rawValue
     var localCoverPath: String?
     var showHiddenTracks: Bool = true
+    var accountId: String?
 
     var storageSource: StorageSource {
         get { StorageSource(rawValue: storageSourceRaw ?? "") ?? .googleDrive }

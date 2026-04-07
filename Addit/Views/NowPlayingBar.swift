@@ -143,7 +143,7 @@ private struct MiniScrubber: View {
     let onEnded: (TimeInterval) -> Void
 
     private let trackHeight: CGFloat = 3
-    private let thumbSize: CGFloat = 12
+    private let hitAreaHeight: CGFloat = 12
 
     private var progress: Double {
         duration > 0 ? value / duration : 0
@@ -152,7 +152,7 @@ private struct MiniScrubber: View {
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let thumbX = width * progress
+            let fillWidth = width * progress
 
             ZStack(alignment: .leading) {
                 // Track background
@@ -163,15 +163,9 @@ private struct MiniScrubber: View {
                 // Filled track
                 Capsule()
                     .fill(accentColor)
-                    .frame(width: max(0, thumbX), height: trackHeight)
-
-                // Thumb
-                Circle()
-                    .fill(accentColor)
-                    .frame(width: thumbSize, height: thumbSize)
-                    .offset(x: max(0, min(thumbX - thumbSize / 2, width - thumbSize)))
+                    .frame(width: max(0, fillWidth), height: trackHeight)
             }
-            .frame(height: thumbSize)
+            .frame(height: hitAreaHeight)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -185,6 +179,6 @@ private struct MiniScrubber: View {
                     }
             )
         }
-        .frame(height: thumbSize)
+        .frame(height: hitAreaHeight)
     }
 }

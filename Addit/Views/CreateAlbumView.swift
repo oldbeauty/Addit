@@ -7,6 +7,7 @@ struct CreateAlbumView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(GoogleDriveService.self) private var driveService
+    @Environment(GoogleAuthService.self) private var authService
 
     @State private var selectedSource: FolderSource = .personal
     @State private var showNameAlert = false
@@ -121,6 +122,9 @@ struct CreateAlbumView: View {
                 isFolderOwner: true,
                 displayOrder: nextOrder
             )
+            if let email = authService.userEmail {
+                album.accountId = AccountManager.storageIdentifier(for: email)
+            }
             modelContext.insert(album)
             try modelContext.save()
 

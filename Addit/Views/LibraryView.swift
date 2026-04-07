@@ -37,8 +37,20 @@ struct LibraryView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
+    private var activeAccountId: String? {
+        guard let email = authService.userEmail else { return nil }
+        return AccountManager.storageIdentifier(for: email)
+    }
+
     private var sourceAlbums: [Album] {
-        albums.filter { $0.storageSource == currentSource }
+        if currentSource == .localStorage {
+            // iPhone Storage: show all local albums regardless of account
+            return albums.filter { $0.storageSource == .localStorage }
+        } else {
+            // Google Drive: show only albums belonging to the active account
+            let accountId = activeAccountId
+            return albums.filter { $0.storageSource == .googleDrive && $0.accountId == accountId }
+        }
     }
 
     private var filteredAlbums: [Album] {
@@ -500,16 +512,7 @@ struct LibraryView: View {
                 .appendingPathComponent(albumId, isDirectory: true)
             try? FileManager.default.removeItem(at: localBase)
         }
-        // Delete all tracks using direct query to avoid stale relationship
-        let folderId = album.googleFolderId
-        let descriptor = FetchDescriptor<Track>(
-            predicate: #Predicate { $0.album?.googleFolderId == folderId }
-        )
-        if let tracks = try? modelContext.fetch(descriptor) {
-            for track in tracks {
-                modelContext.delete(track)
-            }
-        }
+        // Cascade delete rule on Album.tracks handles track cleanup
         modelContext.delete(album)
         do {
             try modelContext.save()
@@ -877,18 +880,13 @@ struct LibraryView: View {
             playerService.queue.removeAll()
             playerService.userQueue.removeAll()
             playerService.currentIndex = 0
-
-            // Delete all albums and tracks from SwiftData for this account
-            for album in albums {
-                removeAlbum(album)
-            }
         }
 
         // Clear this account's caches
         try? cacheService.clearCache(for: accountId)
         albumArtService.clearCache(for: accountId)
 
-        // Remove the data store for this account
+        // Remove Drive albums belonging to this account from the shared store
         AccountContainerView.removeStore(for: targetEmail)
 
         // Remove account and sign out

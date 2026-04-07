@@ -35,8 +35,9 @@ struct AlbumDetailView: View {
     /// Fetches tracks directly from the model context, bypassing the potentially stale relationship
     private func fetchAllTracks() -> [Track] {
         let folderId = album.googleFolderId
+        let acctId = album.accountId
         let descriptor = FetchDescriptor<Track>(
-            predicate: #Predicate { $0.album?.googleFolderId == folderId },
+            predicate: #Predicate { $0.album?.googleFolderId == folderId && $0.album?.accountId == acctId },
             sortBy: [SortDescriptor(\.trackNumber)]
         )
         return (try? modelContext.fetch(descriptor)) ?? album.tracks.sorted { $0.trackNumber < $1.trackNumber }

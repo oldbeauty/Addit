@@ -3,7 +3,7 @@ import SwiftData
 
 @Model
 final class Track {
-    @Attribute(.unique) var googleFileId: String
+    var googleFileId: String
     var name: String
     var album: Album?
     var durationSeconds: Double?
