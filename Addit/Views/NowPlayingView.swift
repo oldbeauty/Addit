@@ -474,65 +474,111 @@ private struct CenteredWaveformView: View {
     /// How many samples correspond to one second of audio.
     let samplesPerSecond: Double
 
+    /// Used to snap bar positions to whole device pixels so Canvas edges
+    /// stay crisp instead of anti-aliasing across fractional offsets.
+    @Environment(\.displayScale) private var displayScale
+
     /// Half-width of the visible window, in seconds.  Full window = 2 × this.
     private let halfWindow: TimeInterval = 2.0
-    private let preferredGap: CGFloat = 3.0
-    private let minBarWidth: CGFloat = 1.5
+    /// Match FullScrubber's geometry exactly so bars above and below look
+    /// like parts of the same waveform family.
+    private let barWidth: CGFloat = 1.5
+    private let barGap: CGFloat = 3.5
     private let minBarFraction: CGFloat = 0.12
+    /// Thin horizontal marks at the top and bottom of the view that a
+    /// clipping song's bars will just barely touch.  Thickness matches
+    /// barWidth; span is roughly the width of a letter.
+    private let clipLineThickness: CGFloat = 1.5
+    private let clipLineLength: CGFloat = 12
+
+    /// Fully-opaque equivalent of the SwiftUI `.secondary` color.  The
+    /// default `Color.secondary` bakes in ~40% transparency so opaque
+    /// waveform bars show through any marker drawn in front of them,
+    /// making the marker *look* like it's behind the waveform.  Resolving
+    /// the system's secondary label color and forcing alpha to 1.0 keeps
+    /// dark/light-mode adaptation while blocking the bars cleanly.
+    private var opaqueSecondary: Color {
+        Color(uiColor: UIColor { trait in
+            UIColor.secondaryLabel.resolvedColor(with: trait).withAlphaComponent(1.0)
+        })
+    }
+
+    /// Center-to-center screen distance between consecutive bars (matches
+    /// FullScrubber's cell spacing: barWidth + gap).
+    private var cellSpacing: CGFloat { barWidth + barGap }
 
     var body: some View {
         GeometryReader { geo in
             Canvas { context, size in
                 guard !samples.isEmpty, samplesPerSecond > 0 else { return }
 
+                let windowSeconds = halfWindow * 2
                 let startTime = currentTime - halfWindow
                 let endTime = currentTime + halfWindow
-                let windowSeconds = endTime - startTime    // = 2 × halfWindow
-
-                // How many bars fit at preferred spacing?
-                let cellMin = minBarWidth + preferredGap
-                let maxFit = max(4, Int((size.width + preferredGap) / cellMin))
-
-                let count = maxFit
-                let gap = preferredGap
-                let barWidth = max(minBarWidth, (size.width - CGFloat(count - 1) * gap) / CGFloat(count))
 
                 // Vertical centerline — bars grow from the center outward.
+                // Max half-height leaves room for the clip-indicator lines
+                // at the top and bottom, so a fully-clipped bar's edge just
+                // meets the inner edge of the indicator line.
                 let centerY = size.height / 2
-                let maxHalfHeight = size.height / 2
+                let maxHalfHeight = size.height / 2 - clipLineThickness
 
-                // Time range each bar covers — peak-per-bucket prevents the
-                // "popping" aliasing you get when a bar spans multiple
-                // underlying samples but picks only one of them.
-                let barDuration = windowSeconds / Double(count)
+                // Pick barTimeStep so screen spacing matches FullScrubber's
+                // cell width (barWidth + gap).  Computed from actual size so
+                // the match holds regardless of how wide this view is rendered.
+                let barTimeStep = Double(cellSpacing) * windowSeconds / Double(size.width)
+                guard barTimeStep > 0 else { return }
 
-                for i in 0..<count {
-                    // Map bar index → time offset within the visible window
-                    let fraction = (CGFloat(i) + 0.5) / CGFloat(count)
-                    let t = startTime + Double(fraction) * windowSeconds
+                // Iterate bar indices whose fixed audio time falls inside the
+                // visible window.  Each bar's time is barIdx × barTimeStep —
+                // constant for the entire song.  As currentTime advances,
+                // the range of barIdx shifts and each bar's x position
+                // decreases, producing continuous right-to-left motion.
+                let firstBarIdx = Int(ceil(startTime / barTimeStep))
+                let lastBarIdx = Int(floor(endTime / barTimeStep))
+                guard firstBarIdx <= lastBarIdx else { return }
 
-                    // Fade each bar based on distance from the playhead so the
-                    // edges visually breathe.  fade = 1 at center, 0 at edges.
-                    let distFromCenter = abs(Double(fraction) - 0.5) * 2.0  // 0…1
-                    let fade = max(0, 1.0 - pow(distFromCenter, 1.6))
+                for barIdx in firstBarIdx...lastBarIdx {
+                    let barTime = Double(barIdx) * barTimeStep
+                    if barTime < 0 || barTime > duration { continue }
 
-                    // Peak amplitude across this bar's time slice.
-                    let tStart = t - barDuration / 2
-                    let tEnd = t + barDuration / 2
+                    // Peak amplitude across this bar's time slice.  Stable
+                    // because the slice boundaries are fixed in audio time.
+                    let tStart = barTime - barTimeStep / 2
+                    let tEnd = barTime + barTimeStep / 2
                     var amp: Float = 0
-                    if tEnd > 0, tStart < duration {
-                        let idxStart = max(0, Int(tStart * samplesPerSecond))
-                        let idxEnd = min(samples.count, Int(ceil(tEnd * samplesPerSecond)))
-                        if idxEnd > idxStart {
-                            for k in idxStart..<idxEnd {
-                                amp = max(amp, samples[k])
-                            }
+                    let idxStart = max(0, Int(tStart * samplesPerSecond))
+                    let idxEnd = min(samples.count, Int(ceil(tEnd * samplesPerSecond)))
+                    if idxEnd > idxStart {
+                        for k in idxStart..<idxEnd {
+                            amp = max(amp, samples[k])
                         }
                     }
 
+                    // x position — barTime==currentTime lands on center.
+                    let xFrac = (barTime - startTime) / windowSeconds
+                    let xCenter = CGFloat(xFrac) * size.width
+                    // Snap the bar's left edge to the nearest device pixel so
+                    // Canvas draws on clean pixel boundaries.  Without this,
+                    // fractional-point offsets (inevitable when position is
+                    // derived from a continuously-advancing currentTime)
+                    // get anti-aliased across two device pixels and the whole
+                    // bar looks soft.
+                    let scale = max(displayScale, 1)
+                    let rawX = xCenter - barWidth / 2
+                    let x = (rawX * scale).rounded() / scale
+
+                    // Fade by distance from playhead so edges breathe in+out,
+                    // but keep a "hot zone" around the center at full opacity
+                    // so center bars match the crispness/brightness of the
+                    // full-width waveform above.
+                    let distFromCenter = abs(xFrac - 0.5) * 2.0  // 0…1
+                    let holdRadius: Double = 0.35               // inner 35% stays solid
+                    let t = max(0, (distFromCenter - holdRadius) / (1 - holdRadius))
+                    let fade = max(0, 1.0 - pow(t, 1.6))
+
                     let normalised = max(Float(minBarFraction), amp)
                     let halfH = CGFloat(normalised) * maxHalfHeight
-                    let x = (barWidth + gap) * CGFloat(i)
 
                     let rect = CGRect(x: x, y: centerY - halfH, width: barWidth, height: halfH * 2)
                     let path = Path(roundedRect: rect, cornerRadius: barWidth / 2)
@@ -549,6 +595,33 @@ private struct CenteredWaveformView: View {
                     endPoint: .trailing
                 )
             )
+            // Clipping indicator lines — drawn outside the mask so they
+            // stay fully visible regardless of horizontal position.
+            .overlay(alignment: .top) {
+                Capsule()
+                    .fill(opaqueSecondary)
+                    .frame(width: clipLineLength, height: clipLineThickness)
+            }
+            .overlay(alignment: .bottom) {
+                Capsule()
+                    .fill(opaqueSecondary)
+                    .frame(width: clipLineLength, height: clipLineThickness)
+            }
+            // Short vertical play-marker lines — hang down from the top
+            // clip line and up from the bottom one, marking the exact
+            // center (playhead) of the waveform window.
+            .overlay(alignment: .top) {
+                Capsule()
+                    .fill(opaqueSecondary)
+                    .frame(width: clipLineThickness, height: clipLineLength / 2)
+                    .offset(y: clipLineThickness)
+            }
+            .overlay(alignment: .bottom) {
+                Capsule()
+                    .fill(opaqueSecondary)
+                    .frame(width: clipLineThickness, height: clipLineLength / 2)
+                    .offset(y: -clipLineThickness)
+            }
         }
     }
 }
