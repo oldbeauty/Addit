@@ -92,6 +92,10 @@ struct AlbumDetailView: View {
         return "\(album.coverArtTaskID)-\(refreshMarker)-\(album.localCoverPath ?? "")"
     }
 
+    private var isThisAlbumPlaying: Bool {
+        playerService.currentTrack?.album?.googleFolderId == album.googleFolderId
+    }
+
     var body: some View {
         List {
             if isSyncing && album.tracks.isEmpty {
@@ -151,11 +155,16 @@ struct AlbumDetailView: View {
                             .buttonStyle(.bordered)
 
                             Button {
-                                playerService.playAlbum(album, shuffled: true)
+                                if isThisAlbumPlaying {
+                                    playerService.toggleShuffle()
+                                } else {
+                                    playerService.playAlbum(album, shuffled: true)
+                                }
                             } label: {
                                 Image(systemName: "shuffle")
                             }
                             .buttonStyle(.bordered)
+                            .tint(isThisAlbumPlaying && playerService.isShuffleOn ? themeService.accentColor : nil)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -1322,7 +1331,7 @@ struct TrackRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.displayName)
-                    .font(.body)
+                    .font(.body.weight(.medium))
                     .foregroundColor(isCurrentTrack ? themeService.accentColor : track.isHidden ? Color.secondary.opacity(0.5) : .primary)
                     .lineLimit(1)
 

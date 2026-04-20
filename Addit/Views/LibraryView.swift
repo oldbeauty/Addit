@@ -1093,7 +1093,7 @@ struct AlbumMetadataEditorSheet: View {
                                             set: { editedTrackNames[track.googleFileId] = $0 }
                                         )
                                     )
-                                    .font(.body)
+                                    .font(.body.weight(.medium))
                                     .lineLimit(1)
                                     .focused($focusedField, equals: .track(track.googleFileId))
 

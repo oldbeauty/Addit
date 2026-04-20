@@ -30,7 +30,14 @@ struct NowPlayingView: View {
                 .frame(width: 40, height: 5)
                 .padding(.top, 8)
 
-            Spacer()
+            // Album / folder name — sits between the drag indicator and the cover
+            Text(playerService.currentTrack?.album?.name ?? "")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 16)
 
             // Album art / EQ visualizer
             TabView(selection: $showVisualizer) {
@@ -99,6 +106,7 @@ struct NowPlayingView: View {
                     value: playerService.isSeeking ? seekValue : playerService.currentTime,
                     duration: playerService.duration,
                     accentColor: themeService.accentColor,
+                    waveformSamples: playerService.waveformSamples,
                     onChanged: { newValue in
                         if !playerService.isSeeking {
                             seekValue = playerService.currentTime
@@ -126,17 +134,36 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 24)
 
-            Spacer()
-                .frame(height: 24)
+            Spacer(minLength: 16)
+
+            // Centered live waveform — shows ±1 s around the playhead,
+            // scrolling right→left as playback progresses.
+            CenteredWaveformView(
+                currentTime: playerService.currentTime,
+                duration: playerService.duration,
+                accentColor: themeService.accentColor,
+                samples: playerService.waveformSamples,
+                samplesPerSecond: playerService.waveformSamplesPerSecond
+            )
+            .frame(width: 200, height: 36)
+
+            Spacer(minLength: 16)
 
             // Playback controls
             HStack(spacing: 40) {
                 Button {
                     playerService.toggleShuffle()
                 } label: {
-                        Image(systemName: "shuffle")
-                            .font(.title3)
-                            .foregroundStyle(playerService.isShuffleOn ? themeService.accentColor : .secondary)
+                    Image(systemName: "shuffle")
+                        .font(.caption.bold())
+                        .foregroundStyle(playerService.isShuffleOn ? .white : .secondary)
+                        .frame(width: 32, height: 32)
+                        .background {
+                            if playerService.isShuffleOn {
+                                Circle()
+                                    .fill(themeService.accentColor)
+                            }
+                        }
                 }
 
                 Button {
@@ -171,9 +198,16 @@ struct NowPlayingView: View {
                 Button {
                     playerService.cycleRepeatMode()
                 } label: {
-                        Image(systemName: repeatIcon)
-                            .font(.title3)
-                            .foregroundStyle(playerService.repeatMode == .off ? .secondary : themeService.accentColor)
+                    Image(systemName: repeatIcon)
+                        .font(.caption.bold())
+                        .foregroundStyle(playerService.repeatMode != .off ? .white : .secondary)
+                        .frame(width: 32, height: 32)
+                        .background {
+                            if playerService.repeatMode != .off {
+                                Circle()
+                                    .fill(themeService.accentColor)
+                            }
+                        }
                 }
             }
 
@@ -252,11 +286,7 @@ struct NowPlayingView: View {
     }
 
     private var nowPlayingSubtitle: String {
-        let albumName = playerService.currentTrack?.album?.name ?? ""
-        if let artistName = playerService.currentTrack?.album?.artistName {
-            return "\(artistName) \u{2014} \(albumName)"
-        }
-        return albumName
+        playerService.currentTrack?.album?.artistName ?? ""
     }
 
     private var repeatIcon: String {
@@ -280,11 +310,18 @@ private struct FullScrubber: View {
     let value: TimeInterval
     let duration: TimeInterval
     let accentColor: Color
+    let waveformSamples: [Float]
     let onChanged: (TimeInterval) -> Void
     let onEnded: (TimeInterval) -> Void
 
-    private let trackHeight: CGFloat = 4
-    private let thumbSize: CGFloat = 14
+    // Top + bottom waveform "ears" sit symmetrically around a center gap
+    // containing the progress bar.
+    private let earHeight: CGFloat = 26
+    private let centerGap: CGFloat = 10         // vertical space between top+bottom ears
+    private let trackHeight: CGFloat = 4        // thickness of the progress capsule
+    private let minBarFraction: CGFloat = 0.08
+    private let preferredGap: CGFloat = 3.5
+    private let minBarWidth: CGFloat = 1.5
     private let hapticSteps: Int = 40
 
     @State private var lastHapticStep: Int = -1
@@ -294,26 +331,107 @@ private struct FullScrubber: View {
         duration > 0 ? value / duration : 0
     }
 
+    private var totalHeight: CGFloat {
+        earHeight * 2 + centerGap
+    }
+
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let thumbX = width * progress
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(accentColor.opacity(0.2))
-                    .frame(height: trackHeight)
+            ZStack {
+                // Stereo-style waveform — bars mirror around a central gap.
+                Canvas { context, size in
+                    let rawSamples = waveformSamples.isEmpty
+                        ? [Float](repeating: 0.15, count: 120)
+                        : waveformSamples
+                    guard !rawSamples.isEmpty else { return }
 
-                Capsule()
-                    .fill(accentColor)
-                    .frame(width: max(0, thumbX), height: trackHeight)
+                    // Downsample (peak-per-bucket) to whatever fits at the
+                    // preferred spacing so nothing clips.
+                    let cellMin = minBarWidth + preferredGap
+                    let maxFit = max(1, Int((size.width + preferredGap) / cellMin))
+                    let displayCount = min(rawSamples.count, maxFit)
 
-                Circle()
-                    .fill(accentColor)
-                    .frame(width: thumbSize, height: thumbSize)
-                    .offset(x: max(0, min(thumbX - thumbSize / 2, width - thumbSize)))
+                    let samples: [Float]
+                    if displayCount == rawSamples.count {
+                        samples = rawSamples
+                    } else {
+                        var out = [Float](repeating: 0, count: displayCount)
+                        for j in 0..<displayCount {
+                            let start = j * rawSamples.count / displayCount
+                            let end = (j + 1) * rawSamples.count / displayCount
+                            var peak: Float = 0
+                            for k in start..<end {
+                                peak = max(peak, rawSamples[k])
+                            }
+                            out[j] = peak
+                        }
+                        samples = out
+                    }
+
+                    let count = samples.count
+                    let gap: CGFloat = preferredGap
+                    let barWidth = max(minBarWidth, (size.width - CGFloat(count - 1) * gap) / CGFloat(count))
+                    let progressX = size.width * progress
+
+                    let topEarBottom = earHeight                            // bottom edge of the upper ear
+                    let bottomEarTop = earHeight + centerGap                // top edge of the lower ear
+
+                    for i in 0..<count {
+                        let x = (barWidth + gap) * CGFloat(i)
+                        let amplitude = CGFloat(max(Float(minBarFraction), samples[i]))
+                        let h = amplitude * earHeight
+
+                        // Upper ear — bar grows UP from the inner edge (topEarBottom)
+                        let topRect = CGRect(x: x, y: topEarBottom - h, width: barWidth, height: h)
+                        // Lower ear — bar grows DOWN from the inner edge (bottomEarTop)
+                        let botRect = CGRect(x: x, y: bottomEarTop, width: barWidth, height: h)
+
+                        let isPast = x + barWidth <= progressX
+                        let isPartial = x < progressX && x + barWidth > progressX
+
+                        let filled = accentColor
+                        let unfilled = accentColor.opacity(0.25)
+
+                        func drawBar(_ rect: CGRect) {
+                            let path = Path(roundedRect: rect, cornerRadius: barWidth / 2)
+                            if isPast {
+                                context.fill(path, with: .color(filled))
+                            } else if isPartial {
+                                let splitX = progressX - x
+                                let filledRect = CGRect(x: rect.minX, y: rect.minY, width: splitX, height: rect.height)
+                                let unfilledRect = CGRect(x: rect.minX + splitX, y: rect.minY, width: rect.width - splitX, height: rect.height)
+                                context.fill(Path(roundedRect: filledRect, cornerRadius: barWidth / 2),
+                                             with: .color(filled))
+                                context.fill(Path(roundedRect: unfilledRect, cornerRadius: barWidth / 2),
+                                             with: .color(unfilled))
+                            } else {
+                                context.fill(path, with: .color(unfilled))
+                            }
+                        }
+
+                        drawBar(topRect)
+                        drawBar(botRect)
+                    }
+                }
+
+                // Thin progress capsule sitting in the central gap — no thumb.
+                VStack(spacing: 0) {
+                    Spacer().frame(height: earHeight + (centerGap - trackHeight) / 2)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(accentColor.opacity(0.2))
+                            .frame(height: trackHeight)
+                        Capsule()
+                            .fill(accentColor)
+                            .frame(width: max(0, width * progress), height: trackHeight)
+                    }
+                    Spacer()
+                }
+                .allowsHitTesting(false)
             }
-            .frame(height: thumbSize)
+            .frame(height: totalHeight)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -339,6 +457,98 @@ private struct FullScrubber: View {
                     }
             )
         }
-        .frame(height: thumbSize)
+        .frame(height: totalHeight)
+    }
+}
+
+/// Narrow "radar" waveform — shows a fixed 2-second window centered on the
+/// current playback position.  Bars scroll right→left as playback advances.
+/// Edges fade out (unseen future fading in on the right, past fading out on
+/// the left).
+private struct CenteredWaveformView: View {
+    let currentTime: TimeInterval
+    let duration: TimeInterval
+    let accentColor: Color
+    /// Waveform samples (0…1) for the whole track.
+    let samples: [Float]
+    /// How many samples correspond to one second of audio.
+    let samplesPerSecond: Double
+
+    /// Half-width of the visible window, in seconds.  Full window = 2 × this.
+    private let halfWindow: TimeInterval = 2.0
+    private let preferredGap: CGFloat = 3.0
+    private let minBarWidth: CGFloat = 1.5
+    private let minBarFraction: CGFloat = 0.12
+
+    var body: some View {
+        GeometryReader { geo in
+            Canvas { context, size in
+                guard !samples.isEmpty, samplesPerSecond > 0 else { return }
+
+                let startTime = currentTime - halfWindow
+                let endTime = currentTime + halfWindow
+                let windowSeconds = endTime - startTime    // = 2 × halfWindow
+
+                // How many bars fit at preferred spacing?
+                let cellMin = minBarWidth + preferredGap
+                let maxFit = max(4, Int((size.width + preferredGap) / cellMin))
+
+                let count = maxFit
+                let gap = preferredGap
+                let barWidth = max(minBarWidth, (size.width - CGFloat(count - 1) * gap) / CGFloat(count))
+
+                // Vertical centerline — bars grow from the center outward.
+                let centerY = size.height / 2
+                let maxHalfHeight = size.height / 2
+
+                // Time range each bar covers — peak-per-bucket prevents the
+                // "popping" aliasing you get when a bar spans multiple
+                // underlying samples but picks only one of them.
+                let barDuration = windowSeconds / Double(count)
+
+                for i in 0..<count {
+                    // Map bar index → time offset within the visible window
+                    let fraction = (CGFloat(i) + 0.5) / CGFloat(count)
+                    let t = startTime + Double(fraction) * windowSeconds
+
+                    // Fade each bar based on distance from the playhead so the
+                    // edges visually breathe.  fade = 1 at center, 0 at edges.
+                    let distFromCenter = abs(Double(fraction) - 0.5) * 2.0  // 0…1
+                    let fade = max(0, 1.0 - pow(distFromCenter, 1.6))
+
+                    // Peak amplitude across this bar's time slice.
+                    let tStart = t - barDuration / 2
+                    let tEnd = t + barDuration / 2
+                    var amp: Float = 0
+                    if tEnd > 0, tStart < duration {
+                        let idxStart = max(0, Int(tStart * samplesPerSecond))
+                        let idxEnd = min(samples.count, Int(ceil(tEnd * samplesPerSecond)))
+                        if idxEnd > idxStart {
+                            for k in idxStart..<idxEnd {
+                                amp = max(amp, samples[k])
+                            }
+                        }
+                    }
+
+                    let normalised = max(Float(minBarFraction), amp)
+                    let halfH = CGFloat(normalised) * maxHalfHeight
+                    let x = (barWidth + gap) * CGFloat(i)
+
+                    let rect = CGRect(x: x, y: centerY - halfH, width: barWidth, height: halfH * 2)
+                    let path = Path(roundedRect: rect, cornerRadius: barWidth / 2)
+                    context.fill(path, with: .color(accentColor.opacity(fade)))
+                }
+            }
+            // Feather the edges so new bars fade IN on the right and fade
+            // OUT on the left as they scroll past — masks the hard-edge
+            // clipping that otherwise happens when a bar enters the window.
+            .mask(
+                LinearGradient(
+                    colors: [.clear, .black, .black, .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
     }
 }

@@ -30,6 +30,11 @@ final class AudioPlayerService {
     /// Downsampled waveform amplitudes (0…1) for the current track, used by the mini scrubber.
     var waveformSamples: [Float] = []
 
+    /// How many samples in `waveformSamples` correspond to one second of audio.
+    /// Used by zoomed views (e.g. the centered live waveform) to map the
+    /// current playback time to an index range.
+    var waveformSamplesPerSecond: Double = 0
+
     var currentTrack: Track? {
         guard !queue.isEmpty, currentIndex >= 0, currentIndex < queue.count else { return nil }
         return queue[currentIndex]
@@ -53,15 +58,29 @@ final class AudioPlayerService {
     @ObservationIgnored private var nextTrackIndex: Int?
     @ObservationIgnored private var nextFileURL: URL?
     @ObservationIgnored private var nextWaveform: [Float]?
+    @ObservationIgnored private var nextWaveformSamplesPerSecond: Double = 0
     @ObservationIgnored private var isGaplessTransition = false
 
     // Waveform extraction
     @ObservationIgnored private var waveformTask: Task<Void, Never>?
 
+    /// Counter for throttling periodic now-playing info sync (see updateCurrentTime)
+    @ObservationIgnored private var nowPlayingSyncCounter: Int = 0
+
+    /// Tracks whether we were playing when an audio-session interruption
+    /// began, so we only auto-resume on `.ended` if the user hadn't paused
+    /// manually before the interruption.
+    @ObservationIgnored private var wasPlayingBeforeInterruption = false
+
     init() {
         configureAudioSession()
         setupEngine()
         setupRemoteCommands()
+        registerAudioSessionObservers()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - Playback Controls
@@ -103,9 +122,29 @@ final class AudioPlayerService {
 
     func play() {
         do {
-            if !engine.isRunning {
+            try AVAudioSession.sharedInstance().setActive(true)
+            let engineWasStopped = !engine.isRunning
+            if engineWasStopped {
                 try engine.start()
             }
+
+            // If the engine was stopped (e.g. from pause() or an interruption),
+            // all previously-scheduled audio on the playerNode was invalidated.
+            if engineWasStopped, let audioFile = currentAudioFile {
+                let trackDuration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+                if currentTime >= trackDuration - 1.0 {
+                    // We're within 1 s of the end (or past it).  Replaying those
+                    // last dying frames would sound like the track repeated —
+                    // especially if a route-change pause fired just as the track
+                    // was finishing and invalidated the pending completionFired
+                    // dispatch.  Advance to the next track instead.
+                    handleTrackEnd()
+                    return
+                } else {
+                    rescheduleFromCurrentTime()
+                }
+            }
+
             playerNode.play()
             isPlaying = true
             startTimeTracking()
@@ -116,9 +155,28 @@ final class AudioPlayerService {
     }
 
     func pause() {
-        playerNode.pause()
+        // Snapshot position before we tear anything down
+        updateCurrentTime()
+
+        // Invalidate ALL pending completion handlers BEFORE stopping
+        // the node.  playerNode.stop() immediately fires every queued
+        // completion (current track + gapless next track).  Without
+        // bumping the generation first, those callbacks see a valid
+        // generation, call handleTrackEnd(), and silently advance to
+        // the next song.
+        scheduleGeneration &+= 1
+        clearGaplessState()
+
+        playerNode.stop()
+        engine.stop()
+
         isPlaying = false
-        stopTimeTracking()
+        // Deliberately DON'T stop the display link here.  updateCurrentTime()
+        // early-returns as soon as lastRenderTime becomes nil (engine stopped),
+        // so currentTime stays frozen at the paused position.  Keeping the
+        // display link alive means that on resume, the centered waveform
+        // starts scrolling the instant lastRenderTime becomes valid again —
+        // instead of waiting for the next CADisplayLink creation + first tick.
         updateNowPlayingPlaybackInfo()
     }
 
@@ -191,6 +249,18 @@ final class AudioPlayerService {
         let gen = scheduleGeneration
 
         let wasPlaying = isPlaying
+
+        // Ensure engine is running so we can schedule + play
+        if !engine.isRunning {
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+                try engine.start()
+            } catch {
+                print("Engine start error during seek: \(error.localizedDescription)")
+                return
+            }
+        }
+
         playerNode.stop()
 
         playerTimeOffset = 0
@@ -208,6 +278,31 @@ final class AudioPlayerService {
         scheduleNextTrackGapless(afterGeneration: gen)
     }
 
+    /// Re-schedules playback of the current audio file from `currentTime`.
+    /// Used after the engine has been stopped (pause, interruption) and
+    /// all previously-scheduled segments have been invalidated.
+    private func rescheduleFromCurrentTime() {
+        guard let audioFile = currentAudioFile else { return }
+        let sampleRate = audioFile.processingFormat.sampleRate
+        let targetFrame = AVAudioFramePosition(currentTime * sampleRate)
+        let totalFrames = audioFile.length
+        guard targetFrame < totalFrames else { return }
+
+        scheduleGeneration &+= 1
+        let gen = scheduleGeneration
+
+        playerTimeOffset = 0
+        seekFrameOffset = targetFrame
+        let remainingFrames = AVAudioFrameCount(totalFrames - targetFrame)
+
+        playerNode.scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: remainingFrames, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            self?.completionFired(generation: gen)
+        }
+
+        clearGaplessState()
+        scheduleNextTrackGapless(afterGeneration: gen)
+    }
+
     func beginSeeking() {
         isSeeking = true
     }
@@ -222,12 +317,12 @@ final class AudioPlayerService {
         if isShuffleOn {
             applyShuffle()
         } else {
-            let current = currentTrack
-            queue = originalQueue
-            if let current {
-                currentIndex = queue.firstIndex(where: { $0.googleFileId == current.googleFileId }) ?? 0
-            }
+            restoreOriginalOrder()
         }
+        // The next track changed — re-do gapless pre-scheduling
+        clearGaplessState()
+        let gen = scheduleGeneration
+        scheduleNextTrackGapless(afterGeneration: gen)
     }
 
     func cycleRepeatMode() {
@@ -319,6 +414,18 @@ final class AudioPlayerService {
 
             playerNode.scheduleSegment(audioFile, startingFrame: 0, frameCount: AVAudioFrameCount(audioFile.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.completionFired(generation: gen)
+            }
+
+            // Start the engine BEFORE calling play() so play() sees
+            // engineWasStopped=false and doesn't re-schedule the segment
+            // we just scheduled.  Without this, play() bumps the
+            // generation and schedules Track A a SECOND time on the
+            // node — audio plays Track A, then plays it again from the
+            // start before finally advancing.  (Classic "audio replays
+            // after full playthrough" bug.)
+            if !engine.isRunning {
+                try AVAudioSession.sharedInstance().setActive(true)
+                try engine.start()
             }
 
             playbackError = nil
@@ -559,7 +666,13 @@ final class AudioPlayerService {
                 }
 
                 // Pre-generate waveform for seamless visual transition
-                let precomputedWaveform = Self.extractWaveform(from: fileURL, barCount: Self.waveformBarCount)
+                let nextDuration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+                let nextBarCount = Self.waveformSampleCount(for: nextDuration)
+                let precomputedWaveform = Self.extractWaveform(from: fileURL, barCount: nextBarCount)
+                let nextSps: Double = {
+                    guard let w = precomputedWaveform, nextDuration > 0 else { return 0 }
+                    return Double(w.count) / nextDuration
+                }()
 
                 // Check generation one more time after waveform extraction
                 guard gen == scheduleGeneration else { return }
@@ -569,6 +682,7 @@ final class AudioPlayerService {
                 nextTrackIndex = nextIdx
                 nextFileURL = fileURL
                 nextWaveform = precomputedWaveform
+                nextWaveformSamplesPerSecond = nextSps
                 isGaplessTransition = true
 
                 let expectedGen = gen
@@ -644,7 +758,10 @@ final class AudioPlayerService {
     // MARK: - Time Tracking
 
     private func startTimeTracking() {
-        stopTimeTracking()
+        // Idempotent — if a display link is already running (e.g. we paused
+        // but kept the link alive so the centered waveform can resume
+        // instantly), don't tear it down and recreate it.
+        if timeTimer != nil { return }
         let displayLink = CADisplayLink(target: DisplayLinkTarget { [weak self] in
             self?.updateCurrentTime()
         }, selector: #selector(DisplayLinkTarget.tick))
@@ -670,6 +787,16 @@ final class AudioPlayerService {
         if time >= 0 && time <= duration {
             currentTime = time
         }
+
+        // Periodically push elapsed-time to the Now Playing info center so
+        // the lock-screen scrubber stays in sync over long tracks.  The
+        // system extrapolates from elapsed + rate, but small clock drift
+        // accumulates; ~15-second updates prevent visible desync.
+        nowPlayingSyncCounter += 1
+        if nowPlayingSyncCounter >= 900 {  // ~15 s at 60 fps
+            nowPlayingSyncCounter = 0
+            updateNowPlayingPlaybackInfo()
+        }
     }
 
     private func handleTrackEnd() {
@@ -682,17 +809,24 @@ final class AudioPlayerService {
         // If the next track was pre-scheduled gaplessly, just update state
         if isGaplessTransition, let nextIndex = nextTrackIndex, let nextFile = nextAudioFile {
             let precomputedWaveform = nextWaveform
+            let precomputedSps = nextWaveformSamplesPerSecond
             isGaplessTransition = false
             nextAudioFile = nil
             nextTrackIndex = nil
             nextFileURL = nil
             nextWaveform = nil
+            nextWaveformSamplesPerSecond = 0
 
-            // Capture the current player time so we can offset the time display
-            if let nodeTime = playerNode.lastRenderTime, nodeTime.isSampleTimeValid,
-               let playerTime = playerNode.playerTime(forNodeTime: nodeTime) {
-                playerTimeOffset = playerTime.sampleTime
-            }
+            // Advance playerTimeOffset by exactly the number of frames that
+            // just played from the outgoing track.  Querying lastRenderTime at
+            // the exact track boundary is unreliable — playerTime(forNodeTime:)
+            // can return nil right as one segment ends and the next begins,
+            // leaving playerTimeOffset at 0 and breaking currentTime for the
+            // incoming track (progress pins to end or jumps wildly).
+            // This deterministic calculation is always correct regardless of
+            // whether the render thread is at a segment boundary.
+            let framesJustPlayed = (currentAudioFile?.length ?? 0) - seekFrameOffset
+            playerTimeOffset = playerTimeOffset + framesJustPlayed
 
             currentIndex = nextIndex
             currentAudioFile = nextFile
@@ -703,6 +837,7 @@ final class AudioPlayerService {
             // Swap in the pre-computed waveform instantly (no regeneration delay)
             waveformTask?.cancel()
             waveformSamples = precomputedWaveform ?? []
+            waveformSamplesPerSecond = precomputedSps
 
             updateNowPlayingInfo()
             prefetchUpcoming()
@@ -717,17 +852,28 @@ final class AudioPlayerService {
     }
 
     private func applyShuffle() {
-        let current = currentTrack
-        var remaining = queue
-        if let idx = remaining.firstIndex(where: { $0.googleFileId == current?.googleFileId }) {
-            remaining.remove(at: idx)
-        }
-        remaining.shuffle()
-        if let current {
-            remaining.insert(current, at: 0)
-        }
-        queue = remaining
-        currentIndex = 0
+        // Keep everything up to and including the current track in place.
+        // Only shuffle the upcoming portion of the queue.
+        guard currentIndex < queue.count else { return }
+        let played = Array(queue[...currentIndex])
+        var upcoming = Array(queue[(currentIndex + 1)...])
+        upcoming.shuffle()
+        queue = played + upcoming
+    }
+
+    private func restoreOriginalOrder() {
+        // Put the upcoming tracks back in their original (album) order
+        // while keeping the current track where it is.
+        guard currentTrack != nil else { return }
+
+        // Figure out which tracks have already been played (up to current)
+        let playedIds = Set(queue[...currentIndex].map { $0.googleFileId })
+
+        // Upcoming tracks in their original order, excluding already-played ones
+        let upcomingOriginal = originalQueue.filter { !playedIds.contains($0.googleFileId) }
+
+        queue = Array(queue[...currentIndex]) + upcomingOriginal
+        // currentIndex stays the same — we only changed what comes after
     }
 
     // MARK: - Now Playing Info Center
@@ -743,10 +889,13 @@ final class AudioPlayerService {
             self?.pause()
             return .success
         }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.togglePlayPause()
-            return .success
-        }
+        // Explicitly disable `togglePlayPauseCommand`. iOS dispatches both
+        // `pauseCommand` AND `togglePlayPauseCommand` for a single Control
+        // Center tap; if both are registered, the second delivery flips our
+        // state right back, which is what produced the lock-screen flicker
+        // loop before. `playCommand` / `pauseCommand` alone are enough —
+        // iOS routes based on current playback rate.
+        center.togglePlayPauseCommand.isEnabled = false
         center.nextTrackCommand.addTarget { [weak self] _ in
             self?.next()
             return .success
@@ -759,6 +908,72 @@ final class AudioPlayerService {
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self?.seek(to: event.positionTime)
             return .success
+        }
+    }
+
+    // MARK: - Audio Session Observers
+
+    private func registerAudioSessionObservers() {
+        let nc = NotificationCenter.default
+
+        nc.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            self?.handleInterruption(note)
+        }
+
+        nc.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            self?.handleRouteChange(note)
+        }
+    }
+
+    private func handleInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let rawType = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+
+        switch type {
+        case .began:
+            // iOS has already paused/stopped the engine for us.
+            // Snapshot the position and sync our state.
+            wasPlayingBeforeInterruption = isPlaying
+            // Invalidate completions — engine stop fires them immediately
+            scheduleGeneration &+= 1
+            clearGaplessState()
+            if isPlaying {
+                updateCurrentTime()   // capture position while node data is still valid
+                isPlaying = false
+                stopTimeTracking()
+                updateNowPlayingPlaybackInfo()
+            }
+        case .ended:
+            guard let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            if options.contains(.shouldResume), wasPlayingBeforeInterruption {
+                // play() handles engine restart + re-scheduling from currentTime
+                play()
+            }
+            wasPlayingBeforeInterruption = false
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
+
+        // Old device went away (headphones unplugged, Bluetooth disconnected).
+        // Apple's convention is to pause rather than switch to the speaker.
+        if reason == .oldDeviceUnavailable, isPlaying {
+            pause()
         }
     }
 
@@ -789,33 +1004,54 @@ final class AudioPlayerService {
                 }
             }
         }
+
     }
 
     private func updateNowPlayingPlaybackInfo() {
-        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        // Use `?? [:]` instead of a guard — on the very first play(),
+        // nowPlayingInfo is still nil (updateNowPlayingInfo() hasn't
+        // run yet), so a guard would silently skip the rate update
+        // and the system would never learn we're playing.
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
     }
 
     // MARK: - Waveform
 
-    /// Number of bars to display in the mini waveform scrubber.
-    private static let waveformBarCount = 120
+    /// Floor on sample count for very short tracks.  The mini/full scrubbers
+    /// peak-downsample to fit available width, so more samples is never
+    /// visually worse — but for zoomed views (centered window) we want
+    /// enough resolution to show a meaningful 2-second slice.
+    private static let waveformMinSamples = 120
+    /// Target sample rate for the extracted waveform (samples per second of
+    /// audio).  30/s means a 2-second window contains ~60 bars.
+    private static let waveformSamplesPerSecond: Double = 30
 
-    /// Reads the audio file at `url` on a background thread, downsamples into
-    /// `waveformBarCount` peak‐amplitude buckets (0…1), and publishes the result
-    /// on the main thread.
+    /// Computes how many bars to extract for a track of the given duration.
+    private static func waveformSampleCount(for duration: TimeInterval) -> Int {
+        max(waveformMinSamples, Int(duration * waveformSamplesPerSecond))
+    }
+
+    /// Reads the audio file at `url` on a background thread, downsamples
+    /// into peak-amplitude buckets (0…1), and publishes the result on the
+    /// main thread.
     private func generateWaveform(from url: URL) {
         waveformTask?.cancel()
         waveformSamples = []
+        waveformSamplesPerSecond = 0
 
-        let barCount = Self.waveformBarCount
+        let trackDuration = duration
+        let barCount = Self.waveformSampleCount(for: trackDuration)
         waveformTask = Task.detached(priority: .utility) { [weak self] in
             guard let samples = Self.extractWaveform(from: url, barCount: barCount) else { return }
             guard !Task.isCancelled else { return }
+            let sps = trackDuration > 0 ? Double(samples.count) / trackDuration : 0
             await MainActor.run { [weak self] in
                 self?.waveformSamples = samples
+                self?.waveformSamplesPerSecond = sps
             }
         }
     }

@@ -148,6 +148,12 @@ private struct MiniScrubber: View {
     private let hitAreaHeight: CGFloat = 28
     private let minBarFraction: CGFloat = 0.08
 
+    // Aesthetic targets. If the service hands us more samples than fit at this
+    // spacing, we downsample (peak-per-bucket) so nothing ever clips off the
+    // right edge.
+    private let preferredGap: CGFloat = 3.5
+    private let minBarWidth: CGFloat = 1.5
+
     @State private var lastHapticBar: Int = -1
     @State private var hapticGenerator: UIImpactFeedbackGenerator?
 
@@ -155,24 +161,44 @@ private struct MiniScrubber: View {
         duration > 0 ? value / duration : 0
     }
 
-    private var barCount: Int {
-        waveformSamples.isEmpty ? 80 : waveformSamples.count
-    }
-
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
 
             Canvas { context, size in
-                let samples = waveformSamples.isEmpty
+                let rawSamples = waveformSamples.isEmpty
                     ? [Float](repeating: 0.15, count: 120)
                     : waveformSamples
-                let count = samples.count
-                guard count > 0 else { return }
+                guard !rawSamples.isEmpty else { return }
 
-                let gap: CGFloat = 3.5
-                let totalGaps = gap * CGFloat(count - 1)
-                let barWidth = max(1, (size.width - totalGaps) / CGFloat(count))
+                // How many bars fit at the preferred spacing?
+                let cellMin = minBarWidth + preferredGap
+                let maxFit = max(1, Int((size.width + preferredGap) / cellMin))
+                let displayCount = min(rawSamples.count, maxFit)
+
+                // Downsample to displayCount by taking the peak in each bucket
+                // so the visual still reflects the loudest moment, not an
+                // averaged-down mush.
+                let samples: [Float]
+                if displayCount == rawSamples.count {
+                    samples = rawSamples
+                } else {
+                    var out = [Float](repeating: 0, count: displayCount)
+                    for j in 0..<displayCount {
+                        let start = j * rawSamples.count / displayCount
+                        let end = (j + 1) * rawSamples.count / displayCount
+                        var peak: Float = 0
+                        for k in start..<end {
+                            peak = max(peak, rawSamples[k])
+                        }
+                        out[j] = peak
+                    }
+                    samples = out
+                }
+
+                let count = samples.count
+                let gap: CGFloat = preferredGap
+                let barWidth = max(minBarWidth, (size.width - CGFloat(count - 1) * gap) / CGFloat(count))
                 let progressX = size.width * progress
 
                 for i in 0..<count {
