@@ -27,7 +27,10 @@ struct AlbumDetailView: View {
     @State private var toolbarActionGeneration = 0
     @State private var shareFileURL: URL?
     @State private var isDownloadingAlbum = false
-    @State private var albumDurationSeconds: Double = 0
+    /// Duration (seconds) per track, keyed by `track.googleFileId`. Populated
+    /// by `calculateAlbumDuration()` from cached / on-disk audio files. Used
+    /// for both the album total and per-disc totals.
+    @State private var trackDurations: [String: Double] = [:]
     @State private var isSavingToLocal = false
     @State private var saveProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State private var showDriveFolderPicker = false
@@ -64,8 +67,50 @@ struct AlbumDetailView: View {
         displayItems.compactMap(\.asTrack).filter { !$0.isHidden }
     }
 
+    private var albumDurationSeconds: Double {
+        trackDurations.values.reduce(0, +)
+    }
+
     private var albumDurationMinutes: Int {
         Int((albumDurationSeconds / 60).rounded())
+    }
+
+    /// Format a duration in seconds as H:MM:SS (or M:SS if under an hour).
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            return String(format: "%d:%02d", minutes, secs)
+        }
+    }
+
+    /// Exact album length as H:MM:SS (or M:SS if under an hour).
+    private var formattedAlbumDuration: String {
+        formatDuration(albumDurationSeconds)
+    }
+
+    /// Sum of durations for the tracks visually grouped under the disc
+    /// marker at `markerIndex` in `filteredDisplayItems` — i.e. every track
+    /// between this marker and the next (or end of list). Tracks whose
+    /// duration hasn't been measured yet (e.g. uncached Drive tracks) are
+    /// skipped; the caller should treat a zero return as "unavailable."
+    private func discDurationSeconds(forMarkerAt markerIndex: Int) -> Double {
+        let items = filteredDisplayItems
+        guard markerIndex < items.count else { return 0 }
+        var total: Double = 0
+        for i in (markerIndex + 1)..<items.count {
+            switch items[i] {
+            case .discMarker:
+                return total
+            case .track(let track):
+                if let d = trackDurations[track.googleFileId] { total += d }
+            }
+        }
+        return total
     }
 
     private var hasHiddenTracks: Bool {
@@ -174,7 +219,7 @@ struct AlbumDetailView: View {
                 }
 
                 Section {
-                    ForEach(Array(filteredDisplayItems.enumerated()), id: \.element.id) { _, item in
+                    ForEach(Array(filteredDisplayItems.enumerated()), id: \.element.id) { index, item in
                         switch item {
                         case .track(let track):
                             TrackRow(
@@ -236,22 +281,34 @@ struct AlbumDetailView: View {
                             }
                             .animation(.easeInOut(duration: 0.2), value: queuedTrackId)
                         case .discMarker(_, let label):
-                            DiscMarkerRow(label: label)
-                                .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
+                            let discSeconds = discDurationSeconds(forMarkerAt: index)
+                            DiscMarkerRow(
+                                label: label,
+                                duration: discSeconds > 0 ? formatDuration(discSeconds) : nil
+                            )
+                            .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                         }
                     }
 
-                    if albumDurationMinutes > 0 {
-                        Text("\(albumDurationMinutes) min")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 44)
-                            .padding(.top, 12)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 8, trailing: 8))
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
+                    if albumDurationSeconds > 0 {
+                        HStack {
+                            Spacer()
+                            Text(formattedAlbumDuration)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        // Trailing inset = TrackRow's 8pt row inset + the
+                        // ~7pt gap between the "…" glyph's right edge and
+                        // its 32pt frame's right edge (SF subheadline
+                        // `ellipsis` glyph is ≈18pt wide, centered in 32).
+                        // This aligns the duration text's right edge with
+                        // the visible right edge of each row's ellipsis.
+                        .listRowInsets(EdgeInsets(top: 12, leading: 8, bottom: 8, trailing: 15))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 }
 
@@ -618,15 +675,15 @@ struct AlbumDetailView: View {
     }
 
     private func calculateAlbumDuration() async {
-        var total: Double = 0
+        var durations: [String: Double] = [:]
         for track in playableTracks {
             if let url = track.localFileURL ?? cacheService.cachedFileURL(for: track) {
                 if let file = try? AVAudioFile(forReading: url) {
-                    total += Double(file.length) / file.processingFormat.sampleRate
+                    durations[track.googleFileId] = Double(file.length) / file.processingFormat.sampleRate
                 }
             }
         }
-        albumDurationSeconds = total
+        trackDurations = durations
     }
 
     private func refreshCachedState() {
@@ -1413,16 +1470,59 @@ struct TrackRow: View {
 
 struct DiscMarkerRow: View {
     let label: String
+    /// Pre-formatted disc duration (e.g. "42:18" or "1:05:22"). `nil` when
+    /// the underlying tracks haven't been measured yet — in that case the
+    /// trailing side stays empty rather than showing "0:00".
+    var duration: String? = nil
 
     var body: some View {
         HStack(spacing: 8) {
+            // Invisible mirror of the trailing duration. Kept in layout
+            // (hidden, not omitted) so it reserves the same width as the
+            // real duration on the right — the two sides must have
+            // matching fixed-width pieces for the flexible dividers to
+            // balance and put the label at the true horizontal center.
+            if let duration {
+                durationText(duration).hidden()
+            }
+
+            // Use matching VStack{Divider()} constructs on both sides
+            // (rather than Spacer on the left) so their flex behavior
+            // is identical — Spacer and Divider don't share leftover
+            // space equally in an HStack, which would push the label
+            // off-center.
             VStack { Divider() }
+                .opacity(0)
+
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // Thin line from the label's right edge to the duration's
+            // left edge. When there's no disc length (uncached tracks)
+            // this divider is kept in the layout but hidden, so the
+            // label still lands at the exact horizontal center.
             VStack { Divider() }
+                .opacity(duration == nil ? 0 : 1)
+
+            if let duration {
+                durationText(duration)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func durationText(_ value: String) -> some View {
+        Text(value)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            // Matches the per-row alignment used by the album total:
+            // push the text's right edge to line up with each TrackRow's
+            // ellipsis glyph (which sits ~7pt inside its 32pt frame,
+            // with an 8pt row inset).
+            .padding(.trailing, 7)
     }
 }
 

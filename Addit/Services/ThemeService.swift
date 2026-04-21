@@ -33,7 +33,9 @@ final class ThemeService {
         "F1E9DB",
         "36413E",
         "56494C",
-        "C2D3CD"
+        "C2D3CD",
+        "000000",
+        "FFFFFF"
     ]
 
     private let selectedHexKey = "selectedAccentHex"
