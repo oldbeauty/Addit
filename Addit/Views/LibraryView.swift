@@ -113,11 +113,11 @@ struct LibraryView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(album.name)
                                     .font(.body.bold())
-                                    .lineLimit(1)
+                                    .fadingTruncation()
                                 Text(album.artistName ?? "Unknown Artist")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                                    .fadingTruncation()
                             }
                         }
                     }
@@ -139,11 +139,11 @@ struct LibraryView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(album.name)
                                         .font(.body.bold())
-                                        .lineLimit(1)
+                                        .fadingTruncation()
                                     Text(album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? album.artistName! : "Unknown Artist")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                        .fadingTruncation()
                                 }
                             }
                         }
@@ -426,7 +426,7 @@ struct LibraryView: View {
                                 Text(importProgress.trackName)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                                    .fadingTruncation()
 
                                 // Progress bar
                                 GeometryReader { geo in
@@ -916,15 +916,13 @@ struct AlbumCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.name)
                     .font(.subheadline.bold())
-                    .lineLimit(1)
-                    .truncationMode(.tail)
                     .foregroundStyle(.primary)
+                    .fadingTruncation()
 
                 Text(subtitle)
                     .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
                     .foregroundStyle(.secondary)
+                    .fadingTruncation()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 36, alignment: .top)

@@ -68,17 +68,17 @@ struct NowPlayingBar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(playerService.currentTrack?.displayName ?? "")
                         .font(.subheadline.bold())
-                        .lineLimit(1)
+                        .fadingTruncation()
                     if let error = playerService.playbackError {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
-                            .lineLimit(1)
+                            .fadingTruncation()
                     } else {
                         Text(miniPlayerSubtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .fadingTruncation()
                     }
                 }
 
@@ -153,9 +153,16 @@ private struct MiniScrubber: View {
     // right edge.
     private let preferredGap: CGFloat = 3.5
     private let minBarWidth: CGFloat = 1.5
+    /// Horizontal half-width (points) of the grabbable area around the
+    /// playhead. Touches outside this window fall through to the parent
+    /// tap gesture (which opens the full player) instead of scrubbing.
+    private let grabRadius: CGFloat = 22
 
     @State private var lastHapticBar: Int = -1
     @State private var hapticGenerator: UIImpactFeedbackGenerator?
+    /// Tracks whether the in-flight drag began close enough to the
+    /// playhead to count as a real scrub.
+    @State private var isDragActive = false
 
     private var progress: Double {
         duration > 0 ? value / duration : 0
@@ -234,6 +241,18 @@ private struct MiniScrubber: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        // First event of the gesture — only engage if the
+                        // touch started near the playhead. Otherwise stay
+                        // inactive and ignore further events so the tap
+                        // falls through to "open full player."
+                        if !isDragActive {
+                            let playheadX = width * progress
+                            guard abs(drag.startLocation.x - playheadX) <= grabRadius else {
+                                return
+                            }
+                            isDragActive = true
+                        }
+
                         let fraction = max(0, min(1, drag.location.x / width))
                         onChanged(fraction * max(duration, 1))
 
@@ -250,8 +269,11 @@ private struct MiniScrubber: View {
                         }
                     }
                     .onEnded { drag in
-                        let fraction = max(0, min(1, drag.location.x / width))
-                        onEnded(fraction * max(duration, 1))
+                        if isDragActive {
+                            let fraction = max(0, min(1, drag.location.x / width))
+                            onEnded(fraction * max(duration, 1))
+                        }
+                        isDragActive = false
                         lastHapticBar = -1
                         hapticGenerator = nil
                     }

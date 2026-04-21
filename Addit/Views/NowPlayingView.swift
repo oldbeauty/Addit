@@ -34,7 +34,7 @@ struct NowPlayingView: View {
             Text(playerService.currentTrack?.album?.name ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .fadingTruncation(alignment: .center)
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
                 .padding(.bottom, 16)
@@ -82,17 +82,17 @@ struct NowPlayingView: View {
             VStack(spacing: 4) {
                 Text(playerService.currentTrack?.displayName ?? "Not Playing")
                     .font(.title3.bold())
-                    .lineLimit(1)
+                    .fadingTruncation(alignment: .center)
                 if let error = playerService.playbackError {
                     Text(error)
                         .font(.subheadline)
                         .foregroundStyle(.red)
-                        .lineLimit(1)
+                        .fadingTruncation(alignment: .center)
                 } else {
                     Text(nowPlayingSubtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .fadingTruncation(alignment: .center)
                 }
             }
             .padding(.horizontal, 24)
@@ -136,14 +136,30 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 16)
 
-            // Centered live waveform — shows ±1 s around the playhead,
-            // scrolling right→left as playback progresses.
+            // Centered live waveform — shows ±2 s around the playhead,
+            // scrolling right→left as playback progresses. Also acts as
+            // a high-precision scrubber: dragging maps ~20 ms per point,
+            // versus the full-width scrubber above where one point covers
+            // a much larger slice of the track.
             CenteredWaveformView(
-                currentTime: playerService.currentTime,
+                currentTime: playerService.isSeeking ? seekValue : playerService.currentTime,
                 duration: playerService.duration,
                 accentColor: themeService.accentColor,
                 samples: playerService.waveformSamples,
-                samplesPerSecond: playerService.waveformSamplesPerSecond
+                samplesPerSecond: playerService.waveformSamplesPerSecond,
+                onScrubStart: {
+                    if !playerService.isSeeking {
+                        seekValue = playerService.currentTime
+                        playerService.beginSeeking()
+                    }
+                },
+                onScrubChange: { newValue in
+                    seekValue = newValue
+                    playerService.currentTime = newValue
+                },
+                onScrubEnd: { finalValue in
+                    playerService.endSeeking(to: finalValue)
+                }
             )
             .frame(width: 200, height: 36)
 
@@ -323,9 +339,18 @@ private struct FullScrubber: View {
     private let preferredGap: CGFloat = 3.5
     private let minBarWidth: CGFloat = 1.5
     private let hapticSteps: Int = 40
+    /// Horizontal half-width (in points) of the grabbable area around the
+    /// playhead. Touches that start outside this window are ignored so the
+    /// scrubber behaves like a traditional slider "thumb" — you must grab
+    /// the current playback position to scrub, not tap-to-seek.
+    private let grabRadius: CGFloat = 22
 
     @State private var lastHapticStep: Int = -1
     @State private var hapticGenerator: UIImpactFeedbackGenerator?
+    /// Tracks whether the in-flight drag was accepted (started near the
+    /// playhead). Prevents spurious onChanged/onEnded callbacks for touches
+    /// that began outside the grab window.
+    @State private var isDragActive = false
 
     private var progress: Double {
         duration > 0 ? value / duration : 0
@@ -436,6 +461,18 @@ private struct FullScrubber: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        // On the first event of the gesture, decide
+                        // whether the touch began close enough to the
+                        // playhead to count as a scrub. If not, we stay
+                        // inactive and swallow further events too.
+                        if !isDragActive {
+                            let playheadX = width * progress
+                            guard abs(drag.startLocation.x - playheadX) <= grabRadius else {
+                                return
+                            }
+                            isDragActive = true
+                        }
+
                         let fraction = max(0, min(1, drag.location.x / width))
                         onChanged(fraction * max(duration, 1))
 
@@ -450,8 +487,13 @@ private struct FullScrubber: View {
                         }
                     }
                     .onEnded { drag in
-                        let fraction = max(0, min(1, drag.location.x / width))
-                        onEnded(fraction * max(duration, 1))
+                        // Only finalize a seek if the gesture was actually
+                        // engaged from within the grab window.
+                        if isDragActive {
+                            let fraction = max(0, min(1, drag.location.x / width))
+                            onEnded(fraction * max(duration, 1))
+                        }
+                        isDragActive = false
                         lastHapticStep = -1
                         hapticGenerator = nil
                     }
@@ -473,10 +515,27 @@ private struct CenteredWaveformView: View {
     let samples: [Float]
     /// How many samples correspond to one second of audio.
     let samplesPerSecond: Double
+    /// Called once when a precision scrub begins. Hosts typically stash the
+    /// current playhead and invoke `AudioPlayerService.beginSeeking()` here.
+    var onScrubStart: (() -> Void)? = nil
+    /// Called on every drag update with the new target time (already
+    /// clamped to `0…duration`). Hosts should mirror this into
+    /// `playerService.currentTime` so the waveform re-centers live.
+    var onScrubChange: ((TimeInterval) -> Void)? = nil
+    /// Called when the drag ends with the final target time. Hosts should
+    /// invoke `AudioPlayerService.endSeeking(to:)` here.
+    var onScrubEnd: ((TimeInterval) -> Void)? = nil
 
     /// Used to snap bar positions to whole device pixels so Canvas edges
     /// stay crisp instead of anti-aliasing across fractional offsets.
     @Environment(\.displayScale) private var displayScale
+
+    /// Playhead time captured when the drag began. Finger translation is
+    /// applied relative to this baseline, not the continuously-updating
+    /// `currentTime` — otherwise the baseline would drift during the drag
+    /// (since we feed seeks back into `currentTime`) and the gesture would
+    /// become non-linear.
+    @State private var dragStartTime: TimeInterval?
 
     /// Half-width of the visible window, in seconds.  Full window = 2 × this.
     private let halfWindow: TimeInterval = 2.0
@@ -622,6 +681,39 @@ private struct CenteredWaveformView: View {
                     .frame(width: clipLineThickness, height: clipLineLength / 2)
                     .offset(y: -clipLineThickness)
             }
+            // Precision scrub — finger translation maps to seconds via the
+            // view's visible window span, giving ~windowSeconds/width
+            // seconds per point (≈20 ms/pt for a 4 s window across 200 pt).
+            // Drag right → rewind (reveals past to the left); drag left →
+            // fast-forward (reveals future from the right) — consistent
+            // with iOS scroll direction conventions.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        let windowSeconds = halfWindow * 2
+                        if dragStartTime == nil {
+                            dragStartTime = currentTime
+                            onScrubStart?()
+                        }
+                        guard let baseline = dragStartTime,
+                              geo.size.width > 0 else { return }
+                        let secondsPerPoint = windowSeconds / Double(geo.size.width)
+                        let delta = -Double(drag.translation.width) * secondsPerPoint
+                        let target = max(0, min(duration, baseline + delta))
+                        onScrubChange?(target)
+                    }
+                    .onEnded { drag in
+                        let windowSeconds = halfWindow * 2
+                        if let baseline = dragStartTime, geo.size.width > 0 {
+                            let secondsPerPoint = windowSeconds / Double(geo.size.width)
+                            let delta = -Double(drag.translation.width) * secondsPerPoint
+                            let target = max(0, min(duration, baseline + delta))
+                            onScrubEnd?(target)
+                        }
+                        dragStartTime = nil
+                    }
+            )
         }
     }
 }

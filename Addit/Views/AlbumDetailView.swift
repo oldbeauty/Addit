@@ -483,7 +483,7 @@ struct AlbumDetailView: View {
                                 Text(saveProgress.trackName)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                                    .fadingTruncation()
 
                                 GeometryReader { geo in
                                     let fraction = CGFloat(saveProgress.current) / CGFloat(max(saveProgress.total, 1))
@@ -525,7 +525,7 @@ struct AlbumDetailView: View {
                                 Text(uploadProgress.trackName)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                                    .fadingTruncation()
 
                                 GeometryReader { geo in
                                     let fraction = CGFloat(uploadProgress.current) / CGFloat(max(uploadProgress.total, 1))
@@ -1390,7 +1390,7 @@ struct TrackRow: View {
                 Text(track.displayName)
                     .font(.body.weight(.medium))
                     .foregroundColor(isCurrentTrack ? themeService.accentColor : track.isHidden ? Color.secondary.opacity(0.5) : .primary)
-                    .lineLimit(1)
+                    .fadingTruncation()
 
                 HStack(spacing: 4) {
                     if isCached {
