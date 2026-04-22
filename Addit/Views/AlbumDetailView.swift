@@ -629,6 +629,11 @@ struct AlbumDetailView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .audioCacheDidChange)) { _ in
             refreshCachedState()
+            // The album/disc duration readout is computed by probing each
+            // track's local/cached audio file. When cache state flips, that
+            // set changes, so recompute so the header updates immediately
+            // instead of waiting for the view to re-enter.
+            Task { await calculateAlbumDuration() }
         }
         .task(id: artworkTaskID) {
             if album.isLocal {

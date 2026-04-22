@@ -5,7 +5,7 @@ struct ContentView: View {
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(ThemeService.self) private var themeService
     @State private var showNowPlaying = false
-    @State private var libraryPath = NavigationPath()
+    @State private var libraryPath: [Album] = []
 
     var body: some View {
         Group {
@@ -32,8 +32,14 @@ struct ContentView: View {
                     NowPlayingView(onOpenAlbum: { album in
                         // Push the album onto the library stack *before*
                         // dismissing the sheet, so when the sheet animates
-                        // away the album view is already behind it.
-                        libraryPath.append(album)
+                        // away the album view is already behind it. If the
+                        // album already sits on top of the stack (user was
+                        // viewing it before opening the player), skip the
+                        // push so "tap cover" just returns there instead of
+                        // stacking a duplicate.
+                        if libraryPath.last != album {
+                            libraryPath.append(album)
+                        }
                         showNowPlaying = false
                     })
                 }
