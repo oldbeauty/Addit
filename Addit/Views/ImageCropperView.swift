@@ -36,31 +36,43 @@ struct ImageCropperView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                // Draggable/zoomable image
-                Image(uiImage: img)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(
-                        width: baseSize.width * currentScale,
-                        height: baseSize.height * currentScale
-                    )
-                    .offset(currentOffset)
+                // The scaled image lives inside a flexible `Color.clear`
+                // layer that sizes to the ZStack's bounds. The overlaid
+                // `Image` can grow/shrink via `.frame(...).offset(...)`
+                // without propagating its size up to the ZStack, and
+                // `.clipped()` keeps the drawing inside the screen. This
+                // is what keeps the crop cutout locked and the Cancel /
+                // Save buttons on-screen no matter how wide or tall the
+                // source photo is.
+                Color.clear
+                    .overlay {
+                        Image(uiImage: img)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width: baseSize.width * currentScale,
+                                height: baseSize.height * currentScale
+                            )
+                            .offset(currentOffset)
+                            .animation(.interactiveSpring, value: steadyOffset)
+                            .animation(.interactiveSpring, value: steadyScale)
+                    }
+                    .clipped()
+                    .contentShape(Rectangle())
                     .gesture(combinedGesture(cropSide: cropSide, baseSize: baseSize))
-                    .animation(.interactiveSpring, value: steadyOffset)
-                    .animation(.interactiveSpring, value: steadyScale)
 
                 // Dimming overlay with square cutout
                 CropOverlay(cropSide: cropSide)
                     .allowsHitTesting(false)
 
-                // Cancel / Done buttons
+                // Cancel / Save buttons
                 VStack {
                     Spacer()
                     HStack {
                         Button("Cancel") { onCancelled() }
                             .foregroundStyle(.white)
                         Spacer()
-                        Button("Choose") {
+                        Button("Save") {
                             let cropped = performCrop(
                                 cropSide: cropSide,
                                 baseSize: baseSize,
