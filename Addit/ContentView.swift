@@ -5,6 +5,7 @@ struct ContentView: View {
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(ThemeService.self) private var themeService
     @State private var showNowPlaying = false
+    @State private var libraryPath = NavigationPath()
 
     var body: some View {
         Group {
@@ -19,7 +20,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if authService.isSignedIn {
                 ZStack(alignment: .bottom) {
-                    NavigationStack {
+                    NavigationStack(path: $libraryPath) {
                         LibraryView()
                     }
 
@@ -28,7 +29,13 @@ struct ContentView: View {
                     }
                 }
                 .sheet(isPresented: $showNowPlaying) {
-                    NowPlayingView()
+                    NowPlayingView(onOpenAlbum: { album in
+                        // Push the album onto the library stack *before*
+                        // dismissing the sheet, so when the sheet animates
+                        // away the album view is already behind it.
+                        libraryPath.append(album)
+                        showNowPlaying = false
+                    })
                 }
             } else {
                 SignInView()

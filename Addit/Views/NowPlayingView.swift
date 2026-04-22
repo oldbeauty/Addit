@@ -3,6 +3,11 @@ import UIKit
 import SwiftData
 
 struct NowPlayingView: View {
+    /// Called when the user taps the album artwork tile. The host is
+    /// expected to push the album onto its navigation stack and dismiss
+    /// this sheet, so the album view appears behind the dismissing player.
+    var onOpenAlbum: ((Album) -> Void)? = nil
+
     @Environment(\.modelContext) private var modelContext
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) private var albumArtService
@@ -299,6 +304,14 @@ struct NowPlayingView: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            // Tap-to-open-album lives on the artwork tile itself, not the
+            // enclosing TabView, so the horizontal page swipe that flips
+            // to the EQ visualizer keeps working unchanged.
+            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .onTapGesture {
+                guard let album = playerService.currentTrack?.album else { return }
+                onOpenAlbum?(album)
+            }
     }
 
     private var nowPlayingSubtitle: String {
