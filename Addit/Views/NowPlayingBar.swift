@@ -128,11 +128,7 @@ struct NowPlayingBar: View {
     }
 
     private var miniPlayerSubtitle: String {
-        let albumName = playerService.currentTrack?.album?.name ?? ""
-        if let artistName = playerService.currentTrack?.album?.artistName {
-            return "\(artistName) \u{2014} \(albumName)"
-        }
-        return albumName
+        playerService.currentTrack?.album?.artistName ?? ""
     }
 }
 
