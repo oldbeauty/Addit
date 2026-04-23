@@ -18,6 +18,11 @@ struct NowPlayingView: View {
     @State private var albumImage: UIImage?
     @State private var showQueueSheet = false
     @State private var showVisualizer = false
+    /// Live drag offset for the custom two-page pager that flips between
+    /// the album cover and the EQ visualizer. Combined with `showVisualizer`
+    /// this yields a continuous 0…1 progress used to morph the cover into
+    /// the ambient halo mid-swipe.
+    @State private var dragOffset: CGFloat = 0
 
     private var artworkTaskID: String? {
         guard let album = playerService.currentTrack?.album else { return nil }
@@ -44,21 +49,102 @@ struct NowPlayingView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 16)
 
-            // Album art / EQ visualizer
-            TabView(selection: $showVisualizer) {
-                albumArtView
-                    .tag(false)
-                EQVisualizerView()
-                    .padding(.top, 20)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                    .tag(true)
+            // Album art / EQ visualizer — custom two-page pager so we can
+            // track continuous swipe progress and morph the cover into an
+            // ambient "color halo" as the user scrolls toward the EQ page.
+            // A stock `TabView(.page)` would only expose the final commit,
+            // not the live drag fraction we need to drive the blur/corner/
+            // scale interpolation.
+            GeometryReader { geo in
+                let pageWidth = max(0, geo.size.width)
+                // Combine the latched page (`showVisualizer`) with the live
+                // finger offset to get a continuous 0…1 progress: 0 =
+                // album cover, 1 = EQ visualizer.
+                let committedOffset: CGFloat = showVisualizer ? -pageWidth : 0
+                let totalOffset = committedOffset + dragOffset
+                let rawProgress = pageWidth > 0 ? -totalOffset / pageWidth : 0
+                let pageProgress = max(0, min(1, rawProgress))
+
+                // Skip the whole subtree until GeometryReader has handed
+                // us a real width. On the first layout pass `pageWidth` is
+                // 0, and the EQ visualizer's internal `.padding(...)` then
+                // resolves to a negative content frame — which is exactly
+                // what triggers the "Invalid frame dimension" console spam.
+                if pageWidth > 0 {
+                ZStack {
+                    // Cover → halo morph. Same image the whole time; as
+                    // progress climbs toward 1 we scale it up slightly,
+                    // grow the corner radius, and crank the blur. Because
+                    // the blur is applied AFTER the rounded-rect clip, the
+                    // Gaussian spread feathers the cover's silhouette
+                    // outward — exactly the "halo in the shape of the
+                    // album" effect the earlier static background had.
+                    albumHaloMorph(progress: pageProgress, pageWidth: pageWidth)
+                        // Drop shadow fades out as the cover dissolves into
+                        // a soft halo — a blurred glow doesn't need a hard
+                        // shadow under it.
+                        .shadow(color: .black.opacity(0.35 * (1 - pageProgress)),
+                                radius: 20, y: 10)
+
+                    // EQ visualizer slides in from the right and fades up
+                    // as the halo forms behind it.
+                    EQVisualizerView()
+                        .padding(.top, 20)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                        .frame(width: pageWidth, height: pageWidth)
+                        .opacity(pageProgress)
+                        .offset(x: (1 - pageProgress) * pageWidth * 0.35)
+                        .allowsHitTesting(pageProgress > 0.5)
+                }
+                .frame(width: pageWidth, height: pageWidth)
+                // Horizontal-only pan recognizer bridged in from UIKit.
+                // SwiftUI's `DragGesture` — even via `.simultaneousGesture`
+                // — still claims the touch in a way that suppresses the
+                // sheet's swipe-down-to-dismiss recognizer. A UIKit pan
+                // with `gestureRecognizerShouldBegin` rejecting vertical
+                // motion and `shouldRecognizeSimultaneouslyWith` returning
+                // true lets the sheet handle vertical drags normally
+                // while we still drive the album→halo morph horizontally.
+                .overlay(
+                    HorizontalPagerGesture(
+                        onChanged: { dx in
+                            var t = dx
+                            if showVisualizer, t < 0 { t /= 3 }
+                            if !showVisualizer, t > 0 { t /= 3 }
+                            dragOffset = t
+                        },
+                        onEnded: { dx, predictedDx in
+                            let positionThreshold = pageWidth * 0.10
+                            let velocityThreshold = pageWidth * 0.40
+                            let shouldAdvance =
+                                dx < -positionThreshold ||
+                                predictedDx < -velocityThreshold
+                            let shouldRetreat =
+                                dx > positionThreshold ||
+                                predictedDx > velocityThreshold
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                if showVisualizer, shouldRetreat {
+                                    showVisualizer = false
+                                } else if !showVisualizer, shouldAdvance {
+                                    showVisualizer = true
+                                }
+                                dragOffset = 0
+                            }
+                        },
+                        onTap: {
+                            // Tap-to-open-album only engages on the album
+                            // page; on the EQ page the tap is a no-op.
+                            guard pageProgress < 0.5,
+                                  let album = playerService.currentTrack?.album else { return }
+                            onOpenAlbum?(album)
+                        }
+                    )
+                )
+                } // end: if pageWidth > 0
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: 320)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(radius: 20, y: 10)
             .padding(.horizontal, 40)
             .onChange(of: showVisualizer) { _, visible in
                 if visible { analyzer.start() } else { analyzer.stop() }
@@ -280,38 +366,47 @@ struct NowPlayingView: View {
         }
     }
 
-    private var albumArtView: some View {
-        RoundedRectangle(cornerRadius: 20)
-            .fill(
-                LinearGradient(
-                    colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.2)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                Group {
-                    if let albumImage {
-                        Image(uiImage: albumImage)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
+    /// The album cover that morphs into the ambient halo as `progress`
+    /// climbs from 0 (album page) to 1 (EQ page). Kept as a single view so
+    /// the transformation stays continuous — there's no crossfade between
+    /// two different images, just one image whose blur/corner/scale is
+    /// driven by scroll position.
+    @ViewBuilder
+    private func albumHaloMorph(progress: CGFloat, pageWidth: CGFloat) -> some View {
+        let cornerRadius = 20 + 12 * progress
+        let blurRadius = progress * 28
+        // Grow slightly as we morph so the halo reads as a little wider
+        // than the original cover, matching Apple Music/Spotify's feel.
+        let scale = 1 + 0.12 * progress
+
+        Group {
+            if let albumImage {
+                Image(uiImage: albumImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                themeService.accentColor.opacity(0.6),
+                                themeService.accentColor.opacity(0.2)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
                         Image(systemName: "music.note")
                             .font(.system(size: 80))
                             .foregroundStyle(.white.opacity(0.7))
                     }
-                }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            // Tap-to-open-album lives on the artwork tile itself, not the
-            // enclosing TabView, so the horizontal page swipe that flips
-            // to the EQ visualizer keeps working unchanged.
-            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .onTapGesture {
-                guard let album = playerService.currentTrack?.album else { return }
-                onOpenAlbum?(album)
-            }
+        }
+        .frame(width: pageWidth, height: pageWidth)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .scaleEffect(scale)
+        .blur(radius: blurRadius)
     }
 
     private var nowPlayingSubtitle: String {
@@ -727,6 +822,120 @@ private struct CenteredWaveformView: View {
                         dragStartTime = nil
                     }
             )
+        }
+    }
+}
+
+// MARK: - Horizontal Pager Gesture (UIKit bridge)
+
+/// UIKit-backed gesture recognizer overlay that captures horizontal pans
+/// and taps on the album pager, but deliberately refuses to begin for
+/// vertical drags so the sheet's built-in swipe-to-dismiss recognizer can
+/// claim those instead. A SwiftUI `DragGesture`, even when used via
+/// `simultaneousGesture`, still locks the touch enough to block the
+/// sheet's UIKit pan recognizer from recognizing a vertical flick; the
+/// only reliable workaround is to own the recognizer ourselves and set
+/// its delegate.
+private struct HorizontalPagerGesture: UIViewRepresentable {
+    var onChanged: (CGFloat) -> Void
+    /// Called once at drag end with the raw translation and a projected
+    /// "where would this finger have stopped" translation computed from
+    /// release velocity — mirrors SwiftUI's `predictedEndTranslation` so
+    /// the call site can implement velocity-based page commits.
+    var onEnded: (CGFloat, CGFloat) -> Void
+    var onTap: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onChanged: onChanged, onEnded: onEnded, onTap: onTap)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = true
+
+        let pan = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handlePan(_:))
+        )
+        pan.delegate = context.coordinator
+        view.addGestureRecognizer(pan)
+
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTap(_:))
+        )
+        tap.delegate = context.coordinator
+        view.addGestureRecognizer(tap)
+
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onChanged = onChanged
+        context.coordinator.onEnded = onEnded
+        context.coordinator.onTap = onTap
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onChanged: (CGFloat) -> Void
+        var onEnded: (CGFloat, CGFloat) -> Void
+        var onTap: () -> Void
+
+        init(
+            onChanged: @escaping (CGFloat) -> Void,
+            onEnded: @escaping (CGFloat, CGFloat) -> Void,
+            onTap: @escaping () -> Void
+        ) {
+            self.onChanged = onChanged
+            self.onEnded = onEnded
+            self.onTap = onTap
+        }
+
+        @objc func handlePan(_ gr: UIPanGestureRecognizer) {
+            let t = gr.translation(in: gr.view)
+            let v = gr.velocity(in: gr.view)
+            switch gr.state {
+            case .changed:
+                onChanged(t.x)
+            case .ended, .cancelled, .failed:
+                // Project where the finger *would* have landed if it kept
+                // decelerating at the current release velocity. 0.2 s is
+                // roughly what UIScrollView uses for short paging flicks.
+                let predicted = t.x + v.x * 0.2
+                onEnded(t.x, predicted)
+            default:
+                break
+            }
+        }
+
+        @objc func handleTap(_ gr: UITapGestureRecognizer) {
+            onTap()
+        }
+
+        // Only let the pan begin if the initial motion is primarily
+        // horizontal. A vertical-dominant start leaves this recognizer in
+        // `.possible` forever, so the sheet's pan recognizer wins and
+        // swipe-to-dismiss works normally.
+        func gestureRecognizerShouldBegin(_ gr: UIGestureRecognizer) -> Bool {
+            guard let pan = gr as? UIPanGestureRecognizer else { return true }
+            let t = pan.translation(in: pan.view)
+            // Require a tiny minimum distance before committing to a
+            // direction — otherwise iOS calls this with (0,0) and we'd
+            // greenlight everything.
+            if abs(t.x) < 2 && abs(t.y) < 2 { return false }
+            return abs(t.x) > abs(t.y)
+        }
+
+        // Coexist with every other recognizer in the tree — crucially
+        // including the sheet's swipe-to-dismiss pan — so that our "refuse
+        // to begin for vertical" decision actually lets the other
+        // recognizer take over instead of both being stuck waiting.
+        func gestureRecognizer(
+            _ gr: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }

@@ -38,7 +38,7 @@ struct AlbumDetailView: View {
     @State private var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State private var saveToDriveError: String?
 
-    private let coverSize: CGFloat = 200
+    private let coverSize: CGFloat = 280
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -167,11 +167,15 @@ struct AlbumDetailView: View {
                             .frame(width: coverSize, height: coverSize)
                             .overlay {
                                 if let albumImage {
-                                    Image(uiImage: albumImage)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: coverSize, height: coverSize)
-                                        .clipped()
+                                    // Tap to kick off a luminance-based
+                                    // pixel-sort animation; tap again at
+                                    // the sorted state to replay the log
+                                    // in reverse back to the original.
+                                    PixelSortCoverView(
+                                        image: albumImage,
+                                        size: coverSize,
+                                        cornerRadius: 12
+                                    )
                                 } else {
                                     Image(systemName: "music.note")
                                         .font(.system(size: 48))
