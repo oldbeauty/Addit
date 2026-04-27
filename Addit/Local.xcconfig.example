@@ -1,0 +1,18 @@
+// Template for `Local.xcconfig` — copy this file to `Local.xcconfig`
+// (same directory) and fill in your own values. The real file is
+// gitignored so each contributor keeps their own copy without it
+// ever ending up in commits.
+//
+// PRODUCT_BUNDLE_IDENTIFIER
+//   Free Apple accounts can't share a bundle ID across personal
+//   teams. Pick something unique to you, e.g. `YourName.Addit` or
+//   `com.yourname.addit`. Apple will refuse signing if someone
+//   else's free team has already claimed the same string.
+//
+// DEVELOPMENT_TEAM
+//   The 10-character team ID for your Apple ID. Find it in:
+//     Xcode → Settings → Accounts → click your Apple ID
+//     → "Personal Team" row → copy the code in the "Team ID" column.
+
+PRODUCT_BUNDLE_IDENTIFIER = YourName.Addit
+DEVELOPMENT_TEAM = ABCDE12345
