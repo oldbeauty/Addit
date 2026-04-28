@@ -5,6 +5,21 @@ final class AudioCacheService {
     var driveService: GoogleDriveService?
     var activeAccountId: String?
 
+    /// Live "Make Available Offline" progress per album, keyed by the
+    /// album's Google folder ID. An entry exists only while a cache run
+    /// is in flight; presence in this dictionary is what AlbumDetailView's
+    /// toolbar progress ring uses to decide whether to render itself.
+    /// Stored on the service (rather than as `@State` on the view) so the
+    /// indicator survives navigating away from the album and back again
+    /// while the underlying download Task continues running.
+    var albumCacheProgress: [String: AlbumCacheProgress] = [:]
+
+    /// Snapshot of an in-flight album cache run.
+    struct AlbumCacheProgress: Equatable {
+        var current: Int
+        var total: Int
+    }
+
     private let fileManager = FileManager.default
 
     private var cacheDirectory: URL {

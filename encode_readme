@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Encode README.md in place. Replaces the file's contents with a short
+# decode-instructions stub plus a base64-encoded copy of the original
+# inside HTML-comment markers. To restore, run ./decode_readme.
+#
+# Idempotent: running this script when the README is already encoded
+# is a no-op. There are only ever two states (encoded / decoded), so
+# you can run encode and decode as many times as you want without
+# tracking how many times you've toggled.
+
+set -euo pipefail
+
+README="README.md"
+START_MARKER="<!-- ----- ENCODED ----- -->"
+END_MARKER="<!-- ----- END ----- -->"
+
+if [[ ! -f "$README" ]]; then
+    echo "Error: $README not found in current directory." >&2
+    exit 1
+fi
+
+# Already encoded? Bail. Detection is by the start marker, which is
+# unique to the encoded form.
+if grep -qF "$START_MARKER" "$README"; then
+    echo "$README is already encoded. No changes made."
+    echo "Run ./decode_readme to restore it."
+    exit 0
+fi
+
+# Snapshot the original and base64-encode it. `base64` with no flags
+# wraps lines at 76 chars on macOS, which keeps the encoded blob
+# readable in any text editor.
+ENCODED=$(base64 < "$README")
+
+# Write the new file. Heredoc is unquoted so $ENCODED expands; backticks
+# are escaped with \` so they appear literally in the output instead of
+# triggering command substitution.
+cat > "$README" <<EOF
+# Addit
+
+This README is encoded. To restore it, run:
+
+\`\`\`
+./decode_readme
+\`\`\`
+
+To re-encode after decoding, run \`./encode_readme\`. Both scripts are
+idempotent — running either one when the README is already in that
+state is a no-op, so you can run them as many times as you want
+without corrupting the file. Encoded and decoded are the only two
+possible states.
+
+$START_MARKER
+$ENCODED
+$END_MARKER
+EOF
+
+echo "Encoded $README."

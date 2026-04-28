@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Decode an encoded README.md in place, restoring it to its original
+# plaintext form byte-for-byte. The encoded form is produced by
+# ./encode_readme, which wraps a base64 blob between HTML-comment
+# markers; this script extracts the blob, decodes it, and overwrites
+# README.md with the result.
+#
+# Idempotent: if the README is already decoded (no start marker
+# present), the script exits cleanly without touching the file.
+# Combined with encode_readme's same guard, this guarantees the README
+# only ever has two states regardless of how many times you run either
+# script.
+
+set -euo pipefail
+
+README="README.md"
+START_MARKER="<!-- ----- ENCODED ----- -->"
+END_MARKER="<!-- ----- END ----- -->"
+
+if [[ ! -f "$README" ]]; then
+    echo "Error: $README not found in current directory." >&2
+    exit 1
+fi
+
+# Not encoded? Nothing to do.
+if ! grep -qF "$START_MARKER" "$README"; then
+    echo "$README is not encoded. No changes made."
+    echo "Run ./encode_readme to encode it."
+    exit 0
+fi
+
+# Pull every line strictly between the start and end markers. Using
+# `awk` here (vs. `sed`) so the marker lines themselves are skipped
+# without needing tricky line-range arithmetic.
+ENCODED=$(awk -v start="$START_MARKER" -v end="$END_MARKER" '
+    $0 == start { capturing = 1; next }
+    $0 == end   { capturing = 0; next }
+    capturing
+' "$README")
+
+if [[ -z "$ENCODED" ]]; then
+    echo "Error: encoded blob is empty or markers are malformed." >&2
+    echo "The README is in an invalid encoded state — restore from git history." >&2
+    exit 1
+fi
+
+# Decode through a temp file so a corrupt blob doesn't truncate the
+# source README. Only swap in the decoded contents if base64 succeeds.
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+
+if ! printf '%s' "$ENCODED" | base64 -d > "$TMP" 2>/dev/null; then
+    echo "Error: base64 decode failed — the blob may be corrupted." >&2
+    echo "Restore $README from git history if needed." >&2
+    exit 1
+fi
+
+mv "$TMP" "$README"
+trap - EXIT
+
+echo "Decoded $README."

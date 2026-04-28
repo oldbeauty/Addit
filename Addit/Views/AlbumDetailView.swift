@@ -328,6 +328,30 @@ struct AlbumDetailView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Album-download progress indicator. Visible only while a
+            // "Make Available Offline" run is in flight — appears the
+            // moment `saveProgress.total` becomes non-zero and disappears
+            // again when the download finishes (the existing flow resets
+            // `saveProgress` to `(0, 0, "")`). Placed before the ellipsis
+            // so it renders to the left of it in the trailing toolbar
+            // group.
+            ToolbarItem(placement: .primaryAction) {
+                if let progress = cacheService.albumCacheProgress[album.googleFolderId],
+                   progress.total > 0 {
+                    Button {
+                        // Intentionally a no-op for now — the button is
+                        // here as a visual progress affordance. Hooking
+                        // it up to "cancel download" / "show details"
+                        // is a one-line change later.
+                    } label: {
+                        DownloadProgressRing(
+                            progress: Double(progress.current) /
+                                Double(max(progress.total, 1))
+                        )
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -338,6 +362,8 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        .animation(.easeInOut(duration: 0.25),
+                   value: cacheService.albumCacheProgress[album.googleFolderId] != nil)
         .simultaneousGesture(
             showToolbarActions
                 ? TapGesture().onEnded {
@@ -670,13 +696,49 @@ struct AlbumDetailView: View {
             }
             cachedTrackIds.removeAll()
         } else {
+            // Skip if a cache run is already in flight for this album
+            // — protects against a second tap spawning a duplicate Task
+            // (which would also corrupt the progress ring's count).
+            guard cacheService.albumCacheProgress[album.googleFolderId] == nil else {
+                return
+            }
+
+            // Snapshot what we're about to download up front so the
+            // progress ring's denominator is fixed for the whole run.
+            let pending = album.tracks.filter {
+                !cachedTrackIds.contains($0.googleFileId)
+            }
+            guard !pending.isEmpty else { return }
+
+            // Progress lives on the service, not on the view. That way
+            // it survives the view being torn down when the user
+            // navigates away — they can pop back into the album mid-
+            // download and the toolbar ring picks up exactly where it
+            // left off.
+            let folderId = album.googleFolderId
+            cacheService.albumCacheProgress[folderId] = .init(
+                current: 0, total: pending.count
+            )
             Task {
-                for track in album.tracks where !cachedTrackIds.contains(track.googleFileId) {
+                defer {
+                    // Always clear the entry on completion (success or
+                    // error). On the main actor so the toolbar
+                    // animation hooks fire on the right thread.
+                    Task { @MainActor in
+                        cacheService.albumCacheProgress[folderId] = nil
+                    }
+                }
+                for track in pending {
                     do {
                         _ = try await cacheService.cacheTrack(track)
                         cachedTrackIds.insert(track.googleFileId)
                     } catch {
-                        // Skip failed tracks
+                        // Skip failed tracks; still count toward
+                        // progress so the ring doesn't stall.
+                    }
+                    if var p = cacheService.albumCacheProgress[folderId] {
+                        p.current += 1
+                        cacheService.albumCacheProgress[folderId] = p
                     }
                 }
             }
@@ -1597,6 +1659,52 @@ struct ChooseDriveFolderSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Download Progress Ring
+
+/// Circular progress indicator sized to fit inside a toolbar button. The
+/// surrounding `Button { } label: { ... }` in a `ToolbarItem` is what
+/// gives this its liquid-glass shell on iOS 26 — the system styles the
+/// button automatically when it lives in the nav-bar trailing group, so
+/// we don't apply `.glassEffect()` here. We just draw the two concentric
+/// rings (a faint track plus a stroked arc representing progress) and
+/// let the toolbar do the rest.
+private struct DownloadProgressRing: View {
+    /// 0…1 fill fraction.
+    let progress: Double
+
+    private var clamped: Double {
+        max(0, min(1, progress))
+    }
+
+    var body: some View {
+        ZStack {
+            // Track ring — faint background that shows the unfilled
+            // portion of the circumference.
+            Circle()
+                .stroke(Color.primary.opacity(0.22), lineWidth: 2.2)
+
+            // Progress arc — drawn from 12 o'clock clockwise. `trim`
+            // controls the fraction of the circumference that's drawn;
+            // the `-90°` rotation moves the start point from the
+            // default (3 o'clock) up to 12 o'clock so the ring fills
+            // the way users expect from a clock face.
+            Circle()
+                .trim(from: 0, to: clamped)
+                .stroke(
+                    Color.primary,
+                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+                .animation(.easeInOut(duration: 0.25), value: clamped)
+        }
+        // ~17pt matches the visual weight of the SF Symbol glyphs the
+        // adjacent toolbar buttons use, so the two buttons read as the
+        // same family even though one is text-shaped and the other is
+        // a custom drawing.
+        .frame(width: 17, height: 17)
     }
 }
 
