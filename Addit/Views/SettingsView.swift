@@ -3,7 +3,11 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ThemeService.self) private var themeService
-    @State private var showColorPicker = false
+    /// Which scheme's accent the picker sheet is currently editing.
+    /// `nil` = sheet closed. Driving presentation off this optional
+    /// (instead of a separate `Bool`) means the sheet always knows
+    /// which scheme to operate on without an extra prop drill.
+    @State private var editingScheme: ColorScheme? = nil
 
     var body: some View {
         NavigationStack {
@@ -20,23 +24,13 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section {
-                    Button {
-                        showColorPicker = true
-                    } label: {
-                        HStack {
-                            Text("Change Default Color")
-                            Spacer()
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(themeService.accentColor)
-                                .frame(width: 22, height: 22)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.primary.opacity(0.2), lineWidth: 1)
-                                }
-                        }
-                    }
-                    .buttonStyle(.plain)
+                // Per-scheme accent rows. Each shows its own swatch so
+                // the user sees both colors at a glance even while
+                // viewing in a single mode. Tapping either opens the
+                // same picker sheet, scoped to that scheme.
+                Section("Default Color") {
+                    accentRow(label: "Light Mode", scheme: .light)
+                    accentRow(label: "Dark Mode", scheme: .dark)
                 }
             }
             .navigationTitle("Settings")
@@ -48,27 +42,66 @@ struct SettingsView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showColorPicker) {
-                AccentColorPickerSheet()
+            .sheet(item: Binding(
+                get: { editingScheme.map(SchemeIdentifier.init) },
+                set: { editingScheme = $0?.scheme }
+            )) { identifier in
+                AccentColorPickerSheet(scheme: identifier.scheme)
             }
         }
     }
+
+    private func accentRow(label: String, scheme: ColorScheme) -> some View {
+        Button {
+            editingScheme = scheme
+        } label: {
+            HStack {
+                Text(label)
+                Spacer()
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(themeService.accentColor(for: scheme))
+                    .frame(width: 22, height: 22)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Identifiable wrapper so `ColorScheme` (which isn't `Identifiable` by
+/// default) can drive `.sheet(item:)`. Lets us bind sheet presentation
+/// directly to "which scheme are we editing right now."
+private struct SchemeIdentifier: Identifiable {
+    let scheme: ColorScheme
+    var id: String { scheme == .dark ? "dark" : "light" }
 }
 
 private struct AccentColorPickerSheet: View {
+    /// Which scheme this picker is editing. The sheet operates on a
+    /// single scheme at a time so the user can pick distinct colors
+    /// for light and dark.
+    let scheme: ColorScheme
+
     @Environment(\.dismiss) private var dismiss
     @Environment(ThemeService.self) private var themeService
 
     private let columns = [GridItem(.adaptive(minimum: 62), spacing: 14)]
+
+    private var navTitle: String {
+        scheme == .dark ? "Dark Mode Color" : "Light Mode Color"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(ThemeService.paletteHexes, id: \.self) { hex in
-                        let isSelected = themeService.selectedHex == hex
+                        let isSelected = themeService.selectedHex(for: scheme) == hex
                         Button {
-                            themeService.setAccent(hex: hex)
+                            themeService.setAccent(hex: hex, for: scheme)
                         } label: {
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(themeColor(hex))
@@ -91,7 +124,7 @@ private struct AccentColorPickerSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle("Default Color")
+            .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

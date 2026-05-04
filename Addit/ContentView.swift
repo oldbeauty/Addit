@@ -4,6 +4,7 @@ struct ContentView: View {
     @Environment(GoogleAuthService.self) private var authService
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(ThemeService.self) private var themeService
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showNowPlaying = false
     @State private var libraryPath: [Album] = []
 
@@ -49,6 +50,16 @@ struct ContentView: View {
         }
         .tint(themeService.accentColor)
         .preferredColorScheme(themeService.appearanceMode.colorScheme)
+        // Bridge SwiftUI's effective colorScheme into ThemeService so
+        // its `accentColor` computed property knows which per-scheme
+        // hex to return. Run on first appearance (so the very first
+        // frame uses the right color) and on every change after that
+        // (so flipping system dark/light or changing the in-app
+        // Appearance picker swaps the accent immediately).
+        .onAppear { themeService.currentScheme = colorScheme }
+        .onChange(of: colorScheme) { _, newValue in
+            themeService.currentScheme = newValue
+        }
         .alert("Unable to play this audio format", isPresented: .init(
             get: { playerService.failedTrack != nil },
             set: { if !$0 { playerService.failedTrack = nil } }

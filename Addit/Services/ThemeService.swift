@@ -38,15 +38,44 @@ final class ThemeService {
         "FFFFFF"
     ]
 
-    private let selectedHexKey = "selectedAccentHex"
+    /// Old single-color UserDefaults key, kept around purely for one-shot
+    /// migration to the per-scheme keys below. Reads on first launch
+    /// after the upgrade and seeds both new keys so existing users don't
+    /// lose their selection.
+    private let legacyHexKey = "selectedAccentHex"
+    private let lightHexKey = "selectedAccentHexLight"
+    private let darkHexKey = "selectedAccentHexDark"
     private let appearanceModeKey = "appearanceMode"
-    private let fallbackHex = "4D7298"
+    /// Static so the migration helper inside `init` can read it before
+    /// the instance's stored properties are fully initialized.
+    private static let fallbackHex = "4D7298"
 
-    var selectedHex: String {
+    /// Accent color the user picked while light mode is the effective
+    /// appearance. Persists to UserDefaults on every change.
+    var lightHex: String {
         didSet {
-            UserDefaults.standard.set(selectedHex, forKey: selectedHexKey)
+            UserDefaults.standard.set(lightHex, forKey: lightHexKey)
         }
     }
+
+    /// Accent color the user picked while dark mode is the effective
+    /// appearance. Persists separately from `lightHex`.
+    var darkHex: String {
+        didSet {
+            UserDefaults.standard.set(darkHex, forKey: darkHexKey)
+        }
+    }
+
+    /// Which color scheme is currently displayed. Updated by the root
+    /// view (`ContentView`) whenever SwiftUI's `\.colorScheme`
+    /// environment changes — that's the only signal that respects both
+    /// the system setting AND any in-app `.preferredColorScheme`
+    /// override the user has chosen via Settings.
+    ///
+    /// The accent-color computed property reads this to decide which
+    /// per-scheme hex to return, so every call site that already says
+    /// `themeService.accentColor` keeps working unchanged.
+    var currentScheme: ColorScheme = .light
 
     var appearanceMode: AppearanceMode {
         didSet {
@@ -54,16 +83,40 @@ final class ThemeService {
         }
     }
 
+    /// The hex string for whichever scheme is currently displayed.
+    /// Useful for the picker UI ("which swatch is highlighted right
+    /// now?") without forcing callers to know which scheme is in
+    /// effect.
+    var selectedHex: String {
+        currentScheme == .dark ? darkHex : lightHex
+    }
+
     var accentColor: Color {
-        Color(hex: selectedHex) ?? Color(hex: fallbackHex) ?? .blue
+        Color(hex: selectedHex) ?? Color(hex: Self.fallbackHex) ?? .blue
     }
 
     init() {
-        let stored = UserDefaults.standard.string(forKey: selectedHexKey)?.uppercased()
-        if let stored, Self.paletteHexes.contains(stored) {
-            selectedHex = stored
+        let storedLight = UserDefaults.standard.string(forKey: lightHexKey)?.uppercased()
+        let storedDark = UserDefaults.standard.string(forKey: darkHexKey)?.uppercased()
+
+        // Migration: if neither per-scheme key has ever been written
+        // but the legacy single-color key is present, seed both new
+        // keys with the legacy value. After this runs once the legacy
+        // key is harmless — we never read it again.
+        let legacy = UserDefaults.standard.string(forKey: legacyHexKey)?.uppercased()
+
+        func resolve(_ value: String?) -> String {
+            if let value, Self.paletteHexes.contains(value) { return value }
+            return Self.fallbackHex
+        }
+
+        if storedLight == nil && storedDark == nil, let legacy {
+            let migrated = resolve(legacy)
+            lightHex = migrated
+            darkHex = migrated
         } else {
-            selectedHex = fallbackHex
+            lightHex = resolve(storedLight)
+            darkHex = resolve(storedDark)
         }
 
         if let modeRaw = UserDefaults.standard.string(forKey: appearanceModeKey),
@@ -74,10 +127,30 @@ final class ThemeService {
         }
     }
 
-    func setAccent(hex: String) {
+    /// Set the accent color for a specific scheme. Callers in the
+    /// Settings UI use this directly so the picker can edit one
+    /// scheme's color without affecting the other.
+    func setAccent(hex: String, for scheme: ColorScheme) {
         let normalized = hex.uppercased()
         guard Self.paletteHexes.contains(normalized) else { return }
-        selectedHex = normalized
+        switch scheme {
+        case .dark: darkHex = normalized
+        default:    lightHex = normalized
+        }
+    }
+
+    /// Read the stored hex for a specific scheme. Settings UI reads
+    /// this to draw the per-row swatch and the highlighted-checkmark
+    /// state inside the picker.
+    func selectedHex(for scheme: ColorScheme) -> String {
+        scheme == .dark ? darkHex : lightHex
+    }
+
+    /// Resolve the SwiftUI `Color` for a specific scheme. Used by
+    /// per-row swatches in Settings so the user sees both colors at a
+    /// glance regardless of which mode is currently active.
+    func accentColor(for scheme: ColorScheme) -> Color {
+        Color(hex: selectedHex(for: scheme)) ?? Color(hex: Self.fallbackHex) ?? .blue
     }
 }
 
