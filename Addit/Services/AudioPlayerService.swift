@@ -150,7 +150,9 @@ final class AudioPlayerService {
             startTimeTracking()
             updateNowPlayingPlaybackInfo()
         } catch {
+            #if DEBUG
             print("Engine start error: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -256,7 +258,9 @@ final class AudioPlayerService {
                 try AVAudioSession.sharedInstance().setActive(true)
                 try engine.start()
             } catch {
+                #if DEBUG
                 print("Engine start error during seek: \(error.localizedDescription)")
+                #endif
                 return
             }
         }
@@ -382,7 +386,9 @@ final class AudioPlayerService {
             if let localURL = track.localFileURL {
                 fileURL = localURL
                 let exists = FileManager.default.fileExists(atPath: localURL.path)
+                #if DEBUG
                 print("[Player] Local track: \(track.name), path: \(localURL.path), exists: \(exists)")
+                #endif
             } else {
                 guard let cacheService else { throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Cache service not available"]) }
                 fileURL = try await cacheService.cacheTrack(track)
@@ -393,7 +399,9 @@ final class AudioPlayerService {
                 audioFile = try AVAudioFile(forReading: fileURL)
             } catch {
                 // AVAudioFile can't read this format — try converting via AVAssetExportSession
+                #if DEBUG
                 print("AVAudioFile failed, attempting conversion: \(error.localizedDescription)")
+                #endif
                 let convertedURL = try await convertToCompatibleFormat(fileURL)
                 audioFile = try AVAudioFile(forReading: convertedURL)
             }
@@ -440,7 +448,9 @@ final class AudioPlayerService {
             isLoadingTrack = false
             failedTrack = track
             playbackError = "Unable to play this audio format"
+            #if DEBUG
             print("Failed to load track: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -454,17 +464,25 @@ final class AudioPlayerService {
         let asset = AVURLAsset(url: sourceURL)
 
         // Check if the asset has any playable audio before attempting conversion
+        #if DEBUG
         print("[Convert] Loading tracks for: \(sourceURL.lastPathComponent)")
+        #endif
         let tracks: [AVAssetTrack]
         do {
             tracks = try await asset.loadTracks(withMediaType: .audio)
+            #if DEBUG
             print("[Convert] Found \(tracks.count) audio track(s)")
+            #endif
         } catch {
+            #if DEBUG
             print("[Convert] loadTracks failed: \(error)")
+            #endif
             throw error
         }
         guard let audioTrack = tracks.first else {
+            #if DEBUG
             print("[Convert] No audio tracks found")
+            #endif
             throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "No audio track found"])
         }
 
@@ -477,15 +495,21 @@ final class AudioPlayerService {
                     (mediaSubType >> 16) & 0xFF,
                     (mediaSubType >> 8) & 0xFF,
                     mediaSubType & 0xFF)
+                #if DEBUG
                 print("[Convert] Track format: \(fourCC)")
+                #endif
                 if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc) {
+                    #if DEBUG
                     print("[Convert] Sample rate: \(asbd.pointee.mSampleRate), channels: \(asbd.pointee.mChannelsPerFrame), bitsPerChannel: \(asbd.pointee.mBitsPerChannel)")
+                    #endif
                 }
             }
         }
 
         // First try AVAssetExportSession (fast path) with timeout
+        #if DEBUG
         print("[Convert] Trying AVAssetExportSession...")
+        #endif
         if let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) {
             exportSession.outputURL = convertedURL
             exportSession.outputFileType = .m4a
@@ -495,7 +519,9 @@ final class AudioPlayerService {
                 let timeout = DispatchWorkItem {
                     guard !resumed else { return }
                     resumed = true
+                    #if DEBUG
                     print("[Convert] Export session timed out")
+                    #endif
                     exportSession.cancelExport()
                     continuation.resume(returning: false)
                 }
@@ -515,9 +541,13 @@ final class AudioPlayerService {
                     guard !resumed else { return }
                     resumed = true
                     let success = fm.fileExists(atPath: convertedURL.path)
+                    #if DEBUG
                     print("[Convert] Export session finished, success: \(success)")
+                    #endif
                     if !success {
+                        #if DEBUG
                         print("[Convert] Export session failed")
+                        #endif
                     }
                     continuation.resume(returning: success)
                 }
@@ -528,11 +558,15 @@ final class AudioPlayerService {
             }
             try? fm.removeItem(at: convertedURL)
         } else {
+            #if DEBUG
             print("[Convert] Could not create export session")
+            #endif
         }
 
         // Fallback: use AVAssetReader + AVAssetWriter for more codec support
+        #if DEBUG
         print("[Convert] Trying AVAssetReader/Writer fallback...")
+        #endif
         let convertedWAV = sourceURL.deletingPathExtension().appendingPathExtension("converted.wav")
         if fm.fileExists(atPath: convertedWAV.path) {
             return convertedWAV
@@ -542,7 +576,9 @@ final class AudioPlayerService {
         do {
             reader = try AVAssetReader(asset: asset)
         } catch {
+            #if DEBUG
             print("[Convert] AVAssetReader init failed: \(error)")
+            #endif
             throw error
         }
         nonisolated(unsafe) let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
@@ -569,11 +605,15 @@ final class AudioPlayerService {
         writer.add(writerInput)
 
         guard reader.startReading() else {
+            #if DEBUG
             print("[Convert] AVAssetReader startReading failed: \(reader.error?.localizedDescription ?? "unknown")")
+            #endif
             try? fm.removeItem(at: convertedWAV)
             throw reader.error ?? NSError(domain: "AudioPlayer", code: -3, userInfo: [NSLocalizedDescriptionKey: "Cannot read audio data"])
         }
+        #if DEBUG
         print("[Convert] AVAssetReader started reading")
+        #endif
 
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
@@ -586,7 +626,9 @@ final class AudioPlayerService {
                     } else {
                         writerInput.markAsFinished()
                         if reader.status == .failed {
+                            #if DEBUG
                             print("[Convert] Reader failed during read: \(reader.error?.localizedDescription ?? "unknown")")
+                            #endif
                         }
                         continuation.resume()
                         return
@@ -596,10 +638,14 @@ final class AudioPlayerService {
         }
 
         await writer.finishWriting()
+        #if DEBUG
         print("[Convert] Writer finished, status: \(writer.status.rawValue)")
+        #endif
 
         guard writer.status == .completed else {
+            #if DEBUG
             print("[Convert] Writer failed: \(writer.error?.localizedDescription ?? "unknown")")
+            #endif
             try? fm.removeItem(at: convertedWAV)
             throw writer.error ?? NSError(domain: "AudioPlayer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Audio conversion failed"])
         }
@@ -751,7 +797,9 @@ final class AudioPlayerService {
             try session.setCategory(.playback, mode: .default)
             try session.setActive(true)
         } catch {
+            #if DEBUG
             print("Audio session error: \(error.localizedDescription)")
+            #endif
         }
     }
 

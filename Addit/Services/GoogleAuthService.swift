@@ -50,7 +50,9 @@ final class GoogleAuthService {
             currentUser = result.user
             registerCurrentUser()
         } catch {
+            #if DEBUG
             print("Google Sign-In error: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -117,7 +119,9 @@ final class GoogleAuthService {
                 accountManager.setActiveAccount(email: resultEmail)
             }
         } catch {
+            #if DEBUG
             print("Switch account error: \(error.localizedDescription)")
+            #endif
             // Try to restore whatever was signed in before
             await restorePreviousSignIn()
         }

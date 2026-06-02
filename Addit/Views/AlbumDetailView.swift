@@ -858,7 +858,9 @@ struct AlbumDetailView: View {
                         try fm.copyItem(at: tempZipURL, to: zipURL)
                         resultURL = zipURL
                     } catch {
+                        #if DEBUG
                         print("Failed to copy zip: \(error)")
+                        #endif
                     }
                 }
 
@@ -873,7 +875,9 @@ struct AlbumDetailView: View {
                 // Clean up the unzipped folder
                 try? fm.removeItem(at: albumDir)
             } catch {
+                #if DEBUG
                 print("Failed to create album zip: \(error)")
+                #endif
             }
         }
     }
@@ -898,12 +902,16 @@ struct AlbumDetailView: View {
                 allAudioFiles.append(contentsOf: response.files)
                 pageToken = response.nextPageToken
             } catch {
+                #if DEBUG
                 print("[SaveToLocal] Failed to list audio files: \(error)")
+                #endif
                 break
             }
         } while pageToken != nil
 
+        #if DEBUG
         print("[SaveToLocal] Found \(allAudioFiles.count) audio files in \(album.name)")
+        #endif
 
         // Download all audio files to disk first
         struct DownloadedTrack {
@@ -921,7 +929,9 @@ struct AlbumDetailView: View {
                 }
                 let data = try await driveService.downloadFileData(fileId: file.id)
                 guard !data.isEmpty else {
+                    #if DEBUG
                     print("[SaveToLocal] Empty data for \(file.name), skipping")
+                    #endif
                     continue
                 }
                 let destURL = albumDir.appendingPathComponent(file.name)
@@ -933,10 +943,14 @@ struct AlbumDetailView: View {
                     relativePath: "LocalAlbums/\(localAlbumId)/\(file.name)"
                 ))
             } catch {
+                #if DEBUG
                 print("[SaveToLocal] Failed to download \(file.name): \(error)")
+                #endif
             }
         }
+        #if DEBUG
         print("[SaveToLocal] Downloaded \(downloadedTracks.count)/\(allAudioFiles.count) tracks")
+        #endif
 
         // Fetch metadata from .addit-data
         var albumArtist: String? = album.artistName
@@ -949,7 +963,9 @@ struct AlbumDetailView: View {
                 tracklist = metadata.tracklist
             }
         } catch {
+            #if DEBUG
             print("[SaveToLocal] Failed to fetch .addit-data: \(error)")
+            #endif
         }
 
         // Fetch cover image
@@ -962,7 +978,9 @@ struct AlbumDetailView: View {
                 coverRelativePath = "LocalAlbums/\(localAlbumId)/cover.jpg"
             }
         } catch {
+            #if DEBUG
             print("[SaveToLocal] Failed to fetch cover: \(error)")
+            #endif
         }
 
         // Find the highest displayOrder across all local albums
@@ -1015,7 +1033,9 @@ struct AlbumDetailView: View {
         }
 
         try? modelContext.save()
+        #if DEBUG
         print("[SaveToLocal] Saved album with \(downloadedTracks.count) tracks")
+        #endif
 
         await MainActor.run {
             isSavingToLocal = false
@@ -1096,7 +1116,9 @@ struct AlbumDetailView: View {
             for (index, track) in localTracks.enumerated() {
                 guard let url = track.localFileURL,
                       fm.fileExists(atPath: url.path) else {
+                    #if DEBUG
                     print("[SaveToDrive] Skipping missing file: \(track.name)")
+                    #endif
                     continue
                 }
                 await MainActor.run {
@@ -1118,7 +1140,9 @@ struct AlbumDetailView: View {
                 ))
             }
 
+            #if DEBUG
             print("[SaveToDrive] Uploaded \(uploadedTracks.count)/\(localTracks.count) tracks")
+            #endif
 
             // 5. Create the new Drive Album record in shared store
             let existingAlbums = (try? modelContext.fetch(FetchDescriptor<Album>())) ?? []
@@ -1162,7 +1186,9 @@ struct AlbumDetailView: View {
             }
 
             try? modelContext.save()
+            #if DEBUG
             print("[SaveToDrive] Created Drive album '\(album.name)' with \(uploadedTracks.count) tracks")
+            #endif
 
             await MainActor.run {
                 isSavingToDrive = false
@@ -1172,7 +1198,9 @@ struct AlbumDetailView: View {
                 dismiss()
             }
         } catch {
+            #if DEBUG
             print("[SaveToDrive] Failed: \(error)")
+            #endif
             await MainActor.run {
                 isSavingToDrive = false
                 uploadProgress = (0, 0, "")
@@ -1196,7 +1224,9 @@ struct AlbumDetailView: View {
                 try fm.copyItem(at: fileURL, to: destination)
                 shareFileURL = destination
             } catch {
+                #if DEBUG
                 print("Failed to download track for sharing: \(error)")
+                #endif
             }
         }
     }

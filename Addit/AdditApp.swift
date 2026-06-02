@@ -92,7 +92,9 @@ struct AccountContainerView: View {
             migratePerAccountStores(into: container)
             return container
         } catch {
+            #if DEBUG
             print("Shared ModelContainer creation failed: \(error). Resetting store.")
+            #endif
             try? FileManager.default.removeItem(at: storeURL)
             try? FileManager.default.removeItem(at: storeURL.appendingPathExtension("wal"))
             try? FileManager.default.removeItem(at: storeURL.appendingPathExtension("shm"))
@@ -212,9 +214,13 @@ struct AccountContainerView: View {
                 }
 
                 try sharedContext.save()
+                #if DEBUG
                 print("[Migration] Migrated \(legacyAlbums.count) albums from \(storeURL.lastPathComponent)")
+                #endif
             } catch {
+                #if DEBUG
                 print("[Migration] Failed to migrate \(storeURL.lastPathComponent): \(error)")
+                #endif
             }
 
             // Clean up legacy store files
@@ -232,7 +238,9 @@ struct AccountContainerView: View {
         }
 
         UserDefaults.standard.set(true, forKey: migrationKey)
+        #if DEBUG
         print("[Migration] Per-account migration complete")
+        #endif
     }
 
     /// Remove stored data for a specific account (Drive albums only)
@@ -250,7 +258,9 @@ struct AccountContainerView: View {
                 context.delete(album)
             }
             try? context.save()
+            #if DEBUG
             print("[Store] Removed \(albums.count) albums for account \(accountId)")
+            #endif
         }
     }
 }

@@ -516,9 +516,13 @@ struct LibraryView: View {
         modelContext.delete(album)
         do {
             try modelContext.save()
+            #if DEBUG
             print("[Library] Album deleted successfully: \(album.name)")
+            #endif
         } catch {
+            #if DEBUG
             print("[Library] Failed to save after delete: \(error)")
+            #endif
         }
     }
 
@@ -703,7 +707,9 @@ struct LibraryView: View {
                 )
                 modelContext.insert(track)
             } catch {
+                #if DEBUG
                 print("Failed to download Drive file \(file.name): \(error)")
+                #endif
             }
         }
 
@@ -730,12 +736,16 @@ struct LibraryView: View {
                 allAudioFiles.append(contentsOf: response.files)
                 pageToken = response.nextPageToken
             } catch {
+                #if DEBUG
                 print("[CopyFromDrive] Failed to list audio files: \(error)")
+                #endif
                 break
             }
         } while pageToken != nil
 
+        #if DEBUG
         print("[CopyFromDrive] Found \(allAudioFiles.count) audio files in \(folder.name)")
+        #endif
 
         // Download all audio files to disk first, before inserting anything into SwiftData
         struct DownloadedTrack {
@@ -753,7 +763,9 @@ struct LibraryView: View {
                 }
                 let data = try await driveService.downloadFileData(fileId: file.id)
                 guard !data.isEmpty else {
+                    #if DEBUG
                     print("[CopyFromDrive] Empty data for \(file.name), skipping")
+                    #endif
                     continue
                 }
                 let destURL = albumDir.appendingPathComponent(file.name)
@@ -765,10 +777,14 @@ struct LibraryView: View {
                     relativePath: "LocalAlbums/\(albumId)/\(file.name)"
                 ))
             } catch {
+                #if DEBUG
                 print("[CopyFromDrive] Failed to download \(file.name): \(error)")
+                #endif
             }
         }
+        #if DEBUG
         print("[CopyFromDrive] Downloaded \(downloadedTracks.count)/\(allAudioFiles.count) tracks")
+        #endif
 
         // Fetch metadata from .addit-data
         var albumArtist: String?
@@ -781,7 +797,9 @@ struct LibraryView: View {
                 tracklist = metadata.tracklist
             }
         } catch {
+            #if DEBUG
             print("[CopyFromDrive] Failed to fetch .addit-data: \(error)")
+            #endif
         }
 
         // Fetch cover image
@@ -794,7 +812,9 @@ struct LibraryView: View {
                 coverRelativePath = "LocalAlbums/\(albumId)/cover.jpg"
             }
         } catch {
+            #if DEBUG
             print("[CopyFromDrive] Failed to fetch cover: \(error)")
+            #endif
         }
 
         // Now insert everything into SwiftData in one batch
@@ -840,7 +860,9 @@ struct LibraryView: View {
         }
 
         try? modelContext.save()
+        #if DEBUG
         print("[CopyFromDrive] Saved album with \(downloadedTracks.count) tracks")
+        #endif
         await MainActor.run { isImportingLocal = false; importProgress = (0, 0, "") }
     }
 
