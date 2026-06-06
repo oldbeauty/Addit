@@ -60,6 +60,21 @@ final class AudioPlayerService {
     @ObservationIgnored private var nextWaveform: [Float]?
     @ObservationIgnored private var nextWaveformSamplesPerSecond: Double = 0
     @ObservationIgnored private var isGaplessTransition = false
+    /// True when the pre-scheduled gapless next track came from `userQueue`
+    /// rather than the album's natural ordering. Used by `handleTrackEnd`
+    /// to know whether it needs to splice `userQueue.first` into `queue`
+    /// before advancing `currentIndex`.
+    @ObservationIgnored private var nextIsFromUserQueue = false
+    /// Track identity (Drive file ID) of whatever is currently
+    /// pre-scheduled as the gapless next track. Used as a comparison key
+    /// in `rebuildGaplessIfNeeded`: if the desired-next based on current
+    /// queue state matches this ID, the existing schedule is still
+    /// correct and no rebuild is needed. `nil` means nothing is scheduled.
+    @ObservationIgnored private var nextScheduledTrackID: String?
+    /// In-flight Task that's loading the next track's audio file and
+    /// scheduling it on the player. Cancelled when we need to tear down
+    /// and rebuild the gapless schedule due to a queue mutation.
+    @ObservationIgnored private var gaplessLoadTask: Task<Void, Never>?
 
     // Waveform extraction
     @ObservationIgnored private var waveformTask: Task<Void, Never>?
@@ -188,6 +203,9 @@ final class AudioPlayerService {
 
     func next() {
         guard !queue.isEmpty else { return }
+        #if DEBUG
+        print("[Q] next() entry currentIndex=\(currentIndex) userQueueLen=\(userQueue.count) isGapless=\(isGaplessTransition) nextTrackIndex=\(nextTrackIndex.map(String.init) ?? "nil") scheduleGen=\(scheduleGeneration)")
+        #endif
         clearGaplessState()
 
         if repeatMode == .one {
@@ -201,6 +219,9 @@ final class AudioPlayerService {
             let nextTrack = userQueue.removeFirst()
             queue.insert(nextTrack, at: currentIndex + 1)
             currentIndex += 1
+            #if DEBUG
+            print("[Q] next() path=userQueue track=\"\(nextTrack.name)\" newIndex=\(currentIndex) remainingUserQueue=\(userQueue.count)")
+            #endif
             Task { await loadAndPlay() }
             return
         }
@@ -213,6 +234,10 @@ final class AudioPlayerService {
             pause()
             return
         }
+        #if DEBUG
+        let advTrack = (currentIndex >= 0 && currentIndex < queue.count) ? queue[currentIndex].name : "?"
+        print("[Q] next() path=regular newIndex=\(currentIndex) track=\"\(advTrack)\"")
+        #endif
         Task { await loadAndPlay() }
     }
 
@@ -341,15 +366,162 @@ final class AudioPlayerService {
 
     func addToQueue(_ track: Track) {
         userQueue.append(track)
+        #if DEBUG
+        print("[Q] addToQueue track=\"\(track.name)\" userQueueLen=\(userQueue.count) isGapless=\(isGaplessTransition) nextScheduledTrackID=\(nextScheduledTrackID ?? "nil") scheduleGen=\(scheduleGeneration)")
+        #endif
+        rebuildGaplessIfNeeded()
     }
 
     func removeFromUserQueue(at index: Int) {
         guard userQueue.indices.contains(index) else { return }
         userQueue.remove(at: index)
+        rebuildGaplessIfNeeded()
     }
 
     func moveUserQueueTrack(from source: IndexSet, to destination: Int) {
         userQueue.move(fromOffsets: source, toOffset: destination)
+        rebuildGaplessIfNeeded()
+    }
+
+    // MARK: - Gapless rescheduling
+
+    /// What track *should* play next given the current state of
+    /// `userQueue`, `queue`, `currentIndex`, and `repeatMode`. Mirrors the
+    /// branching in `scheduleNextTrackGapless`. `nil` means "nothing —
+    /// playback ends after the current track."
+    private func desiredNextTrack() -> (track: Track, idx: Int, fromUserQueue: Bool)? {
+        if !userQueue.isEmpty {
+            return (userQueue[0], currentIndex + 1, true)
+        } else if currentIndex < queue.count - 1 {
+            return (queue[currentIndex + 1], currentIndex + 1, false)
+        } else if repeatMode == .all, let first = queue.first {
+            return (first, 0, false)
+        }
+        return nil
+    }
+
+    /// Called after any mutation that could change what the gapless next
+    /// track should be (queue additions, removals, reorders, repeat-mode
+    /// changes, etc.). If the currently pre-scheduled track is still the
+    /// correct one, this is a no-op. Otherwise tears down the current
+    /// playback pipeline, re-schedules the current track from its current
+    /// playback frame, and lets `scheduleNextTrackGapless` pick the new
+    /// gapless target. The brief audio interruption from `stop()` happens
+    /// at the moment of the user's queue action (where a tiny blip is
+    /// expected and unobjectionable), so the eventual transition into the
+    /// queued track is truly gapless.
+    private func rebuildGaplessIfNeeded() {
+        let desired = desiredNextTrack()
+        let desiredID = desired?.track.googleFileId
+        if desiredID == nextScheduledTrackID {
+            #if DEBUG
+            print("[Q] rebuildGaplessIfNeeded NO-OP desired=\(desiredID ?? "nil") matches scheduled")
+            #endif
+            return
+        }
+        if isGaplessTransition {
+            // The next track has already been scheduled on the player
+            // node. Removing a scheduled segment requires `stop()`, which
+            // flushes the audio buffer and causes a brief audible pause.
+            // This branch only fires when the queue is mutated within
+            // ~`armLeadTime` seconds of the current track ending — a
+            // narrow window.
+            #if DEBUG
+            print("[Q] rebuildGaplessIfNeeded MISMATCH desired=\(desiredID ?? "nil") scheduled=\(nextScheduledTrackID ?? "nil") armed=true → replaceCurrentScheduling (brief pause)")
+            #endif
+            replaceCurrentScheduling()
+        } else {
+            // Pre-loaded but not armed on the engine yet. Just cancel the
+            // pending load and start a new one with the corrected target.
+            // The engine never sees this — playback continues uninterrupted.
+            #if DEBUG
+            print("[Q] rebuildGaplessIfNeeded MISMATCH desired=\(desiredID ?? "nil") scheduled=\(nextScheduledTrackID ?? "nil") armed=false → re-preload (no pause)")
+            #endif
+            gaplessLoadTask?.cancel()
+            gaplessLoadTask = nil
+            nextAudioFile = nil
+            nextTrackIndex = nil
+            nextFileURL = nil
+            nextWaveform = nil
+            nextIsFromUserQueue = false
+            nextScheduledTrackID = nil
+            scheduleNextTrackGapless(afterGeneration: scheduleGeneration)
+        }
+    }
+
+    /// Stop the player, re-schedule the current track from its current
+    /// playback frame, and call `scheduleNextTrackGapless` to set up the
+    /// new gapless target. Only the engine's segment queue is reset —
+    /// `currentIndex`, `currentTrack`, `duration`, and `currentTime` all
+    /// remain coherent across this call.
+    private func replaceCurrentScheduling() {
+        guard let currentFile = currentAudioFile else { return }
+
+        // Snapshot the current playback frame BEFORE stop() blows away
+        // the playerNode's render-time clock. Falls back to the most
+        // recent seek baseline if lastRenderTime isn't yet valid (e.g.
+        // we're called immediately after a load, before the engine has
+        // rendered anything).
+        let currentFrame: AVAudioFramePosition = {
+            guard let nodeTime = playerNode.lastRenderTime,
+                  nodeTime.isSampleTimeValid,
+                  let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
+                return seekFrameOffset
+            }
+            let elapsed = playerTime.sampleTime - playerTimeOffset
+            return seekFrameOffset + elapsed
+        }()
+        let remaining = AVAudioFrameCount(max(0, currentFile.length - currentFrame))
+        guard remaining > 0 else {
+            // Already past the end of the current track — nothing useful
+            // we can do here; the existing handleTrackEnd flow will pick
+            // up the new gapless target on its own.
+            return
+        }
+
+        let wasPlaying = playerNode.isPlaying
+
+        // Cancel any in-flight load Task and reset all gapless state.
+        gaplessLoadTask?.cancel()
+        gaplessLoadTask = nil
+        playerNode.stop()
+        nextAudioFile = nil
+        nextTrackIndex = nil
+        nextFileURL = nil
+        nextWaveform = nil
+        nextWaveformSamplesPerSecond = 0
+        isGaplessTransition = false
+        nextIsFromUserQueue = false
+        nextScheduledTrackID = nil
+
+        // Bump generation so any callback from the previous schedule that
+        // hasn't fired yet sees a stale generation and bails.
+        scheduleGeneration &+= 1
+        let gen = scheduleGeneration
+
+        // Re-anchor the time-tracking baseline. playerNode.lastRenderTime
+        // resets to 0 after stop(); we treat currentFrame as the new
+        // "where in the file we're at" anchor.
+        seekFrameOffset = currentFrame
+        playerTimeOffset = 0
+
+        playerNode.scheduleSegment(
+            currentFile,
+            startingFrame: currentFrame,
+            frameCount: remaining,
+            at: nil,
+            completionCallbackType: .dataPlayedBack
+        ) { [weak self] _ in
+            self?.completionFired(generation: gen)
+        }
+
+        if wasPlaying {
+            playerNode.play()
+        }
+        #if DEBUG
+        print("[Q] replaceCurrentScheduling re-anchored at frame=\(currentFrame) remaining=\(remaining) newGen=\(gen) wasPlaying=\(wasPlaying)")
+        #endif
+        scheduleNextTrackGapless(afterGeneration: gen)
     }
 
     // MARK: - Engine Setup
@@ -364,7 +536,11 @@ final class AudioPlayerService {
 
     private func completionFired(generation: UInt64) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, generation == self.scheduleGeneration, !self.isLoadingTrack else { return }
+            guard let self else { return }
+            #if DEBUG
+            print("[Q] completionFired (regular) expectedGen=\(generation) currentGen=\(self.scheduleGeneration) isLoadingTrack=\(self.isLoadingTrack) → \(generation == self.scheduleGeneration && !self.isLoadingTrack ? "handleTrackEnd" : "bail")")
+            #endif
+            guard generation == self.scheduleGeneration, !self.isLoadingTrack else { return }
             self.handleTrackEnd()
         }
     }
@@ -378,6 +554,9 @@ final class AudioPlayerService {
         // Invalidate any pending completion from previous track
         scheduleGeneration &+= 1
         let gen = scheduleGeneration
+        #if DEBUG
+        print("[Q] loadAndPlay track=\"\(track.name)\" currentIndex=\(currentIndex) newGen=\(gen) userQueueLen=\(userQueue.count)")
+        #endif
 
         playerNode.stop()
 
@@ -653,6 +832,27 @@ final class AudioPlayerService {
         return convertedWAV
     }
 
+    /// How close to the end of the current track (in seconds) we'll wait
+    /// before actually scheduling the next track on the player node.
+    /// Anything ≥ this and we keep the next track only in memory; below
+    /// this, `updateCurrentTime` arms the engine schedule. Tuned to give
+    /// the audio engine comfortable lead time without arming so early
+    /// that queue mutations late in the track would require a pause.
+    private static let armLeadTime: TimeInterval = 0.5
+
+    /// Two-phase gapless pipeline:
+    ///   1. PRELOAD — load the desired next track's audio file and
+    ///      waveform into memory. No engine interaction. Idle state.
+    ///   2. ARM (`armNextTrackOnEngineIfNeeded`) — take the pre-loaded
+    ///      file and `playerNode.scheduleSegment` it. Triggered by
+    ///      `updateCurrentTime` when the current track has less than
+    ///      `armLeadTime` remaining.
+    ///
+    /// Splitting these means queue mutations that happen before arming
+    /// don't need to touch the engine at all — they just cancel the
+    /// in-flight load and start a new one, with zero audible disruption.
+    /// Only mutations in the last `armLeadTime` of a track require the
+    /// `replaceCurrentScheduling` pause-rebuild path, which is rare.
     private func scheduleNextTrackGapless(afterGeneration gen: UInt64) {
         // Clear any previous gapless state
         nextAudioFile = nil
@@ -660,23 +860,51 @@ final class AudioPlayerService {
         nextFileURL = nil
         nextWaveform = nil
         isGaplessTransition = false
+        nextIsFromUserQueue = false
+        nextScheduledTrackID = nil
 
-        // Determine next index
+        // Pick the next track. User queue ALWAYS wins over the album's
+        // natural ordering — the queue is the user's explicit "play this
+        // next" intent. The album track only fills in when the queue is
+        // empty.
+        let nextTrack: Track
         let nextIdx: Int
+        let fromUserQueue: Bool
         if !userQueue.isEmpty {
-            // User queue tracks can't be pre-scheduled (they modify the queue)
-            return
-        } else if currentIndex < queue.count - 1 {
+            nextTrack = userQueue[0]
+            // The queued track will be spliced into `queue` at this index
+            // when handleTrackEnd's gapless branch advances. We schedule it
+            // here so the engine has the audio ready well before the
+            // boundary.
             nextIdx = currentIndex + 1
+            fromUserQueue = true
+        } else if currentIndex < queue.count - 1 {
+            nextTrack = queue[currentIndex + 1]
+            nextIdx = currentIndex + 1
+            fromUserQueue = false
         } else if repeatMode == .all {
+            nextTrack = queue[0]
             nextIdx = 0
+            fromUserQueue = false
         } else {
+            #if DEBUG
+            print("[Q] scheduleNextTrackGapless BAIL reason=endOfQueue currentIndex=\(currentIndex) queueLen=\(queue.count) repeat=\(repeatMode) scheduleGen=\(gen)")
+            #endif
             return
         }
 
-        let nextTrack = queue[nextIdx]
+        #if DEBUG
+        print("[Q] scheduleNextTrackGapless QUEUED nextIdx=\(nextIdx) track=\"\(nextTrack.name)\" fromUserQueue=\(fromUserQueue) currentIndex=\(currentIndex) scheduleGen=\(gen)")
+        #endif
 
-        Task {
+        gaplessLoadTask?.cancel()
+        let trackID = nextTrack.googleFileId
+        // Stake out the track ID immediately so rebuildGaplessIfNeeded's
+        // comparison check sees it before the load completes — otherwise
+        // a queue mutation that arrives mid-load would needlessly cancel
+        // and restart against an identical desired target.
+        nextScheduledTrackID = trackID
+        gaplessLoadTask = Task {
             do {
                 let fileURL: URL
                 if let localURL = nextTrack.localFileURL {
@@ -686,7 +914,10 @@ final class AudioPlayerService {
                     fileURL = try await cs.cacheTrack(nextTrack)
                 }
 
-                // Check generation hasn't changed (user hasn't skipped/seeked)
+                // Check generation + cancellation. A queue mutation that
+                // happened during loading would have cancelled this task
+                // *and* bumped the generation, so either guard catches it.
+                try Task.checkCancellation()
                 guard gen == scheduleGeneration else { return }
 
                 var audioFile: AVAudioFile
@@ -697,7 +928,7 @@ final class AudioPlayerService {
                     audioFile = try AVAudioFile(forReading: convertedURL)
                 }
 
-                // Check generation again after conversion
+                try Task.checkCancellation()
                 guard gen == scheduleGeneration else { return }
 
                 // Check format compatibility — must match current format for gapless
@@ -720,28 +951,59 @@ final class AudioPlayerService {
                     return Double(w.count) / nextDuration
                 }()
 
-                // Check generation one more time after waveform extraction
+                try Task.checkCancellation()
                 guard gen == scheduleGeneration else { return }
 
-                // Schedule on the player node — it will play immediately after current segment
+                // Stage in memory but DO NOT arm the engine.
+                // `updateCurrentTime` arms when the current track is
+                // within `armLeadTime` of ending.
                 nextAudioFile = audioFile
                 nextTrackIndex = nextIdx
                 nextFileURL = fileURL
                 nextWaveform = precomputedWaveform
                 nextWaveformSamplesPerSecond = nextSps
-                isGaplessTransition = true
-
-                let expectedGen = gen
-                playerNode.scheduleSegment(audioFile, startingFrame: 0, frameCount: AVAudioFrameCount(audioFile.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                    DispatchQueue.main.async {
-                        guard let self, self.isGaplessTransition, expectedGen == self.scheduleGeneration else { return }
-                        self.handleTrackEnd()
-                    }
-                }
+                nextIsFromUserQueue = fromUserQueue
+                // isGaplessTransition stays false until armed.
+                #if DEBUG
+                print("[Q] preload LOADED track=\"\(nextTrack.name)\" fromUserQueue=\(fromUserQueue) — staged, not armed")
+                #endif
             } catch {
-                // Pre-scheduling failed — normal transition will happen via handleTrackEnd
+                // Pre-loading failed (cancellation or load error) —
+                // normal non-gapless transition will happen via handleTrackEnd.
             }
         }
+    }
+
+    /// Take the in-memory pre-loaded next track and actually schedule it
+    /// on the player node. After this returns, `isGaplessTransition` is
+    /// true and the engine will play the next track immediately when the
+    /// current segment ends. Idempotent — called from `updateCurrentTime`
+    /// every display tick once we're inside `armLeadTime` of the end.
+    private func armNextTrackOnEngineIfNeeded() {
+        guard !isGaplessTransition,
+              let audioFile = nextAudioFile,
+              nextTrackIndex != nil else { return }
+        let expectedGen = scheduleGeneration
+        isGaplessTransition = true
+        playerNode.scheduleSegment(
+            audioFile,
+            startingFrame: 0,
+            frameCount: AVAudioFrameCount(audioFile.length),
+            at: nil,
+            completionCallbackType: .dataPlayedBack
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                #if DEBUG
+                print("[Q] gaplessCompletion fired expectedGen=\(expectedGen) currentGen=\(self.scheduleGeneration) isGapless=\(self.isGaplessTransition) → \(self.isGaplessTransition && expectedGen == self.scheduleGeneration ? "handleTrackEnd" : "bail")")
+                #endif
+                guard self.isGaplessTransition, expectedGen == self.scheduleGeneration else { return }
+                self.handleTrackEnd()
+            }
+        }
+        #if DEBUG
+        print("[Q] arm ARMED on engine expectedGen=\(expectedGen)")
+        #endif
     }
 
     private func clearGaplessState() {
@@ -750,9 +1012,15 @@ final class AudioPlayerService {
             // and the pre-scheduled next track's completion handlers
             scheduleGeneration &+= 2
         }
+        gaplessLoadTask?.cancel()
+        gaplessLoadTask = nil
         nextAudioFile = nil
         nextTrackIndex = nil
+        nextFileURL = nil
+        nextWaveform = nil
         isGaplessTransition = false
+        nextIsFromUserQueue = false
+        nextScheduledTrackID = nil
     }
 
     private func prefetchUpcoming() {
@@ -845,9 +1113,26 @@ final class AudioPlayerService {
             nowPlayingSyncCounter = 0
             updateNowPlayingPlaybackInfo()
         }
+
+        // If we're inside the arm window AND the next track has been
+        // pre-loaded but not yet scheduled on the engine, schedule it now.
+        // This is the second half of the two-phase gapless pipeline — see
+        // `armLeadTime` and `scheduleNextTrackGapless`. Delaying engine
+        // scheduling until here means queue mutations earlier in the
+        // track can update intent (via a fresh preload) without any
+        // engine interaction or audible pause.
+        if !isGaplessTransition && nextAudioFile != nil {
+            let remaining = duration - time
+            if remaining >= 0 && remaining <= Self.armLeadTime {
+                armNextTrackOnEngineIfNeeded()
+            }
+        }
     }
 
     private func handleTrackEnd() {
+        #if DEBUG
+        print("[Q] handleTrackEnd entry currentIndex=\(currentIndex) isGapless=\(isGaplessTransition) nextTrackIndex=\(nextTrackIndex.map(String.init) ?? "nil") nextIsFromUserQueue=\(nextIsFromUserQueue) userQueueLen=\(userQueue.count) repeat=\(repeatMode) scheduleGen=\(scheduleGeneration)")
+        #endif
         if repeatMode == .one {
             seek(to: 0)
             play()
@@ -856,6 +1141,23 @@ final class AudioPlayerService {
 
         // If the next track was pre-scheduled gaplessly, just update state
         if isGaplessTransition, let nextIndex = nextTrackIndex, let nextFile = nextAudioFile {
+            // If the pre-scheduled track came from the user queue, splice
+            // it into the album `queue` at `nextIndex` and pop it off the
+            // user queue. The advance below then sets `currentIndex` to
+            // that slot. After this, `queue[currentIndex]` correctly
+            // reports the now-playing track to anything that reads it
+            // (currentTrack, the queue UI, Now Playing info, etc.).
+            if nextIsFromUserQueue && !userQueue.isEmpty {
+                let queuedTrack = userQueue.removeFirst()
+                queue.insert(queuedTrack, at: nextIndex)
+                #if DEBUG
+                print("[Q] handleTrackEnd spliced userQueue track=\"\(queuedTrack.name)\" into queue at idx=\(nextIndex) remainingUserQueue=\(userQueue.count)")
+                #endif
+            }
+            #if DEBUG
+            let nextName = (nextIndex >= 0 && nextIndex < queue.count) ? queue[nextIndex].name : "?"
+            print("[Q] handleTrackEnd branch=gapless advancing to nextIndex=\(nextIndex) track=\"\(nextName)\" userQueueLen=\(userQueue.count)")
+            #endif
             let precomputedWaveform = nextWaveform
             let precomputedSps = nextWaveformSamplesPerSecond
             isGaplessTransition = false
@@ -896,6 +1198,9 @@ final class AudioPlayerService {
             return
         }
 
+        #if DEBUG
+        print("[Q] handleTrackEnd branch=fallthrough calling next() userQueueLen=\(userQueue.count)")
+        #endif
         next()
     }
 
