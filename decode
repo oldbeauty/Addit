@@ -7,13 +7,13 @@
 #
 # Usage: ./decode
 #
-# Covers README.md and CLAUDE.md together — there is no per-file
-# variant. Idempotent: a file that is already decoded (no start marker)
+# Only README.md is in the encode set (see ./encode for why AGENTS.md is
+# excluded). Idempotent: a file that is already decoded (no start marker)
 # is skipped without being touched.
 
 set -euo pipefail
 
-FILES=(README.md CLAUDE.md)
+FILES=(README.md)
 START_MARKER="<!-- ----- ENCODED ----- -->"
 END_MARKER="<!-- ----- END ----- -->"
 

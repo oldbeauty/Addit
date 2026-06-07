@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 #
-# Encode the project's Markdown docs in place. Each file's contents are
-# replaced with a short decode-instructions stub plus a base64-encoded
-# copy of the original inside HTML-comment markers. To restore, run
-# ./decode.
+# Encode the project's human-facing Markdown docs in place. Each file's
+# contents are replaced with a short decode-instructions stub plus a
+# base64-encoded copy of the original inside HTML-comment markers. To
+# restore, run ./decode.
 #
 # Usage: ./encode
 #
-# Covers README.md and CLAUDE.md together — there is no per-file
-# variant. Idempotent: a file that is already encoded is skipped, so
-# you can run ./encode and ./decode as many times as you like without
-# tracking how many. Encoded and decoded are the only two states.
+# Only README.md is encodable. AGENTS.md (and its CLAUDE.md symlink) is
+# auto-loaded into the agent's context every session, so it must NEVER be
+# encoded — a base64 blob would poison that context. Keep it out of FILES.
+#
+# Idempotent: a file that is already encoded is skipped, so you can run
+# ./encode and ./decode as many times as you like. Encoded and decoded are
+# the only two states.
 
 set -euo pipefail
 
-FILES=(README.md CLAUDE.md)
+FILES=(README.md)
 START_MARKER="<!-- ----- ENCODED ----- -->"
 END_MARKER="<!-- ----- END ----- -->"
 
@@ -46,18 +49,16 @@ encode_file() {
     cat > "$target" <<EOF
 # ${name}
 
-This file is encoded. To restore it (and the project's other encoded
-docs), run:
+This file is encoded. To restore it, run:
 
 \`\`\`
 ./decode
 \`\`\`
 
 To re-encode after decoding, run \`./encode\`. Both scripts are
-idempotent and operate on every doc at once — running either when the
-files are already in that state is a no-op, so you can run them as many
-times as you want without corrupting anything. Encoded and decoded are
-the only two possible states.
+idempotent — running either when the file is already in that state is a
+no-op, so you can run them as many times as you want without corrupting
+anything. Encoded and decoded are the only two possible states.
 
 $START_MARKER
 $encoded
