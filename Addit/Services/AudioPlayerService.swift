@@ -43,9 +43,44 @@ final class AudioPlayerService {
     /// Exposed for AudioAnalyzerService to install taps
     @ObservationIgnored let engine = AVAudioEngine()
     @ObservationIgnored private let playerNode = AVAudioPlayerNode()
-    @ObservationIgnored private var currentAudioFile: AVAudioFile?
-    @ObservationIgnored private var seekFrameOffset: AVAudioFramePosition = 0
-    @ObservationIgnored private var playerTimeOffset: AVAudioFramePosition = 0
+    /// Atomic snapshot of the three interdependent fields needed to map
+    /// the audio engine's render-time clock back into "how far into the
+    /// current audio file are we." Bundling them into a struct means any
+    /// reader (most importantly `updateCurrentTime`) captures the whole
+    /// triple in a single load and computes its result from a
+    /// self-consistent view — there's no possibility of, say, reading
+    /// the new track's `seekFrame` while still seeing the old track's
+    /// `audioFile` and `playerTimeOffset`. The single-statement
+    /// `anchor = PlaybackAnchor(...)` reassignment is the atomic swap
+    /// that replaces what used to be three separate field mutations.
+    private struct PlaybackAnchor {
+        /// The file currently being decoded by `playerNode`.
+        let audioFile: AVAudioFile
+        /// Frame within `audioFile` that playback was last "anchored"
+        /// at — i.e., the position the engine started reading from
+        /// after the last `scheduleSegment`. Updated on seek, reset to
+        /// 0 on a fresh track load or after a gapless advance.
+        let seekFrame: AVAudioFramePosition
+        /// `playerNode.sampleTime` value that corresponds to
+        /// `seekFrame` of `audioFile`. Subtract this from the current
+        /// `playerTime.sampleTime` to get frames elapsed within the
+        /// current audio file. Grows monotonically across gapless
+        /// transitions; resets to 0 on every `playerNode.stop()`.
+        let playerTimeOffset: AVAudioFramePosition
+
+        var sampleRate: Double { audioFile.processingFormat.sampleRate }
+        var totalFrames: AVAudioFramePosition { audioFile.length }
+        var duration: TimeInterval { Double(totalFrames) / sampleRate }
+
+        /// Map a `playerNode` sample-time reading to the corresponding
+        /// elapsed-time-in-file. Returned value is monotonic in
+        /// `engineSampleTime` for as long as the anchor doesn't change.
+        func elapsedSeconds(forEngineSampleTime engineSampleTime: AVAudioFramePosition) -> TimeInterval {
+            let elapsedFrames = engineSampleTime - playerTimeOffset
+            return Double(seekFrame + elapsedFrames) / sampleRate
+        }
+    }
+    @ObservationIgnored private var anchor: PlaybackAnchor?
     @ObservationIgnored private var timeTimer: CADisplayLink?
     @ObservationIgnored private var originalQueue: [Track] = []
     @ObservationIgnored private var prefetchTask: Task<Void, Never>?
@@ -75,6 +110,13 @@ final class AudioPlayerService {
     /// scheduling it on the player. Cancelled when we need to tear down
     /// and rebuild the gapless schedule due to a queue mutation.
     @ObservationIgnored private var gaplessLoadTask: Task<Void, Never>?
+
+    /// In-flight Task that's fetching the current track's album artwork
+    /// for the lock-screen Now Playing display. Cancelled when the
+    /// current track changes so that a slow artwork fetch for track N
+    /// can't complete and overwrite the lock-screen display for track
+    /// N+1 (or worse, N+5 after several skips).
+    @ObservationIgnored private var artworkTask: Task<Void, Never>?
 
     // Waveform extraction
     @ObservationIgnored private var waveformTask: Task<Void, Never>?
@@ -145,8 +187,8 @@ final class AudioPlayerService {
 
             // If the engine was stopped (e.g. from pause() or an interruption),
             // all previously-scheduled audio on the playerNode was invalidated.
-            if engineWasStopped, let audioFile = currentAudioFile {
-                let trackDuration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+            if engineWasStopped, let snapshot = anchor {
+                let trackDuration = snapshot.duration
                 if currentTime >= trackDuration - 1.0 {
                     // We're within 1 s of the end (or past it).  Replaying those
                     // last dying frames would sound like the track repeated —
@@ -262,12 +304,13 @@ final class AudioPlayerService {
     }
 
     func seek(to time: TimeInterval) {
-        guard let audioFile = currentAudioFile else { return }
+        guard let snapshot = anchor else { return }
+        let audioFile = snapshot.audioFile
         clearGaplessState()
         currentTime = time
-        let sampleRate = audioFile.processingFormat.sampleRate
+        let sampleRate = snapshot.sampleRate
         let targetFrame = AVAudioFramePosition(time * sampleRate)
-        let totalFrames = audioFile.length
+        let totalFrames = snapshot.totalFrames
 
         guard targetFrame < totalFrames else { return }
 
@@ -292,8 +335,7 @@ final class AudioPlayerService {
 
         playerNode.stop()
 
-        playerTimeOffset = 0
-        seekFrameOffset = targetFrame
+        anchor = PlaybackAnchor(audioFile: audioFile, seekFrame: targetFrame, playerTimeOffset: 0)
         let remainingFrames = AVAudioFrameCount(totalFrames - targetFrame)
 
         playerNode.scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: remainingFrames, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -311,17 +353,17 @@ final class AudioPlayerService {
     /// Used after the engine has been stopped (pause, interruption) and
     /// all previously-scheduled segments have been invalidated.
     private func rescheduleFromCurrentTime() {
-        guard let audioFile = currentAudioFile else { return }
-        let sampleRate = audioFile.processingFormat.sampleRate
+        guard let snapshot = anchor else { return }
+        let audioFile = snapshot.audioFile
+        let sampleRate = snapshot.sampleRate
         let targetFrame = AVAudioFramePosition(currentTime * sampleRate)
-        let totalFrames = audioFile.length
+        let totalFrames = snapshot.totalFrames
         guard targetFrame < totalFrames else { return }
 
         scheduleGeneration &+= 1
         let gen = scheduleGeneration
 
-        playerTimeOffset = 0
-        seekFrameOffset = targetFrame
+        anchor = PlaybackAnchor(audioFile: audioFile, seekFrame: targetFrame, playerTimeOffset: 0)
         let remainingFrames = AVAudioFrameCount(totalFrames - targetFrame)
 
         playerNode.scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: remainingFrames, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -455,7 +497,8 @@ final class AudioPlayerService {
     /// `currentIndex`, `currentTrack`, `duration`, and `currentTime` all
     /// remain coherent across this call.
     private func replaceCurrentScheduling() {
-        guard let currentFile = currentAudioFile else { return }
+        guard let snapshot = anchor else { return }
+        let currentFile = snapshot.audioFile
 
         // Snapshot the current playback frame BEFORE stop() blows away
         // the playerNode's render-time clock. Falls back to the most
@@ -466,12 +509,11 @@ final class AudioPlayerService {
             guard let nodeTime = playerNode.lastRenderTime,
                   nodeTime.isSampleTimeValid,
                   let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
-                return seekFrameOffset
+                return snapshot.seekFrame
             }
-            let elapsed = playerTime.sampleTime - playerTimeOffset
-            return seekFrameOffset + elapsed
+            return snapshot.seekFrame + (playerTime.sampleTime - snapshot.playerTimeOffset)
         }()
-        let remaining = AVAudioFrameCount(max(0, currentFile.length - currentFrame))
+        let remaining = AVAudioFrameCount(max(0, snapshot.totalFrames - currentFrame))
         guard remaining > 0 else {
             // Already past the end of the current track — nothing useful
             // we can do here; the existing handleTrackEnd flow will pick
@@ -502,8 +544,7 @@ final class AudioPlayerService {
         // Re-anchor the time-tracking baseline. playerNode.lastRenderTime
         // resets to 0 after stop(); we treat currentFrame as the new
         // "where in the file we're at" anchor.
-        seekFrameOffset = currentFrame
-        playerTimeOffset = 0
+        anchor = PlaybackAnchor(audioFile: currentFile, seekFrame: currentFrame, playerTimeOffset: 0)
 
         playerNode.scheduleSegment(
             currentFile,
@@ -585,9 +626,7 @@ final class AudioPlayerService {
                 audioFile = try AVAudioFile(forReading: convertedURL)
             }
 
-            currentAudioFile = audioFile
-            seekFrameOffset = 0
-            playerTimeOffset = 0
+            anchor = PlaybackAnchor(audioFile: audioFile, seekFrame: 0, playerTimeOffset: 0)
 
             // Reconnect with the file's format
             engine.disconnectNodeOutput(playerNode)
@@ -932,8 +971,8 @@ final class AudioPlayerService {
                 guard gen == scheduleGeneration else { return }
 
                 // Check format compatibility — must match current format for gapless
-                guard let currentFile = currentAudioFile else { return }
-                let currentFormat = currentFile.processingFormat
+                guard let currentSnapshot = anchor else { return }
+                let currentFormat = currentSnapshot.audioFile.processingFormat
                 let nextFormat = audioFile.processingFormat
 
                 guard currentFormat.sampleRate == nextFormat.sampleRate,
@@ -954,9 +993,7 @@ final class AudioPlayerService {
                 try Task.checkCancellation()
                 guard gen == scheduleGeneration else { return }
 
-                // Stage in memory but DO NOT arm the engine.
-                // `updateCurrentTime` arms when the current track is
-                // within `armLeadTime` of ending.
+                // Stage in memory but DO NOT arm the engine yet.
                 nextAudioFile = audioFile
                 nextTrackIndex = nextIdx
                 nextFileURL = fileURL
@@ -967,11 +1004,55 @@ final class AudioPlayerService {
                 #if DEBUG
                 print("[Q] preload LOADED track=\"\(nextTrack.name)\" fromUserQueue=\(fromUserQueue) — staged, not armed")
                 #endif
+
+                // Poll the audio engine's own clock until we're within
+                // `armLeadTime` of the current track's end, then arm.
+                // This must NOT be driven by `CADisplayLink` because
+                // display-link ticks stop firing when the screen is off
+                // — the audio engine keeps rendering in background but
+                // the UI clock doesn't. Reading
+                // `playerNode.lastRenderTime` directly works because the
+                // audio thread keeps that timestamp current regardless
+                // of screen state.
+                while !Task.isCancelled {
+                    try Task.checkCancellation()
+                    guard gen == scheduleGeneration else { return }
+                    let remaining = self.remainingTimeInCurrentTrack()
+                    if remaining <= Self.armLeadTime {
+                        self.armNextTrackOnEngineIfNeeded()
+                        return
+                    }
+                    // Sleep until we're close to the boundary, with a
+                    // 100 ms floor so we don't spin and a generous
+                    // ceiling so we re-check periodically even if the
+                    // user paused (in which case `remaining` won't
+                    // decrease and we want occasional wake-ups in case
+                    // playback resumed).
+                    let sleepSeconds = max(0.1, min(remaining - Self.armLeadTime, 5.0))
+                    try? await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
+                }
             } catch {
                 // Pre-loading failed (cancellation or load error) —
                 // normal non-gapless transition will happen via handleTrackEnd.
             }
         }
+    }
+
+    /// Seconds remaining in the currently playing track, computed from
+    /// the audio engine's render-time clock (not the published
+    /// `currentTime`, which is only refreshed by the screen-bound
+    /// `CADisplayLink` and so goes stale when the device is locked).
+    /// Returns `.infinity` if we can't read the clock yet — callers
+    /// treat that as "wait, not time to arm yet."
+    private func remainingTimeInCurrentTrack() -> TimeInterval {
+        guard let snapshot = anchor,
+              let nodeTime = playerNode.lastRenderTime,
+              nodeTime.isSampleTimeValid,
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
+            return .infinity
+        }
+        let elapsedSeconds = snapshot.elapsedSeconds(forEngineSampleTime: playerTime.sampleTime)
+        return max(0, snapshot.duration - elapsedSeconds)
     }
 
     /// Take the in-memory pre-loaded next track and actually schedule it
@@ -1091,16 +1172,19 @@ final class AudioPlayerService {
     }
 
     private func updateCurrentTime() {
+        // Capture the anchor in a single atomic load. Everything below
+        // operates on this self-consistent snapshot — even if a gapless
+        // advance swaps in a new anchor between now and the next tick,
+        // we'll just compute against the old one this frame and the new
+        // one next frame. No possibility of mixing fields across tracks.
         guard !isSeeking,
               let nodeTime = playerNode.lastRenderTime,
               nodeTime.isSampleTimeValid,
               let playerTime = playerNode.playerTime(forNodeTime: nodeTime),
-              let audioFile = currentAudioFile else { return }
+              let snapshot = anchor else { return }
 
-        let sampleRate = audioFile.processingFormat.sampleRate
-        let elapsedFrames = playerTime.sampleTime - playerTimeOffset
-        let time = Double(seekFrameOffset + elapsedFrames) / sampleRate
-        if time >= 0 && time <= duration {
+        let time = snapshot.elapsedSeconds(forEngineSampleTime: playerTime.sampleTime)
+        if time >= 0 && time <= snapshot.duration {
             currentTime = time
         }
 
@@ -1114,19 +1198,6 @@ final class AudioPlayerService {
             updateNowPlayingPlaybackInfo()
         }
 
-        // If we're inside the arm window AND the next track has been
-        // pre-loaded but not yet scheduled on the engine, schedule it now.
-        // This is the second half of the two-phase gapless pipeline — see
-        // `armLeadTime` and `scheduleNextTrackGapless`. Delaying engine
-        // scheduling until here means queue mutations earlier in the
-        // track can update intent (via a fresh preload) without any
-        // engine interaction or audible pause.
-        if !isGaplessTransition && nextAudioFile != nil {
-            let remaining = duration - time
-            if remaining >= 0 && remaining <= Self.armLeadTime {
-                armNextTrackOnEngineIfNeeded()
-            }
-        }
     }
 
     private func handleTrackEnd() {
@@ -1167,20 +1238,24 @@ final class AudioPlayerService {
             nextWaveform = nil
             nextWaveformSamplesPerSecond = 0
 
-            // Advance playerTimeOffset by exactly the number of frames that
-            // just played from the outgoing track.  Querying lastRenderTime at
-            // the exact track boundary is unreliable — playerTime(forNodeTime:)
-            // can return nil right as one segment ends and the next begins,
-            // leaving playerTimeOffset at 0 and breaking currentTime for the
-            // incoming track (progress pins to end or jumps wildly).
-            // This deterministic calculation is always correct regardless of
-            // whether the render thread is at a segment boundary.
-            let framesJustPlayed = (currentAudioFile?.length ?? 0) - seekFrameOffset
-            playerTimeOffset = playerTimeOffset + framesJustPlayed
+            // Compute the new anchor deterministically from the outgoing
+            // track's bookkeeping. Querying lastRenderTime at the exact
+            // track boundary is unreliable — playerTime(forNodeTime:) can
+            // return nil right as one segment ends and the next begins.
+            // Using `outgoing.totalFrames - outgoing.seekFrame` is always
+            // correct regardless of whether the render thread is at a
+            // segment boundary, because both values are known statically
+            // from our own bookkeeping rather than the engine's clock.
+            //
+            // The whole anchor (audioFile / seekFrame / playerTimeOffset)
+            // is updated in a single struct assignment — `updateCurrentTime`
+            // can never see a mix of new-track and old-track fields.
+            let outgoing = anchor
+            let framesJustPlayed = (outgoing?.totalFrames ?? 0) - (outgoing?.seekFrame ?? 0)
+            let newOffset = (outgoing?.playerTimeOffset ?? 0) + framesJustPlayed
 
             currentIndex = nextIndex
-            currentAudioFile = nextFile
-            seekFrameOffset = 0
+            anchor = PlaybackAnchor(audioFile: nextFile, seekFrame: 0, playerTimeOffset: newOffset)
             duration = Double(nextFile.length) / nextFile.processingFormat.sampleRate
             currentTime = 0
 
@@ -1340,6 +1415,15 @@ final class AudioPlayerService {
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
+        // Cancel any in-flight artwork fetch from a previous track —
+        // otherwise its `await` can complete after the user has skipped
+        // ahead and overwrite the lock-screen artwork with the wrong
+        // album's image. After ~20 minutes of an album auto-advancing,
+        // multiple stale Tasks could otherwise stack up and the last one
+        // to finish would win.
+        artworkTask?.cancel()
+        artworkTask = nil
+
         if let album = currentTrack?.album, album.isLocal {
             if let path = album.resolvedLocalCoverPath, let image = UIImage(contentsOfFile: path) {
                 let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
@@ -1348,12 +1432,40 @@ final class AudioPlayerService {
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
             }
         } else if let coverFileId = currentTrack?.album?.coverFileId, let albumArtService {
-            Task {
-                if let image = await albumArtService.image(for: coverFileId) {
+            // Snapshot the expected coverFileId at launch time. When the
+            // async fetch completes, we verify the current track's
+            // coverFileId still matches before writing — a belt-and-
+            // suspenders check on top of cancellation in case the
+            // cancellation propagation lost a race.
+            let expectedCoverFileId = coverFileId
+            #if DEBUG
+            print("[NP] artworkTask START coverFileId=\(coverFileId)")
+            #endif
+            artworkTask = Task {
+                do {
+                    let image = await albumArtService.image(for: coverFileId)
+                    try Task.checkCancellation()
+                    guard let image else { return }
+                    // Final safety check: the current track must still
+                    // be the one we were fetching for. If the user has
+                    // advanced, drop the result silently — the new
+                    // track's `updateNowPlayingInfo` will have already
+                    // kicked off its own artwork fetch.
+                    guard currentTrack?.album?.coverFileId == expectedCoverFileId else {
+                        #if DEBUG
+                        print("[NP] artworkTask STALE expected=\(expectedCoverFileId) current=\(currentTrack?.album?.coverFileId ?? "nil") — dropping")
+                        #endif
+                        return
+                    }
                     let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                     var updatedInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                     updatedInfo[MPMediaItemPropertyArtwork] = artwork
                     MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
+                    #if DEBUG
+                    print("[NP] artworkTask APPLIED coverFileId=\(expectedCoverFileId)")
+                    #endif
+                } catch {
+                    // Cancellation — drop quietly.
                 }
             }
         }
