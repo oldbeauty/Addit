@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# Decode the project's encoded Markdown docs in place, restoring each to
+# its original plaintext form byte-for-byte. For every file produced by
+# ./encode, this extracts the base64 blob between the HTML-comment
+# markers, decodes it, and overwrites the file.
+#
+# Usage: ./decode
+#
+# Covers README.md and CLAUDE.md together — there is no per-file
+# variant. Idempotent: a file that is already decoded (no start marker)
+# is skipped without being touched.
+
+set -euo pipefail
+
+FILES=(README.md CLAUDE.md)
+START_MARKER="<!-- ----- ENCODED ----- -->"
+END_MARKER="<!-- ----- END ----- -->"
+
+decode_file() {
+    local target="$1"
+
+    if [[ ! -f "$target" ]]; then
+        echo "Error: $target not found in current directory." >&2
+        return 1
+    fi
+
+    # Not encoded? Nothing to do.
+    if ! grep -qF "$START_MARKER" "$target"; then
+        echo "$target is not encoded. Skipped."
+        return 0
+    fi
+
+    # Pull every line strictly between the start and end markers. Using
+    # `awk` here (vs. `sed`) so the marker lines themselves are skipped
+    # without needing tricky line-range arithmetic.
+    local encoded
+    encoded=$(awk -v start="$START_MARKER" -v end="$END_MARKER" '
+        $0 == start { capturing = 1; next }
+        $0 == end   { capturing = 0; next }
+        capturing
+    ' "$target")
+
+    if [[ -z "$encoded" ]]; then
+        echo "Error: encoded blob is empty or markers are malformed." >&2
+        echo "$target is in an invalid encoded state — restore from git history." >&2
+        return 1
+    fi
+
+    # Decode through a temp file so a corrupt blob doesn't truncate the
+    # source file. Only swap in the decoded contents if base64 succeeds.
+    local tmp
+    tmp=$(mktemp)
+    if ! printf '%s' "$encoded" | base64 -d > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        echo "Error: base64 decode failed — the blob may be corrupted." >&2
+        echo "Restore $target from git history if needed." >&2
+        return 1
+    fi
+
+    mv "$tmp" "$target"
+    echo "Decoded $target."
+}
+
+for f in "${FILES[@]}"; do
+    decode_file "$f"
+done

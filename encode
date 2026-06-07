@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#
+# Encode the project's Markdown docs in place. Each file's contents are
+# replaced with a short decode-instructions stub plus a base64-encoded
+# copy of the original inside HTML-comment markers. To restore, run
+# ./decode.
+#
+# Usage: ./encode
+#
+# Covers README.md and CLAUDE.md together — there is no per-file
+# variant. Idempotent: a file that is already encoded is skipped, so
+# you can run ./encode and ./decode as many times as you like without
+# tracking how many. Encoded and decoded are the only two states.
+
+set -euo pipefail
+
+FILES=(README.md CLAUDE.md)
+START_MARKER="<!-- ----- ENCODED ----- -->"
+END_MARKER="<!-- ----- END ----- -->"
+
+encode_file() {
+    local target="$1"
+
+    if [[ ! -f "$target" ]]; then
+        echo "Error: $target not found in current directory." >&2
+        return 1
+    fi
+
+    # Already encoded? Skip. Detection is by the start marker, which is
+    # unique to the encoded form.
+    if grep -qF "$START_MARKER" "$target"; then
+        echo "$target is already encoded. Skipped."
+        return 0
+    fi
+
+    # Snapshot the original and base64-encode it. `base64` with no flags
+    # wraps lines at 76 chars on macOS, which keeps the encoded blob
+    # readable in any text editor.
+    local name encoded
+    name="$(basename "$target")"
+    encoded=$(base64 < "$target")
+
+    # Heredoc is unquoted so $encoded expands; backticks are escaped
+    # with \` so they appear literally in the output instead of
+    # triggering command substitution.
+    cat > "$target" <<EOF
+# ${name}
+
+This file is encoded. To restore it (and the project's other encoded
+docs), run:
+
+\`\`\`
+./decode
+\`\`\`
+
+To re-encode after decoding, run \`./encode\`. Both scripts are
+idempotent and operate on every doc at once — running either when the
+files are already in that state is a no-op, so you can run them as many
+times as you want without corrupting anything. Encoded and decoded are
+the only two possible states.
+
+$START_MARKER
+$encoded
+$END_MARKER
+EOF
+
+    echo "Encoded $target."
+}
+
+for f in "${FILES[@]}"; do
+    encode_file "$f"
+done
