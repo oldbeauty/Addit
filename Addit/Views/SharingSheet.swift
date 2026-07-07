@@ -2,9 +2,14 @@ import SwiftUI
 
 struct SharingSheet: View {
     let album: Album
-    @Environment(GoogleDriveService.self) private var driveService
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(\.dismiss) private var dismiss
+
+    /// Drive client for whichever provider hosts this album.
+    private var driveService: any CloudDriveService {
+        cloudRouter.service(for: album)
+    }
     @State private var permissions: [DrivePermission] = []
     @State private var generalAccess: GeneralAccess = .restricted
     @State private var isLoading = true
@@ -113,11 +118,13 @@ struct SharingSheet: View {
                         if generalAccess == .anyoneViewer { Label("Anyone with the link: Viewer", systemImage: "checkmark") }
                         else { Text("Anyone with the link: Viewer") }
                     }
-                    Button {
-                        Task { await updateGeneralAccess(.anyoneCommenter) }
-                    } label: {
-                        if generalAccess == .anyoneCommenter { Label("Anyone with the link: Commenter", systemImage: "checkmark") }
-                        else { Text("Anyone with the link: Commenter") }
+                    if driveService.supportsCommenterRole {
+                        Button {
+                            Task { await updateGeneralAccess(.anyoneCommenter) }
+                        } label: {
+                            if generalAccess == .anyoneCommenter { Label("Anyone with the link: Commenter", systemImage: "checkmark") }
+                            else { Text("Anyone with the link: Commenter") }
+                        }
                     }
                     Button {
                         Task { await updateGeneralAccess(.anyoneEditor) }
@@ -187,7 +194,10 @@ struct SharingSheet: View {
 
                 Picker("Role", selection: $newRole) {
                     Text("Viewer").tag("reader")
-                    Text("Commenter").tag("commenter")
+                    // OneDrive has only read/write roles.
+                    if driveService.supportsCommenterRole {
+                        Text("Commenter").tag("commenter")
+                    }
                     Text("Editor").tag("writer")
                 }
                 .labelsHidden()
@@ -258,9 +268,11 @@ struct SharingSheet: View {
                 if permission.role == "reader" { Label("Viewer", systemImage: "checkmark") }
                 else { Text("Viewer") }
             }
-            Button { handleRoleChange(permission: permission, to: "commenter") } label: {
-                if permission.role == "commenter" { Label("Commenter", systemImage: "checkmark") }
-                else { Text("Commenter") }
+            if driveService.supportsCommenterRole {
+                Button { handleRoleChange(permission: permission, to: "commenter") } label: {
+                    if permission.role == "commenter" { Label("Commenter", systemImage: "checkmark") }
+                    else { Text("Commenter") }
+                }
             }
             Button { handleRoleChange(permission: permission, to: "writer") } label: {
                 if permission.role == "writer" { Label("Editor", systemImage: "checkmark") }

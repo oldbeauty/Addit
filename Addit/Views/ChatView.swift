@@ -2,8 +2,12 @@ import SwiftUI
 
 struct ChatView: View {
     let album: Album
+    // Chat is Google-only (Drive comments API has no OneDrive
+    // equivalent) — this view keeps the concrete Google client and is
+    // never presented for OneDrive albums.
     @Environment(GoogleDriveService.self) private var driveService
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudAuthCoordinator.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [DriveComment] = []
@@ -114,7 +118,7 @@ struct ChatView: View {
         .navigationBarHidden(true)
         .sheet(isPresented: $showSharingSheet) {
             SharingSheet(album: album)
-                .environment(driveService)
+                .environment(cloudRouter)
                 .environment(authService)
         }
         .task {

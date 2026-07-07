@@ -3,6 +3,9 @@ import Foundation
 @Observable
 final class AudioCacheService {
     var driveService: GoogleDriveService?
+    /// When set, downloads route per-track to the owning album's cloud
+    /// provider; `driveService` remains as a Google-only fallback.
+    var cloudRouter: CloudServiceRouter?
     var activeAccountId: String?
 
     /// Live "Make Available Offline" progress per album, keyed by the
@@ -58,8 +61,16 @@ final class AudioCacheService {
             return destination
         }
 
-        guard let driveService else { throw CacheError.notConfigured }
-        try await driveService.downloadFile(fileId: track.googleFileId, to: destination)
+        // Route to the provider that owns this track's album; fall back to
+        // the Google client for pre-router configurations.
+        let client: (any CloudDriveService)? = {
+            if let cloudRouter, let album = track.album {
+                return cloudRouter.service(for: album)
+            }
+            return driveService
+        }()
+        guard let client else { throw CacheError.notConfigured }
+        try await client.downloadFile(fileId: track.googleFileId, to: destination)
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
         }

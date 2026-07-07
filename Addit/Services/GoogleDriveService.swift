@@ -1,8 +1,13 @@
 import Foundation
 
 @Observable
-final class GoogleDriveService {
+final class GoogleDriveService: CloudDriveService {
     var authService: GoogleAuthService?
+
+    // CloudDriveService capability flags
+    let supportsComments = true
+    let supportsStarred = true
+    let supportsCommenterRole = true
 
     private let session = URLSession.shared
     private let baseURL = Constants.driveAPIBase

@@ -6,8 +6,14 @@ import AVFoundation
 struct AlbumDetailView: View {
     let album: Album
     @Environment(AudioPlayerService.self) private var playerService
-    @Environment(GoogleDriveService.self) private var driveService
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @Environment(CloudAuthCoordinator.self) private var authService
+
+    /// Drive client for whichever provider hosts this album — every
+    /// existing `driveService.…` call body works unchanged through this.
+    private var driveService: any CloudDriveService {
+        cloudRouter.service(for: album)
+    }
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(ThemeService.self) private var themeService
     @Environment(AudioCacheService.self) private var cacheService
@@ -42,6 +48,398 @@ struct AlbumDetailView: View {
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
+    }
+
+    /// Shared "dimmed background + progress card" overlay used by both the
+    /// save-to-local and upload-to-cloud flows. Extracted from the body for
+    /// type-checker budget (see `trackRowCell`) and to deduplicate two
+    /// structurally identical overlays.
+    @ViewBuilder
+    private func progressCardOverlay(
+        progress: (current: Int, total: Int, trackName: String),
+        countPrefix: String,
+        fallback: String
+    ) -> some View {
+        Color.black.opacity(0.3)
+            .ignoresSafeArea()
+            .overlay {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+
+                    if progress.total > 0 {
+                        Text("\(countPrefix) \(progress.current) of \(progress.total)")
+                            .font(.subheadline.bold())
+
+                        Text(progress.trackName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fadingTruncation()
+
+                        GeometryReader { geo in
+                            let fraction = CGFloat(progress.current) / CGFloat(max(progress.total, 1))
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.1))
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.5))
+                                    .frame(width: geo.size.width * fraction)
+                                    .animation(.easeInOut(duration: 0.3), value: progress.current)
+                            }
+                        }
+                        .frame(height: 4)
+                        .padding(.horizontal, 4)
+                    } else {
+                        Text(fallback)
+                            .font(.subheadline)
+                    }
+                }
+                .frame(width: 220)
+                .padding(24)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+    }
+
+    /// Album header: cover art, title, artist, play buttons. Extracted
+    /// from the List body for type-checker budget (see `trackRowCell`).
+    private var headerSection: some View {
+        Section {
+            VStack(spacing: 16) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: coverSize, height: coverSize)
+                    .overlay {
+                        if let albumImage {
+                            // Tap to kick off a luminance-based
+                            // pixel-sort animation; tap again at
+                            // the sorted state to replay the log
+                            // in reverse back to the original.
+                            PixelSortCoverView(
+                                image: albumImage,
+                                size: coverSize,
+                                cornerRadius: 12
+                            )
+                        } else {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(spacing: 4) {
+                    Text(album.name)
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+
+                    Text(album.artistName ?? "Unknown Artist")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        playerService.playAlbum(album)
+                    } label: {
+                        Image(systemName: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        if isThisAlbumPlaying {
+                            playerService.toggleShuffle()
+                        } else {
+                            playerService.playAlbum(album, shuffled: true)
+                        }
+                    } label: {
+                        Image(systemName: "shuffle")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(isThisAlbumPlaying && playerService.isShuffleOn ? themeService.accentColor : nil)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+        }
+    }
+
+    /// Track list + album duration footer. Extracted from the List body
+    /// for type-checker budget (see `trackRowCell`).
+    private var tracksSection: some View {
+        Section {
+            ForEach(Array(filteredDisplayItems.enumerated()), id: \.element.id) { index, item in
+                switch item {
+                case .track(let track):
+                    trackRowCell(for: track)
+                case .discMarker(_, let label):
+                    let discSeconds = discDurationSeconds(forMarkerAt: index)
+                    DiscMarkerRow(
+                        label: label,
+                        duration: discSeconds > 0 ? formatDuration(discSeconds) : nil
+                    )
+                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+            }
+
+            if albumDurationSeconds > 0 {
+                HStack {
+                    Spacer()
+                    Text(formattedAlbumDuration)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                // Trailing inset = TrackRow's 8pt row inset + the
+                // ~7pt gap between the "…" glyph's right edge and
+                // its 32pt frame's right edge (SF subheadline
+                // `ellipsis` glyph is ≈18pt wide, centered in 32).
+                // This aligns the duration text's right edge with
+                // the visible right edge of each row's ellipsis.
+                .listRowInsets(EdgeInsets(top: 12, leading: 8, bottom: 8, trailing: 15))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+        }
+    }
+
+    /// Ellipsis dropdown panel, extracted from the body's overlay for the
+    /// same type-checker-budget reason as `trackRowCell` / `initialLoad`.
+    private var toolbarActionsPanel: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            if !album.isLocal {
+                Button {
+                    showSharingSheet = true
+                    withAnimation { showToolbarActions = false }
+                } label: {
+                    Label("Sharing", systemImage: "person.2")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                // Chat rides on the Drive comments API, which OneDrive
+                // has no equivalent for — hidden for OneDrive albums.
+                if driveService.supportsComments {
+                    Divider()
+
+                    Button {
+                        navigateToChat = true
+                        withAnimation { showToolbarActions = false }
+                    } label: {
+                        Label("Chat", systemImage: "bubble.left")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+
+                Divider()
+            }
+
+            Button {
+                showEditSheet = true
+                withAnimation { showToolbarActions = false }
+            } label: {
+                Label("Edit", systemImage: "pencil")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            if !album.isLocal {
+                Divider()
+
+                Button {
+                    toggleAllCache()
+                    withAnimation { showToolbarActions = false }
+                } label: {
+                    Label(
+                        allTracksCached ? "Remove Offline Access" : "Make Available Offline",
+                        systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+
+            if hasHiddenTracks {
+                Divider()
+
+                Button {
+                    withAnimation { album.showHiddenTracks.toggle() }
+                    try? modelContext.save()
+                    withAnimation { showToolbarActions = false }
+                } label: {
+                    Label(album.showHiddenTracks ? "Hide Hidden Tracks" : "Show Hidden Tracks",
+                          systemImage: album.showHiddenTracks ? "eye.slash" : "eye")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+
+            Divider()
+
+            Button {
+                downloadAlbumAsZip()
+                withAnimation { showToolbarActions = false }
+            } label: {
+                Label("Download", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            if !album.isLocal {
+                Divider()
+
+                Button {
+                    withAnimation { showToolbarActions = false }
+                    Task { await saveToLocalLibrary() }
+                } label: {
+                    Label("Save to Local Library", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+
+            if album.isLocal {
+                Divider()
+
+                Button {
+                    withAnimation { showToolbarActions = false }
+                    showDriveFolderPicker = true
+                } label: {
+                    Label("Save to \(authService.activeProvider.displayName) Library",
+                          systemImage: "icloud.and.arrow.up")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+        .frame(width: 230)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.trailing, 16)
+        .padding(.top, 4)
+        .transition(.opacity.combined(with: .scale(scale: 0.5, anchor: .topTrailing)))
+    }
+
+    /// Track row + its full modifier chain, extracted from the List body.
+    /// Keeping this inline made the body expression exceed the
+    /// type-checker's budget after the CloudDriveService refactor (the
+    /// body was already near the cliff; see also `initialLoad`).
+    @ViewBuilder
+    private func trackRowCell(for track: Track) -> some View {
+        TrackRow(
+            track: track,
+            number: trackNumbers[track.googleFileId] ?? 0,
+            isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
+            isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying,
+            isCached: track.isLocal || cachedTrackIds.contains(track.googleFileId),
+            isLocal: album.isLocal,
+            onToggleCache: {
+                toggleCache(for: track)
+            },
+            onDownload: {
+                downloadAndShare(track: track)
+            },
+            onToggleHidden: {
+                track.isHidden.toggle()
+                try? modelContext.save()
+            }
+        )
+        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowBackground(Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if track.isHidden {
+                // Play the hidden track solo — don't add it to the album queue
+                playerService.playTrack(track, inQueue: [track])
+            } else {
+                playerService.playTrack(track, inQueue: playableTracks)
+            }
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                playerService.addToQueue(track)
+                queuedTrackId = track.googleFileId
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    if queuedTrackId == track.googleFileId {
+                        queuedTrackId = nil
+                    }
+                }
+            } label: {
+                Label("Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
+            }
+            .tint(themeService.accentColor)
+        }
+        .overlay(alignment: .trailing) {
+            if queuedTrackId == track.googleFileId {
+                Text("Queued")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(themeService.accentColor, in: Capsule())
+                    .transition(.opacity.combined(with: .scale))
+                    .padding(.trailing, 8)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: queuedTrackId)
+    }
+
+    /// Rebuild the display list for a LOCAL album from its cached
+    /// tracklist (or from scratch when none exists).
+    private func rebuildLocalDisplayItems() {
+        let allTracks = fetchAllTracks()
+        if !album.cachedTracklist.isEmpty {
+            buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
+        } else {
+            buildDisplayItems(from: nil, tracks: allTracks)
+        }
+    }
+
+    /// Body of the view's initial `.task` — extracted (like the other
+    /// lifecycle closures below) because keeping the logic inline pushed
+    /// the body expression past the type-checker's budget once
+    /// `driveService` became an `any CloudDriveService` existential.
+    private func initialLoad() async {
+        if album.isLocal {
+            isSyncing = false
+            rebuildLocalDisplayItems()
+        } else {
+            await syncFromDrive()
+        }
+        refreshCachedState()
+    }
+
+    /// Extracted from the edit sheet's `onDismiss` — see `initialLoad`.
+    private func handleEditSheetDismiss() {
+        if album.isLocal {
+            if !album.cachedTracklist.isEmpty {
+                buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
+            } else {
+                buildDisplayItems(from: nil)
+            }
+        } else {
+            Task { await syncFromDrive() }
+        }
     }
 
     /// Fetches tracks directly from the model context, bypassing the potentially stale relationship
@@ -153,168 +551,8 @@ struct AlbumDetailView: View {
                     .listRowBackground(Color.clear)
                 }
             } else {
-                // Album header: cover art, title, artist, play buttons
-                Section {
-                    VStack(spacing: 16) {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: coverSize, height: coverSize)
-                            .overlay {
-                                if let albumImage {
-                                    // Tap to kick off a luminance-based
-                                    // pixel-sort animation; tap again at
-                                    // the sorted state to replay the log
-                                    // in reverse back to the original.
-                                    PixelSortCoverView(
-                                        image: albumImage,
-                                        size: coverSize,
-                                        cornerRadius: 12
-                                    )
-                                } else {
-                                    Image(systemName: "music.note")
-                                        .font(.system(size: 48))
-                                        .foregroundStyle(.white.opacity(0.8))
-                                }
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                        VStack(spacing: 4) {
-                            Text(album.name)
-                                .font(.title2.bold())
-                                .multilineTextAlignment(.center)
-                                .lineLimit(2)
-
-                            Text(album.artistName ?? "Unknown Artist")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(spacing: 12) {
-                            Button {
-                                playerService.playAlbum(album)
-                            } label: {
-                                Image(systemName: "play.fill")
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button {
-                                if isThisAlbumPlaying {
-                                    playerService.toggleShuffle()
-                                } else {
-                                    playerService.playAlbum(album, shuffled: true)
-                                }
-                            } label: {
-                                Image(systemName: "shuffle")
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(isThisAlbumPlaying && playerService.isShuffleOn ? themeService.accentColor : nil)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
-                }
-
-                Section {
-                    ForEach(Array(filteredDisplayItems.enumerated()), id: \.element.id) { index, item in
-                        switch item {
-                        case .track(let track):
-                            TrackRow(
-                                track: track,
-                                number: trackNumbers[track.googleFileId] ?? 0,
-                                isCurrentTrack: playerService.currentTrack?.googleFileId == track.googleFileId,
-                                isPlaying: playerService.currentTrack?.googleFileId == track.googleFileId && playerService.isPlaying,
-                                isCached: track.isLocal || cachedTrackIds.contains(track.googleFileId),
-                                isLocal: album.isLocal,
-                                onToggleCache: {
-                                    toggleCache(for: track)
-                                },
-                                onDownload: {
-                                    downloadAndShare(track: track)
-                                },
-                                onToggleHidden: {
-                                    track.isHidden.toggle()
-                                    try? modelContext.save()
-                                }
-                            )
-                            .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
-                            .listRowBackground(Color.clear)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if track.isHidden {
-                                    // Play the hidden track solo — don't add it to the album queue
-                                    playerService.playTrack(track, inQueue: [track])
-                                } else {
-                                    playerService.playTrack(track, inQueue: playableTracks)
-                                }
-                            }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    playerService.addToQueue(track)
-                                    queuedTrackId = track.googleFileId
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    Task {
-                                        try? await Task.sleep(for: .seconds(1.5))
-                                        if queuedTrackId == track.googleFileId {
-                                            queuedTrackId = nil
-                                        }
-                                    }
-                                } label: {
-                                    Label("Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
-                                }
-                                .tint(themeService.accentColor)
-                            }
-                            .overlay(alignment: .trailing) {
-                                if queuedTrackId == track.googleFileId {
-                                    Text("Queued")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(themeService.accentColor, in: Capsule())
-                                        .transition(.opacity.combined(with: .scale))
-                                        .padding(.trailing, 8)
-                                }
-                            }
-                            .animation(.easeInOut(duration: 0.2), value: queuedTrackId)
-                        case .discMarker(_, let label):
-                            let discSeconds = discDurationSeconds(forMarkerAt: index)
-                            DiscMarkerRow(
-                                label: label,
-                                duration: discSeconds > 0 ? formatDuration(discSeconds) : nil
-                            )
-                            .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                        }
-                    }
-
-                    if albumDurationSeconds > 0 {
-                        HStack {
-                            Spacer()
-                            Text(formattedAlbumDuration)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                        // Trailing inset = TrackRow's 8pt row inset + the
-                        // ~7pt gap between the "…" glyph's right edge and
-                        // its 32pt frame's right edge (SF subheadline
-                        // `ellipsis` glyph is ≈18pt wide, centered in 32).
-                        // This aligns the duration text's right edge with
-                        // the visible right edge of each row's ellipsis.
-                        .listRowInsets(EdgeInsets(top: 12, leading: 8, bottom: 8, trailing: 15))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                    }
-                }
+                headerSection
+                tracksSection
 
                 if let syncError {
                     Section {
@@ -380,205 +618,25 @@ struct AlbumDetailView: View {
         )
         .overlay(alignment: .topTrailing) {
             if showToolbarActions {
-                VStack(alignment: .trailing, spacing: 0) {
-                    if !album.isLocal {
-                        Button {
-                            showSharingSheet = true
-                            withAnimation { showToolbarActions = false }
-                        } label: {
-                            Label("Sharing", systemImage: "person.2")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-
-                        Divider()
-
-                        Button {
-                            navigateToChat = true
-                            withAnimation { showToolbarActions = false }
-                        } label: {
-                            Label("Chat", systemImage: "bubble.left")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-
-                        Divider()
-                    }
-
-                    Button {
-                        showEditSheet = true
-                        withAnimation { showToolbarActions = false }
-                    } label: {
-                        Label("Edit", systemImage: "pencil")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    if !album.isLocal {
-                        Divider()
-
-                        Button {
-                            toggleAllCache()
-                            withAnimation { showToolbarActions = false }
-                        } label: {
-                            Label(
-                                allTracksCached ? "Remove Offline Access" : "Make Available Offline",
-                                systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
-
-                    if hasHiddenTracks {
-                        Divider()
-
-                        Button {
-                            withAnimation { album.showHiddenTracks.toggle() }
-                            try? modelContext.save()
-                            withAnimation { showToolbarActions = false }
-                        } label: {
-                            Label(album.showHiddenTracks ? "Hide Hidden Tracks" : "Show Hidden Tracks",
-                                  systemImage: album.showHiddenTracks ? "eye.slash" : "eye")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
-
-                    Divider()
-
-                    Button {
-                        downloadAlbumAsZip()
-                        withAnimation { showToolbarActions = false }
-                    } label: {
-                        Label("Download", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    if !album.isLocal {
-                        Divider()
-
-                        Button {
-                            withAnimation { showToolbarActions = false }
-                            Task { await saveToLocalLibrary() }
-                        } label: {
-                            Label("Save to Local Library", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
-
-                    if album.isLocal {
-                        Divider()
-
-                        Button {
-                            withAnimation { showToolbarActions = false }
-                            showDriveFolderPicker = true
-                        } label: {
-                            Label("Save to Google Drive Library", systemImage: "icloud.and.arrow.up")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
-                }
-                .frame(width: 230)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding(.trailing, 16)
-                .padding(.top, 4)
-                .transition(.opacity.combined(with: .scale(scale: 0.5, anchor: .topTrailing)))
+                toolbarActionsPanel
             }
         }
         .overlay {
             if isSavingToLocal {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .overlay {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.2)
-
-                            if saveProgress.total > 0 {
-                                Text("Track \(saveProgress.current) of \(saveProgress.total)")
-                                    .font(.subheadline.bold())
-
-                                Text(saveProgress.trackName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fadingTruncation()
-
-                                GeometryReader { geo in
-                                    let fraction = CGFloat(saveProgress.current) / CGFloat(max(saveProgress.total, 1))
-                                    ZStack(alignment: .leading) {
-                                        Capsule()
-                                            .fill(Color.primary.opacity(0.1))
-                                        Capsule()
-                                            .fill(Color.primary.opacity(0.5))
-                                            .frame(width: geo.size.width * fraction)
-                                            .animation(.easeInOut(duration: 0.3), value: saveProgress.current)
-                                    }
-                                }
-                                .frame(height: 4)
-                                .padding(.horizontal, 4)
-                            } else {
-                                Text("Saving...")
-                                    .font(.subheadline)
-                            }
-                        }
-                        .frame(width: 220)
-                        .padding(24)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    }
+                progressCardOverlay(
+                    progress: saveProgress,
+                    countPrefix: "Track",
+                    fallback: "Saving..."
+                )
             }
         }
         .overlay {
             if isSavingToDrive {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .overlay {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.2)
-
-                            if uploadProgress.total > 0 {
-                                Text("Uploading \(uploadProgress.current) of \(uploadProgress.total)")
-                                    .font(.subheadline.bold())
-
-                                Text(uploadProgress.trackName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fadingTruncation()
-
-                                GeometryReader { geo in
-                                    let fraction = CGFloat(uploadProgress.current) / CGFloat(max(uploadProgress.total, 1))
-                                    ZStack(alignment: .leading) {
-                                        Capsule()
-                                            .fill(Color.primary.opacity(0.1))
-                                        Capsule()
-                                            .fill(Color.primary.opacity(0.5))
-                                            .frame(width: geo.size.width * fraction)
-                                            .animation(.easeInOut(duration: 0.3), value: uploadProgress.current)
-                                    }
-                                }
-                                .frame(height: 4)
-                                .padding(.horizontal, 4)
-                            } else {
-                                Text("Uploading...")
-                                    .font(.subheadline)
-                            }
-                        }
-                        .frame(width: 220)
-                        .padding(24)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    }
+                progressCardOverlay(
+                    progress: uploadProgress,
+                    countPrefix: "Uploading",
+                    fallback: "Uploading..."
+                )
             }
         }
         .sheet(isPresented: $showSharingSheet) {
@@ -589,7 +647,7 @@ struct AlbumDetailView: View {
                 showDriveFolderPicker = false
                 Task { await saveToGoogleDrive(parentId: parentId, markStarred: markStarred) }
             }
-            .environment(driveService)
+            .environment(cloudRouter)
             .environment(authService)
         }
         .alert("Upload Failed", isPresented: Binding(
@@ -611,47 +669,21 @@ struct AlbumDetailView: View {
                 ShareSheet(activityItems: [url])
             }
         }
-        .sheet(isPresented: $showEditSheet, onDismiss: {
-            if album.isLocal {
-                if !album.cachedTracklist.isEmpty {
-                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
-                } else {
-                    buildDisplayItems(from: nil)
-                }
-            } else {
-                Task { await syncFromDrive() }
-            }
-        }) {
+        .sheet(isPresented: $showEditSheet, onDismiss: handleEditSheetDismiss) {
             AlbumMetadataEditorSheet(album: album)
         }
         .refreshable {
             await syncFromDrive()
         }
         .task {
-            if album.isLocal {
-                isSyncing = false
-                let allTracks = fetchAllTracks()
-                if !album.cachedTracklist.isEmpty {
-                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
-                } else {
-                    buildDisplayItems(from: nil, tracks: allTracks)
-                }
-            } else {
-                await syncFromDrive()
-            }
-            refreshCachedState()
+            await initialLoad()
         }
         .task(id: "\(playableTracks.map(\.googleFileId))") {
             await calculateAlbumDuration()
         }
         .onChange(of: album.tracks.count) {
             if album.isLocal {
-                let allTracks = fetchAllTracks()
-                if !album.cachedTracklist.isEmpty {
-                    buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
-                } else {
-                    buildDisplayItems(from: nil, tracks: allTracks)
-                }
+                rebuildLocalDisplayItems()
             }
         }
         .onChange(of: playerService.currentTrack?.googleFileId) {
@@ -1053,6 +1085,11 @@ struct AlbumDetailView: View {
             uploadProgress = (0, 0, "")
         }
 
+        // This album is LOCAL, so the album-routed `driveService` property
+        // would fall back to Google. Uploading targets the ACTIVE
+        // account's provider — shadow the property for this function.
+        let driveService = cloudRouter.activeService
+
         let fm = FileManager.default
         let localTracks = sortedTracks
         let totalSteps = localTracks.count + 2 // tracks + .addit-data + cover
@@ -1157,7 +1194,7 @@ struct AlbumDetailView: View {
                 canEdit: true,
                 isFolderOwner: true,
                 displayOrder: nextOrder,
-                storageSource: .googleDrive
+                storageSource: authService.activeProvider.storageSource
             )
             newAlbum.additDataFileId = additDataItem.id
             newAlbum.cachedTracklist = tracklist
@@ -1637,19 +1674,20 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-/// Sheet that lets the user pick a destination folder in Google Drive,
-/// reusing the same browser used by CreateAlbumView.
+/// Sheet that lets the user pick a destination folder in the active
+/// account's cloud, reusing the same browser used by CreateAlbumView.
 struct ChooseDriveFolderSheet: View {
     let onSelectParent: (_ parentId: String, _ markStarred: Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.allCases, id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }

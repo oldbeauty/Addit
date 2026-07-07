@@ -6,8 +6,12 @@ struct CreateAlbumView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(GoogleDriveService.self) private var driveService
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @Environment(CloudAuthCoordinator.self) private var authService
+
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
+    }
 
     @State private var selectedSource: FolderSource = .personal
     @State private var showNameAlert = false
@@ -21,7 +25,7 @@ struct CreateAlbumView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.allCases, id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: driveService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -129,7 +133,10 @@ struct CreateAlbumView: View {
                 trackCount: 0,
                 canEdit: true,
                 isFolderOwner: true,
-                displayOrder: nextOrder
+                displayOrder: nextOrder,
+                // Stamp with the provider the folder was created in —
+                // this is what routes every subsequent API call for it.
+                storageSource: authService.activeProvider.storageSource
             )
             if let email = authService.userEmail {
                 album.accountId = AccountManager.storageIdentifier(for: email)
@@ -165,7 +172,10 @@ struct ParentFolderBrowserView: View {
     /// Starred tab — since "Starred" is a flag, not a real parent folder).
     let onSelectParent: (_ parentId: String, _ markStarred: Bool) -> Void
 
-    @Environment(GoogleDriveService.self) private var driveService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
+    }
     @State private var subfolders: [DriveItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?

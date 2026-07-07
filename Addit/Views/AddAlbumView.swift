@@ -6,6 +6,12 @@ enum FolderSource: String, CaseIterable {
     case starred = "Starred"
     case shared = "Shared"
 
+    /// Tabs available for a given drive client — OneDrive has no
+    /// starred/favorites concept, so its Starred tab is omitted.
+    static func availableCases(for service: any CloudDriveService) -> [FolderSource] {
+        allCases.filter { $0 != .starred || service.supportsStarred }
+    }
+
     var icon: String {
         switch self {
         case .personal: return "folder.fill"
@@ -24,7 +30,7 @@ enum FolderSource: String, CaseIterable {
 
     var emptyDescription: String {
         switch self {
-        case .personal: return "No folders found in your Google Drive"
+        case .personal: return "No folders found in your cloud drive"
         case .starred: return "You haven't starred any folders"
         case .shared: return "No folders have been shared with you"
         }
@@ -34,8 +40,14 @@ enum FolderSource: String, CaseIterable {
 struct AddAlbumView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(GoogleDriveService.self) private var driveService
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @Environment(CloudAuthCoordinator.self) private var authService
+
+    /// Client for the ACTIVE account's provider — browsing happens in
+    /// whatever cloud the signed-in account lives on.
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
+    }
 
     @State private var selectedSource: FolderSource = .personal
     @State private var searchText = ""
@@ -46,7 +58,7 @@ struct AddAlbumView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.allCases, id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: driveService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -116,7 +128,10 @@ struct AddAlbumView: View {
             name: folder.name,
             trackCount: audioFiles.count,
             canEdit: folder.canEdit,
-            displayOrder: nextOrder
+            displayOrder: nextOrder,
+            // Stamp the album with the provider it was browsed from —
+            // this is what routes every subsequent API call for it.
+            storageSource: authService.activeProvider.storageSource
         )
         if let email = authService.userEmail {
             album.accountId = AccountManager.storageIdentifier(for: email)
@@ -253,7 +268,10 @@ struct FolderBrowserView: View {
     let existingFolderIds: Set<String>
     let onAdd: (DriveItem, [DriveItem]) -> Void
 
-    @Environment(GoogleDriveService.self) private var driveService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
+    }
     @State private var subfolders: [DriveItem] = []
     @State private var audioFiles: [DriveItem] = []
     @State private var isLoading = true
@@ -390,6 +408,7 @@ struct CopyAlbumFromDriveView: View {
     let onCopy: (DriveItem, [DriveItem]) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
     @State private var searchText = ""
 
@@ -397,7 +416,7 @@ struct CopyAlbumFromDriveView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.allCases, id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -430,7 +449,7 @@ struct CopyAlbumFromDriveView: View {
                 )
             }
             .searchable(text: $searchText, prompt: "Search folders")
-            .navigationTitle("Copy from Google Drive")
+            .navigationTitle("Copy from \(cloudRouter.activeProvider.displayName)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

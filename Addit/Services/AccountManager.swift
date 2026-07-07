@@ -18,13 +18,13 @@ final class AccountManager {
         loadAccounts()
     }
 
-    func addAccount(email: String, name: String, photoURL: URL?) {
+    func addAccount(email: String, name: String, photoURL: URL?, provider: AccountProvider = .google) {
         guard !accounts.contains(where: { $0.email == email }) else {
             // Account already exists — just switch to it
             setActiveAccount(email: email)
             return
         }
-        let account = Account(email: email, name: name, photoURL: photoURL)
+        let account = Account(email: email, name: name, photoURL: photoURL, provider: provider)
         accounts.append(account)
         saveAccounts()
         setActiveAccount(email: email)
@@ -51,7 +51,9 @@ final class AccountManager {
 
     func updateAccount(email: String, name: String, photoURL: URL?) {
         guard let index = accounts.firstIndex(where: { $0.email == email }) else { return }
-        accounts[index] = Account(email: email, name: name, photoURL: photoURL)
+        // Preserve the existing provider — updates only refresh profile info.
+        let provider = accounts[index].provider
+        accounts[index] = Account(email: email, name: name, photoURL: photoURL, provider: provider)
         saveAccounts()
     }
 
@@ -83,10 +85,52 @@ final class AccountManager {
     }
 }
 
+enum AccountProvider: String, Codable {
+    case google
+    case microsoft
+
+    /// The storage source albums created under this account use.
+    var storageSource: StorageSource {
+        switch self {
+        case .google: return .googleDrive
+        case .microsoft: return .oneDrive
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .google: return "Google Drive"
+        case .microsoft: return "OneDrive"
+        }
+    }
+}
+
 struct Account: Codable, Identifiable, Equatable {
     let email: String
     let name: String
     let photoURL: URL?
+    var provider: AccountProvider = .google
 
     var id: String { email }
+
+    init(email: String, name: String, photoURL: URL?, provider: AccountProvider = .google) {
+        self.email = email
+        self.name = name
+        self.photoURL = photoURL
+        self.provider = provider
+    }
+
+    // Backward-compatible decoding: accounts persisted before the
+    // provider field existed are Google accounts by definition.
+    enum CodingKeys: String, CodingKey {
+        case email, name, photoURL, provider
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        email = try container.decode(String.self, forKey: .email)
+        name = try container.decode(String.self, forKey: .name)
+        photoURL = try container.decodeIfPresent(URL.self, forKey: .photoURL)
+        provider = try container.decodeIfPresent(AccountProvider.self, forKey: .provider) ?? .google
+    }
 }

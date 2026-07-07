@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
-    @Environment(GoogleAuthService.self) private var authService
-    @Environment(GoogleDriveService.self) private var driveService
+    @Environment(CloudAuthCoordinator.self) private var authService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(AudioCacheService.self) private var cacheService
@@ -32,7 +32,23 @@ struct LibraryView: View {
     @State private var showCopyFromDrive = false
 
     private var currentSource: StorageSource {
-        StorageSource(rawValue: storageSource) ?? .googleDrive
+        let stored = StorageSource(rawValue: storageSource) ?? .googleDrive
+        if stored == .localStorage { return .localStorage }
+        // Any cloud value resolves to the ACTIVE account's provider — the
+        // AppStorage toggle is effectively "Cloud vs Local", and which
+        // cloud that means follows the signed-in account.
+        return authService.activeProvider.storageSource
+    }
+
+    /// Display name of the active account's cloud provider ("Google
+    /// Drive" / "OneDrive") for UI labels.
+    private var cloudLabel: String {
+        authService.activeProvider.displayName
+    }
+
+    /// The drive client for the active account's provider.
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
     }
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
@@ -47,9 +63,10 @@ struct LibraryView: View {
             // Local Library: show all local albums regardless of account
             return albums.filter { $0.storageSource == .localStorage }
         } else {
-            // Google Drive: show only albums belonging to the active account
+            // Cloud: show only albums of the active account's provider that
+            // belong to the active account
             let accountId = activeAccountId
-            return albums.filter { $0.storageSource == .googleDrive && $0.accountId == accountId }
+            return albums.filter { $0.storageSource == currentSource && $0.accountId == accountId }
         }
     }
 
@@ -98,8 +115,8 @@ struct LibraryView: View {
                     ContentUnavailableView(
                         "No Albums Yet",
                         systemImage: "music.note.list",
-                        description: Text(currentSource == .googleDrive
-                            ? "Tap + to add folders from Google Drive"
+                        description: Text(currentSource.isCloud
+                            ? "Tap + to add folders from \(cloudLabel)"
                             : "Tap + to import audio from your iPhone")
                     )
                     .padding(.top, 100)
@@ -210,10 +227,10 @@ struct LibraryView: View {
                         Button {
                             storageSource = StorageSource.googleDrive.rawValue
                         } label: {
-                            if currentSource == .googleDrive {
-                                Label("Google Drive", systemImage: "checkmark")
+                            if currentSource.isCloud {
+                                Label(cloudLabel, systemImage: "checkmark")
                             } else {
-                                Text("Google Drive")
+                                Text(cloudLabel)
                             }
                         }
                         Button {
@@ -227,7 +244,7 @@ struct LibraryView: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Text(currentSource == .googleDrive ? "Google Drive" : "Local Library")
+                            Text(currentSource.isCloud ? cloudLabel : "Local Library")
                                 .font(.headline)
                             Image(systemName: "chevron.down")
                                 .font(.caption.weight(.semibold))
@@ -270,7 +287,7 @@ struct LibraryView: View {
                         } label: {
                             Image(systemName: isListMode ? "square.grid.2x2" : "list.bullet")
                         }
-                        if currentSource == .googleDrive {
+                        if currentSource.isCloud {
                             Menu {
                                 Button {
                                     showAddAlbum = true
@@ -302,7 +319,7 @@ struct LibraryView: View {
                                     Button {
                                         showLocalDriveAudioPicker = true
                                     } label: {
-                                        Label("Add from Google Drive", systemImage: "cloud")
+                                        Label("Add from \(cloudLabel)", systemImage: "cloud")
                                     }
                                 } label: {
                                     Label("Create New", systemImage: "plus.rectangle.on.folder")
@@ -310,7 +327,7 @@ struct LibraryView: View {
                                 Button {
                                     showCopyFromDrive = true
                                 } label: {
-                                    Label("Copy from Google Drive", systemImage: "folder.badge.plus")
+                                    Label("Copy from \(cloudLabel)", systemImage: "folder.badge.plus")
                                 }
                             } label: {
                                 Image(systemName: "plus")
@@ -320,8 +337,11 @@ struct LibraryView: View {
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
-                        if currentSource == .googleDrive {
-                            // Account list
+                        if currentSource.isCloud {
+                            // Account list — Google and Microsoft accounts
+                            // share one switcher; OneDrive accounts get a
+                            // provider suffix so same-name accounts stay
+                            // distinguishable.
                             Section {
                                 ForEach(authService.accountManager.accounts) { account in
                                     Menu {
@@ -340,7 +360,9 @@ struct LibraryView: View {
                                         }
                                     } label: {
                                         Label {
-                                            Text(account.name)
+                                            Text(account.provider == .microsoft
+                                                 ? "\(account.name) · OneDrive"
+                                                 : account.name)
                                         } icon: {
                                             if account.email == authService.userEmail {
                                                 Image(systemName: "checkmark")
@@ -348,8 +370,17 @@ struct LibraryView: View {
                                         }
                                     }
                                 }
-                                Button {
-                                    Task { await authService.addAccount() }
+                                Menu {
+                                    Button {
+                                        Task { await authService.addAccount(provider: .google) }
+                                    } label: {
+                                        Label("Google Account", systemImage: "person.crop.circle")
+                                    }
+                                    Button {
+                                        Task { await authService.addAccount(provider: .microsoft) }
+                                    } label: {
+                                        Label("Microsoft Account", systemImage: "cloud")
+                                    }
                                 } label: {
                                     Label("Add Account", systemImage: "plus")
                                 }
@@ -461,7 +492,7 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Your library and downloads for this account will be erased, but no Google Drive data will be modified.")
+            Text("Your library and downloads for this account will be erased, but no cloud data will be modified.")
         }
         .alert("Erase \"Local Library\"?", isPresented: $showClearLocalConfirmation) {
             Button("Erase", role: .destructive) {
@@ -957,8 +988,21 @@ struct AlbumMetadataEditorSheet: View {
     let album: Album
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Environment(GoogleDriveService.self) private var driveService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AlbumArtService.self) private var albumArtService
+
+    /// Drive client for whichever provider hosts this album; local albums
+    /// pull new cloud tracks from the active account's provider instead.
+    private var driveService: any CloudDriveService {
+        album.isLocal ? cloudRouter.activeService : cloudRouter.service(for: album)
+    }
+
+    /// Provider name for UI labels ("Google Drive" / "OneDrive").
+    private var cloudLabel: String {
+        album.isOneDrive ? "OneDrive"
+            : album.isLocal ? cloudRouter.activeProvider.displayName
+            : "Google Drive"
+    }
     @Environment(ThemeService.self) private var themeService
     @State private var editedTitle = ""
     @State private var editedArtist = ""
@@ -1167,7 +1211,7 @@ struct AlbumMetadataEditorSheet: View {
                                 Button {
                                     showAddTrackSheet = true
                                 } label: {
-                                    Label("From Google Drive", systemImage: "cloud")
+                                    Label("From \(cloudLabel)", systemImage: "cloud")
                                 }
                                 Button {
                                     showDocumentPicker = true
@@ -1254,7 +1298,7 @@ struct AlbumMetadataEditorSheet: View {
                 }
                 Button("Cancel", role: .cancel) { trackToDelete = nil }
             } message: {
-                Text("This will delete \"\(trackToDelete?.name ?? "")\" from \"\(album.name)\" in Google Drive.")
+                Text("This will delete \"\(trackToDelete?.name ?? "")\" from \"\(album.name)\" in \(cloudLabel).")
             }
             .fullScreenCover(item: $imageToCrop) { item in
                 ImageCropperView(
@@ -1360,7 +1404,7 @@ struct AlbumMetadataEditorSheet: View {
 
         do {
             // Rename the actual Drive folder
-            try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
+            _ = try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
 
             // Rename changed tracks in Drive
             try await renameChangedTracks()
@@ -1480,11 +1524,16 @@ struct AlbumMetadataEditorSheet: View {
                 additDataFileId = item.id
                 album.additDataFileId = item.id
                 additDataOwnedByMe = true
-                // Notify chat that history was reset due to ownership change
-                _ = try? await driveService.createComment(
-                    fileId: item.id,
-                    content: "File ownership data was changed. Previous chat history may not persist."
-                )
+                // Notify chat that history was reset due to ownership
+                // change. Chat (Drive comments) is Google-only, so this
+                // goes through the concrete Google client and is skipped
+                // for OneDrive albums.
+                if album.storageSource == .googleDrive {
+                    _ = try? await cloudRouter.google.createComment(
+                        fileId: item.id,
+                        content: "File ownership data was changed. Previous chat history may not persist."
+                    )
+                }
             } else {
                 try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "application/json")
             }
@@ -1784,7 +1833,7 @@ struct AlbumMetadataEditorSheet: View {
             let newFileName = ext.isEmpty ? trimmed : "\(trimmed).\(ext)"
             guard newFileName != track.name else { continue }
 
-            try await driveService.renameFile(fileId: track.googleFileId, newName: newFileName)
+            _ = try await driveService.renameFile(fileId: track.googleFileId, newName: newFileName)
             track.name = newFileName
         }
         try? modelContext.save()

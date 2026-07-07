@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(ThemeService.self) private var themeService
     @Environment(\.colorScheme) private var colorScheme

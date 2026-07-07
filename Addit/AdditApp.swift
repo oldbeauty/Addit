@@ -4,19 +4,41 @@ import GoogleSignIn
 
 @main
 struct AdditApp: App {
-    @State private var authService = GoogleAuthService()
-    @State private var driveService = GoogleDriveService()
+    @State private var authService: GoogleAuthService
+    @State private var msAuthService: MicrosoftAuthService
+    @State private var authCoordinator: CloudAuthCoordinator
+    @State private var driveService: GoogleDriveService
+    @State private var oneDriveService: OneDriveService
+    @State private var cloudRouter: CloudServiceRouter
     @State private var playerService = AudioPlayerService()
     @State private var cacheService = AudioCacheService()
     @State private var albumArtService = AlbumArtService()
     @State private var themeService = ThemeService()
     @State private var analyzerService = AudioAnalyzerService()
 
+    init() {
+        // Constructed here (not as property initializers) because the
+        // coordinator and router hold references to their sibling services.
+        let google = GoogleAuthService()
+        let microsoft = MicrosoftAuthService()
+        let gDrive = GoogleDriveService()
+        let oneDrive = OneDriveService()
+        _authService = State(initialValue: google)
+        _msAuthService = State(initialValue: microsoft)
+        _authCoordinator = State(initialValue: CloudAuthCoordinator(google: google, microsoft: microsoft))
+        _driveService = State(initialValue: gDrive)
+        _oneDriveService = State(initialValue: oneDrive)
+        let router = CloudServiceRouter(google: gDrive, oneDrive: oneDrive)
+        router.accountManager = google.accountManager
+        _cloudRouter = State(initialValue: router)
+    }
+
     var body: some Scene {
         WindowGroup {
             AccountContainerView()
-                .environment(authService)
+                .environment(authCoordinator)
                 .environment(driveService)
+                .environment(cloudRouter)
                 .environment(playerService)
                 .environment(cacheService)
                 .environment(albumArtService)
@@ -27,12 +49,15 @@ struct AdditApp: App {
                 }
                 .task {
                     driveService.authService = authService
+                    oneDriveService.authService = msAuthService
                     cacheService.driveService = driveService
+                    cacheService.cloudRouter = cloudRouter
                     albumArtService.driveService = driveService
+                    albumArtService.cloudRouter = cloudRouter
                     playerService.cacheService = cacheService
                     playerService.albumArtService = albumArtService
                     analyzerService.configure(playerService: playerService)
-                    await authService.restorePreviousSignIn()
+                    await authCoordinator.restorePreviousSignIn()
                 }
         }
     }
@@ -40,7 +65,7 @@ struct AdditApp: App {
 
 /// Wrapper view that creates the shared ModelContainer and manages account context
 struct AccountContainerView: View {
-    @Environment(GoogleAuthService.self) private var authService
+    @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(AudioCacheService.self) private var cacheService
     @Environment(AlbumArtService.self) private var albumArtService
 

@@ -22,6 +22,7 @@ struct DriveAudioPickerView: View {
     let onFilesAdded: ([DriveItem]) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
     @State private var selection = AudioSelection()
 
@@ -29,7 +30,7 @@ struct DriveAudioPickerView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.allCases, id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -103,7 +104,10 @@ private struct AudioFileBrowserView: View {
     let onCancel: () -> Void
     let onAdd: () -> Void
 
-    @Environment(GoogleDriveService.self) private var driveService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    private var driveService: any CloudDriveService {
+        cloudRouter.activeService
+    }
     @State private var subfolders: [DriveItem] = []
     @State private var audioFiles: [DriveItem] = []
     @State private var isLoading = true

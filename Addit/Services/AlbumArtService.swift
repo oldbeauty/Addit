@@ -11,7 +11,18 @@ struct AlbumArtResolution {
 @Observable
 final class AlbumArtService {
     var driveService: GoogleDriveService?
+    /// When set, requests route per-album / per-fileId to the right cloud
+    /// provider; `driveService` remains as a Google-only fallback.
+    var cloudRouter: CloudServiceRouter?
     var activeAccountId: String?
+
+    private func client(for album: Album) -> (any CloudDriveService)? {
+        cloudRouter?.service(for: album) ?? driveService
+    }
+
+    private func client(forFileId fileId: String) -> (any CloudDriveService)? {
+        cloudRouter?.service(forFileId: fileId) ?? driveService
+    }
     private(set) var artworkRefreshVersion = 0
     private(set) var lastUpdatedAlbumFolderId: String?
 
@@ -49,13 +60,13 @@ final class AlbumArtService {
             return AlbumArtResolution(image: cachedImage, resolvedCoverItem: nil, shouldPersistMetadata: false)
         }
 
-        guard let driveService else {
+        guard let client = client(for: album) else {
             let fallbackImage = await fallbackImage(for: album)
             return AlbumArtResolution(image: fallbackImage, resolvedCoverItem: nil, shouldPersistMetadata: false)
         }
 
         do {
-            let coverItem = try await driveService.findCoverImage(inFolder: album.googleFolderId)
+            let coverItem = try await client.findCoverImage(inFolder: album.googleFolderId)
 
             let resolvedImage: UIImage?
             if let coverItem {
@@ -153,9 +164,9 @@ final class AlbumArtService {
             return diskImage
         }
 
-        guard let driveService else { return nil }
+        guard let client = client(forFileId: fileId) else { return nil }
         do {
-            let data = try await driveService.downloadFileData(fileId: fileId)
+            let data = try await client.downloadFileData(fileId: fileId)
             return cacheImageData(data, for: fileId)
         } catch {
             return nil

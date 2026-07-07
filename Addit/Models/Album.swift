@@ -3,7 +3,13 @@ import SwiftData
 
 enum StorageSource: String, Codable {
     case googleDrive
+    case oneDrive
     case localStorage
+
+    /// True for sources backed by a remote drive API (anything that isn't
+    /// on-device storage). Use this instead of listing cloud cases at call
+    /// sites so adding a provider doesn't require sweeping conditionals.
+    var isCloud: Bool { self != .localStorage }
 }
 
 @Model
@@ -64,6 +70,7 @@ final class Album {
     }
 
     var isLocal: Bool { storageSource == .localStorage }
+    var isOneDrive: Bool { storageSource == .oneDrive }
 
     /// Resolves localCoverPath to an absolute path, handling both legacy absolute and relative paths
     var resolvedLocalCoverPath: String? {
