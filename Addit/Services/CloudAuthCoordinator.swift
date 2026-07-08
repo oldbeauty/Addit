@@ -94,9 +94,10 @@ final class CloudAuthCoordinator {
         case .microsoft:
             if await microsoft.signIn(promptSelectAccount: true) != nil {
                 // MicrosoftAuthService registered + activated the account.
-                // Drop the Google session so token vending can't cross wires;
-                // switching back later re-restores it.
-                google.signOut()
+                // Soft-deactivate Google (keep its SDK session) so token
+                // vending can't cross wires but switching back needs no
+                // re-auth.
+                google.deactivate()
             }
         }
     }
@@ -113,7 +114,10 @@ final class CloudAuthCoordinator {
             microsoft.deactivate()
             await google.switchAccount(to: email)
         case .microsoft:
-            google.signOut()
+            // Soft-deactivate Google (not signOut) so switching back to it
+            // later restores silently — same treatment Microsoft already
+            // gets via its Keychain-backed deactivate().
+            google.deactivate()
             if microsoft.switchTo(email: email, name: target.name) {
                 accountManager.setActiveAccount(email: email)
             } else {

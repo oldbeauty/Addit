@@ -151,11 +151,13 @@ final class MicrosoftAuthService: NSObject {
     enum MSAuthError: LocalizedError {
         case notSignedIn
         case tokenRefreshFailed
+        case accountMismatch
 
         var errorDescription: String? {
             switch self {
             case .notSignedIn: return "Not signed in to a Microsoft account"
             case .tokenRefreshFailed: return "Failed to refresh Microsoft access token"
+            case .accountMismatch: return "Signed-in account doesn't match the active account"
             }
         }
     }
@@ -165,6 +167,19 @@ final class MicrosoftAuthService: NSObject {
     /// `GoogleAuthService.validAccessToken()`.
     func validAccessToken() async throws -> String {
         guard let email = userEmail else { throw MSAuthError.notSignedIn }
+
+        // Same invariant as GoogleAuthService: only vend a token when this
+        // service's session matches the active account. Guards against
+        // vending a Microsoft token while a different (e.g. Google)
+        // account is active. Skipped when no active account is resolved
+        // yet (first sign-in's synchronous window).
+        if let activeEmail = accountManager?.activeAccountEmail,
+           activeEmail.lowercased() != email.lowercased() {
+            #if DEBUG
+            print("[MSAuth] Blocked token vend: session=\(email) but active account=\(activeEmail)")
+            #endif
+            throw MSAuthError.accountMismatch
+        }
 
         if let cached = tokenCache[email], cached.expiry > Date().addingTimeInterval(60) {
             return cached.token
