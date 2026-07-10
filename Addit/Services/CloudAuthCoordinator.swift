@@ -59,19 +59,23 @@ final class CloudAuthCoordinator {
         isRestoringSession = true
         defer { isRestoringSession = false }
 
-        guard let account = accountManager.activeAccount else {
-            // No registered accounts (fresh install or pre-account-manager
-            // state) — let the Google SDK try its own cached session, which
-            // is exactly what the app did before OneDrive existed.
-            await google.restorePreviousSignIn()
-            return
-        }
+        // Libraries are parallel, so restore BOTH providers' sessions —
+        // each library's in-use account stays live regardless of which
+        // library is being viewed. Google's restore re-registers its user
+        // (which re-pins the active account as a side effect), so snapshot
+        // the last-viewed account first and re-pin after.
+        let lastActive = accountManager.activeAccountEmail
 
-        switch account.provider {
-        case .google:
-            await google.restorePreviousSignIn()
-        case .microsoft:
+        if let msEmail = accountManager.activeEmail(for: .microsoft),
+           let account = accountManager.accounts.first(where: { $0.email == msEmail }) {
             microsoft.restore(email: account.email, name: account.name)
+        }
+        // Always attempt Google's own cached session — also covers fresh
+        // installs / pre-account-manager state. No-ops if none exists.
+        await google.restorePreviousSignIn()
+
+        if let lastActive, accountManager.accounts.contains(where: { $0.email == lastActive }) {
+            accountManager.setActiveAccount(email: lastActive)
         }
     }
 
@@ -85,24 +89,22 @@ final class CloudAuthCoordinator {
     }
 
     /// Add another account of the given provider without dropping data for
-    /// existing accounts. The newly added account becomes active.
+    /// existing accounts. The newly added account becomes active. The other
+    /// provider's session is left untouched — sessions coexist; libraries
+    /// are parallel, not mutually exclusive.
     func addAccount(provider: AccountProvider) async {
         switch provider {
         case .google:
-            microsoft.deactivate()
             await google.addAccount()
         case .microsoft:
-            if await microsoft.signIn(promptSelectAccount: true) != nil {
-                // MicrosoftAuthService registered + activated the account.
-                // Soft-deactivate Google (keep its SDK session) so token
-                // vending can't cross wires but switching back needs no
-                // re-auth.
-                google.deactivate()
-            }
+            _ = await microsoft.signIn(promptSelectAccount: true)
         }
     }
 
-    /// Switch to an already-registered account of either provider.
+    /// Switch to an already-registered account of either provider. Only
+    /// needed for changing WHICH account backs a provider's library (e.g.
+    /// google1 → google2); flipping between libraries goes through the
+    /// synchronous `selectProvider` instead and never lands here.
     func switchAccount(to email: String) async {
         guard email != userEmail,
               let target = accountManager.accounts.first(where: { $0.email == email }) else { return }
@@ -111,13 +113,8 @@ final class CloudAuthCoordinator {
 
         switch target.provider {
         case .google:
-            microsoft.deactivate()
             await google.switchAccount(to: email)
         case .microsoft:
-            // Soft-deactivate Google (not signOut) so switching back to it
-            // later restores silently — same treatment Microsoft already
-            // gets via its Keychain-backed deactivate().
-            google.deactivate()
             if microsoft.switchTo(email: email, name: target.name) {
                 accountManager.setActiveAccount(email: email)
             } else {
@@ -129,6 +126,29 @@ final class CloudAuthCoordinator {
                 }
             }
         }
+    }
+
+    /// Point the active account at `provider`'s in-use account —
+    /// synchronously. This is the library flip: because both providers'
+    /// sessions stay live in parallel, viewing a different cloud library
+    /// is pure state (no auth call, no spinner, no async gap). Returns
+    /// false when no account of that provider exists at all, in which case
+    /// the caller should offer sign-in. In the rare case where the
+    /// provider's session doesn't match its in-use account (revoked, etc.)
+    /// this falls back to a full async switch, which may prompt.
+    @discardableResult
+    func selectProvider(_ provider: AccountProvider) -> Bool {
+        guard let email = accountManager.activeEmail(for: provider)
+                ?? accountManager.accounts.first(where: { $0.provider == provider })?.email else {
+            return false
+        }
+        let sessionEmail = provider == .google ? google.userEmail : microsoft.userEmail
+        if sessionEmail?.lowercased() == email.lowercased() {
+            accountManager.setActiveAccount(email: email)
+        } else {
+            Task { await switchAccount(to: email) }
+        }
+        return true
     }
 
     /// Remove an account and its session material. The caller (account

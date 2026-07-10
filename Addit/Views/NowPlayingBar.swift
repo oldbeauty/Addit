@@ -66,9 +66,8 @@ struct NowPlayingBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(playerService.currentTrack?.displayName ?? "")
+                    MarqueeText(text: playerService.currentTrack?.displayName ?? "")
                         .font(.subheadline.bold())
-                        .fadingTruncation()
                     if let error = playerService.playbackError {
                         Text(error)
                             .font(.caption)

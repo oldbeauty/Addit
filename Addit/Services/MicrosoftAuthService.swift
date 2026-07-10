@@ -169,14 +169,16 @@ final class MicrosoftAuthService: NSObject {
         guard let email = userEmail else { throw MSAuthError.notSignedIn }
 
         // Same invariant as GoogleAuthService: only vend a token when this
-        // service's session matches the active account. Guards against
-        // vending a Microsoft token while a different (e.g. Google)
-        // account is active. Skipped when no active account is resolved
-        // yet (first sign-in's synchronous window).
-        if let activeEmail = accountManager?.activeAccountEmail,
+        // service's session matches this PROVIDER's in-use account.
+        // Compared per-provider (not against the single "active account")
+        // so OneDrive tracks stay playable while the Google library is
+        // being viewed — libraries are parallel. Skipped when no in-use
+        // Microsoft account is resolved yet (first sign-in's synchronous
+        // window).
+        if let activeEmail = accountManager?.activeMicrosoftEmail,
            activeEmail.lowercased() != email.lowercased() {
             #if DEBUG
-            print("[MSAuth] Blocked token vend: session=\(email) but active account=\(activeEmail)")
+            print("[MSAuth] Blocked token vend: session=\(email) but in-use Microsoft account=\(activeEmail)")
             #endif
             throw MSAuthError.accountMismatch
         }

@@ -31,30 +31,73 @@ struct LibraryView: View {
     @State private var showLocalDriveAudioPicker = false
     @State private var showCopyFromDrive = false
 
+    /// The library being viewed. The stored selection IS the truth —
+    /// deliberately not derived from the active account. Google Drive,
+    /// OneDrive, and Local are three parallel libraries; which one you're
+    /// looking at is pure UI state, and the account backing each cloud
+    /// library is tracked per-provider in AccountManager.
     private var currentSource: StorageSource {
-        let stored = StorageSource(rawValue: storageSource) ?? .googleDrive
-        if stored == .localStorage { return .localStorage }
-        // Any cloud value resolves to the ACTIVE account's provider — the
-        // AppStorage toggle is effectively "Cloud vs Local", and which
-        // cloud that means follows the signed-in account.
-        return authService.activeProvider.storageSource
+        StorageSource(rawValue: storageSource) ?? .googleDrive
     }
 
-    /// Display name of the active account's cloud provider ("Google
-    /// Drive" / "OneDrive") for UI labels.
+    /// Display name of the VIEWED cloud library, for the title menu.
+    private var viewedCloudLabel: String {
+        currentSource == .oneDrive ? "OneDrive" : "Google Drive"
+    }
+
+    /// Display name of the ACTIVE provider — used by the Local library's
+    /// "Add/Copy from …" import labels, which browse `cloudRouter.activeService`.
     private var cloudLabel: String {
         authService.activeProvider.displayName
     }
+
+    private var libraryIsLocal: Bool { currentSource == .localStorage }
 
     /// The drive client for the active account's provider.
     private var driveService: any CloudDriveService {
         cloudRouter.activeService
     }
 
+    // MARK: - Library switching
+    //
+    // Flipping libraries is synchronous: both providers' sessions stay
+    // live in parallel, so viewing a different cloud is just a state
+    // change — no auth call, no spinner. The only async case is picking a
+    // cloud you have no account for, which prompts sign-in (and snaps
+    // back to Local if cancelled).
+
+    private func selectCloudLibrary(_ provider: AccountProvider) {
+        storageSource = provider.storageSource.rawValue
+        if !authService.selectProvider(provider) {
+            Task {
+                await authService.addAccount(provider: provider)
+                if authService.accountManager.activeEmail(for: provider) == nil {
+                    // Sign-in cancelled — show a library that can render.
+                    storageSource = StorageSource.localStorage.rawValue
+                }
+            }
+        }
+    }
+
+    private func selectLocalLibrary() {
+        storageSource = StorageSource.localStorage.rawValue
+    }
+
+    /// Switch to a specific account (from the account switcher) and show
+    /// its provider's library.
+    private func selectAccount(_ account: Account) {
+        storageSource = account.provider.storageSource.rawValue
+        Task { await authService.switchAccount(to: account.email) }
+    }
+
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
+    /// Account whose albums the viewed library shows — resolved from the
+    /// VIEWED library's provider (not the global active account), so the
+    /// album list is correct the instant a library flip happens.
     private var activeAccountId: String? {
-        guard let email = authService.userEmail else { return nil }
+        guard let provider = currentSource.provider,
+              let email = authService.accountManager.activeEmail(for: provider) else { return nil }
         return AccountManager.storageIdentifier(for: email)
     }
 
@@ -116,7 +159,7 @@ struct LibraryView: View {
                         "No Albums Yet",
                         systemImage: "music.note.list",
                         description: Text(currentSource.isCloud
-                            ? "Tap + to add folders from \(cloudLabel)"
+                            ? "Tap + to add folders from \(viewedCloudLabel)"
                             : "Tap + to import audio from your iPhone")
                     )
                     .padding(.top, 100)
@@ -218,25 +261,48 @@ struct LibraryView: View {
                 }
             }
         }
+        .appBackground()
         .navigationTitle(isArranging ? "Arrange Library" : "")
+        .onAppear {
+            // Self-heal: a cloud library whose provider has no account
+            // (e.g. its last account was signed out) can't render — fall
+            // back to a library that can.
+            if let provider = currentSource.provider,
+               authService.accountManager.activeEmail(for: provider) == nil {
+                if let active = authService.activeAccount {
+                    storageSource = active.provider.storageSource.rawValue
+                } else {
+                    storageSource = StorageSource.localStorage.rawValue
+                }
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !isArranging {
                 ToolbarItem(placement: .principal) {
                     Menu {
                         Button {
-                            storageSource = StorageSource.googleDrive.rawValue
+                            selectCloudLibrary(.google)
                         } label: {
-                            if currentSource.isCloud {
-                                Label(cloudLabel, systemImage: "checkmark")
+                            if currentSource == .googleDrive {
+                                Label("Google Drive", systemImage: "checkmark")
                             } else {
-                                Text(cloudLabel)
+                                Text("Google Drive")
                             }
                         }
                         Button {
-                            storageSource = StorageSource.localStorage.rawValue
+                            selectCloudLibrary(.microsoft)
                         } label: {
-                            if currentSource == .localStorage {
+                            if currentSource == .oneDrive {
+                                Label("OneDrive", systemImage: "checkmark")
+                            } else {
+                                Text("OneDrive")
+                            }
+                        }
+                        Button {
+                            selectLocalLibrary()
+                        } label: {
+                            if libraryIsLocal {
                                 Label("Local Library", systemImage: "checkmark")
                             } else {
                                 Text("Local Library")
@@ -244,7 +310,7 @@ struct LibraryView: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Text(currentSource.isCloud ? cloudLabel : "Local Library")
+                            Text(libraryIsLocal ? "Local Library" : viewedCloudLabel)
                                 .font(.headline)
                             Image(systemName: "chevron.down")
                                 .font(.caption.weight(.semibold))
@@ -337,17 +403,26 @@ struct LibraryView: View {
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
-                        if currentSource.isCloud {
+                        if !authService.accountManager.accounts.isEmpty {
                             // Account list — Google and Microsoft accounts
                             // share one switcher; OneDrive accounts get a
                             // provider suffix so same-name accounts stay
-                            // distinguishable.
+                            // distinguishable. A checkmark marks each
+                            // account that is currently *in use* (the live
+                            // account for its provider), so when you have
+                            // both a Google and a Microsoft account signed
+                            // in, both show a checkmark even though you're
+                            // only viewing one library at a time.
                             Section {
                                 ForEach(authService.accountManager.accounts) { account in
                                     Menu {
-                                        if account.email != authService.userEmail {
+                                        // "Switch to" only makes sense for accounts
+                                        // that are NOT in use. In-use accounts (the
+                                        // checkmarked ones) are switched between via
+                                        // the library menu, not here.
+                                        if !authService.accountManager.isInUse(account) {
                                             Button {
-                                                Task { await authService.switchAccount(to: account.email) }
+                                                selectAccount(account)
                                             } label: {
                                                 Label("Switch to", systemImage: "arrow.right.arrow.left")
                                             }
@@ -364,7 +439,7 @@ struct LibraryView: View {
                                                  ? "\(account.name) · OneDrive"
                                                  : account.name)
                                         } icon: {
-                                            if account.email == authService.userEmail {
+                                            if authService.accountManager.isInUse(account) {
                                                 Image(systemName: "checkmark")
                                             }
                                         }
@@ -943,12 +1018,23 @@ struct LibraryView: View {
         AccountContainerView.removeStore(for: targetEmail)
 
         // Remove account and sign out
+        let removedProvider = authService.accountManager.accounts
+            .first(where: { $0.email == targetEmail })?.provider
         let remainingAccounts = authService.accountManager.accounts.filter { $0.email != targetEmail }
         authService.removeAccount(email: targetEmail)
 
-        // If we signed out the current account, switch to the next one
-        if isCurrentAccount, let next = remainingAccounts.first {
-            Task { await authService.switchAccount(to: next.email) }
+        // If we signed out the current account, move to another one —
+        // preferring the same provider so the viewed library survives —
+        // and align the library selection with wherever we land.
+        if isCurrentAccount {
+            let next = remainingAccounts.first(where: { $0.provider == removedProvider })
+                ?? remainingAccounts.first
+            if let next {
+                storageSource = next.provider.storageSource.rawValue
+                Task { await authService.switchAccount(to: next.email) }
+            } else {
+                storageSource = StorageSource.localStorage.rawValue
+            }
         }
     }
 

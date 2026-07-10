@@ -29,22 +29,45 @@ final class AudioAnalyzerService {
         self.playerService = playerService
     }
 
-    func start() {
+    /// Views that currently want FFT data (EQ page, mini grid, …), keyed by
+    /// a caller-supplied id. The mixer tap is installed while the set is
+    /// non-empty and removed when it drains — consumer-counted so one view
+    /// leaving can't kill the data out from under another.
+    @ObservationIgnored private var consumers: Set<String> = []
+
+    /// Register interest in FFT data. Idempotent per id — safe to call again
+    /// (e.g. to retry the tap once the engine is actually running).
+    func addConsumer(_ id: String) {
+        consumers.insert(id)
+        installTapIfNeeded()
+    }
+
+    func removeConsumer(_ id: String) {
+        consumers.remove(id)
+        if consumers.isEmpty {
+            removeTapIfNeeded()
+        }
+    }
+
+    private func installTapIfNeeded() {
         guard !isActive, let playerService else { return }
-        isActive = true
 
         let mixer = playerService.engine.mainMixerNode
         let format = mixer.outputFormat(forBus: 0)
 
+        // Engine not producing audio yet — leave isActive false so a later
+        // addConsumer retries. (Setting it before this guard used to
+        // permanently wedge the tap if the first start raced engine setup.)
         guard format.sampleRate > 0 else { return }
         sampleRate = Float(format.sampleRate)
 
         mixer.installTap(onBus: 0, bufferSize: AVAudioFrameCount(fftSize), format: nil) { [weak self] buffer, _ in
             self?.processBuffer(buffer)
         }
+        isActive = true
     }
 
-    func stop() {
+    private func removeTapIfNeeded() {
         guard isActive, let playerService else { return }
         isActive = false
 

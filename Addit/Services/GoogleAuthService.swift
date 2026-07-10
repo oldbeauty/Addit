@@ -79,12 +79,10 @@ final class GoogleAuthService {
         defer { isSwitchingAccount = false }
 
         // Try a silent restore FIRST, before signing anything out. The GID
-        // SDK persists one session; when it's already the target account —
-        // the common case when returning from another provider, since we
-        // only `deactivate()` Google on switch-away rather than signing
-        // out — this restores with no prompt. (Deliberately no signOut()
-        // here; the old code signed out first, which guaranteed the
-        // restore below could never succeed and forced re-auth every time.)
+        // SDK persists one session; when it's already the target account
+        // this restores with no prompt. (Deliberately no signOut() here;
+        // signing out first would guarantee the restore below could never
+        // succeed and force re-auth every time.)
         do {
             let user = try await GIDSignIn.sharedInstance.restorePreviousSignIn()
             if user.profile?.email.lowercased() == email.lowercased() {
@@ -137,18 +135,11 @@ final class GoogleAuthService {
 
     /// Full sign-out — clears the GID SDK's persisted session. Use only
     /// when removing an account; a subsequent sign-in requires re-auth.
+    /// (There is deliberately no "soft deactivate": provider sessions
+    /// coexist — this session stays live even while the OneDrive library
+    /// is being viewed, so cross-library playback keeps working.)
     func signOut() {
         GIDSignIn.sharedInstance.signOut()
-        currentUser = nil
-    }
-
-    /// Soft deactivate — drops the in-memory session but deliberately does
-    /// NOT call `GIDSignIn.signOut()`, so the SDK keeps its persisted
-    /// session and switching back restores it silently (no re-auth). This
-    /// mirrors `MicrosoftAuthService.deactivate()`, whose refresh token
-    /// lives in the Keychain and likewise survives deactivation. Use when
-    /// switching away to another account/provider.
-    func deactivate() {
         currentUser = nil
     }
 
@@ -156,22 +147,21 @@ final class GoogleAuthService {
         guard let user = currentUser else {
             throw AuthError.notSignedIn
         }
-        // Invariant: never vend a token for an account that isn't the
-        // active one. The UI only reaches a signed-in state when
-        // `CloudAuthCoordinator.userEmail` confirms `currentUser` and the
-        // active account agree — but that guard protects the UI entry, not
-        // this method. Asserting it here too means any future desync (a
-        // Drive call from a non-gated context, or `accountManager` being
-        // mutated without updating `currentUser`) surfaces as a clear
-        // caught error instead of silently hitting the wrong account's
-        // Drive and returning a confusing 403. `activeAccountEmail == nil`
-        // only during the synchronous window of the very first sign-in
+        // Invariant: only vend a token for the account that is this
+        // PROVIDER's in-use account. Compared per-provider (not against
+        // the single "active account") because libraries are parallel —
+        // a Google track must be playable/syncable while the OneDrive
+        // library is being viewed. Any desync (a stale session vending
+        // for the wrong Google account) surfaces as a clear caught error
+        // instead of silently hitting the wrong account's Drive and
+        // returning a confusing 403. `activeGoogleEmail == nil` only
+        // during the synchronous window of the very first sign-in
         // (before `registerCurrentUser`), so we skip the check then.
-        if let activeEmail = accountManager.activeAccountEmail,
+        if let activeEmail = accountManager.activeGoogleEmail,
            let currentEmail = user.profile?.email,
            activeEmail.lowercased() != currentEmail.lowercased() {
             #if DEBUG
-            print("[Auth] Blocked token vend: currentUser=\(currentEmail) but active account=\(activeEmail)")
+            print("[Auth] Blocked token vend: currentUser=\(currentEmail) but in-use Google account=\(activeEmail)")
             #endif
             throw AuthError.accountMismatch
         }

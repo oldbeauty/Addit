@@ -147,7 +147,7 @@ struct NowPlayingView: View {
             .frame(maxWidth: 320)
             .padding(.horizontal, 40)
             .onChange(of: showVisualizer) { _, visible in
-                if visible { analyzer.start() } else { analyzer.stop() }
+                if visible { analyzer.addConsumer("eq-page") } else { analyzer.removeConsumer("eq-page") }
             }
 
             // Page indicator icons
@@ -171,9 +171,11 @@ struct NowPlayingView: View {
 
             // Track info
             VStack(spacing: 4) {
-                Text(playerService.currentTrack?.displayName ?? "Not Playing")
-                    .font(.title3.bold())
-                    .fadingTruncation(alignment: .center)
+                MarqueeText(
+                    text: playerService.currentTrack?.displayName ?? "Not Playing",
+                    alignment: .center
+                )
+                .font(.title3.bold())
                 if let error = playerService.playbackError {
                     Text(error)
                         .font(.subheadline)

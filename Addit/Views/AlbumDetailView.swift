@@ -32,7 +32,7 @@ struct AlbumDetailView: View {
     @State private var showToolbarActions = false
     @State private var toolbarActionGeneration = 0
     @State private var shareFileURL: URL?
-    @State private var isDownloadingAlbum = false
+    @State private var isExportingAlbum = false
     /// Duration (seconds) per track, keyed by `track.googleFileId`. Populated
     /// by `calculateAlbumDuration()` from cached / on-disk audio files. Used
     /// for both the album total and per-disc totals.
@@ -44,7 +44,7 @@ struct AlbumDetailView: View {
     @State private var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State private var saveToDriveError: String?
 
-    private let coverSize: CGFloat = 280
+    private let coverSize: CGFloat = 256
 
     private var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -102,55 +102,119 @@ struct AlbumDetailView: View {
 
     /// Album header: cover art, title, artist, play buttons. Extracted
     /// from the List body for type-checker budget (see `trackRowCell`).
+    // MARK: - Album cover (Teenage-Engineering-style debossed crater)
+
+    /// Corner radii + how far the recessed plate extends past the cover.
+    private var coverCorner: CGFloat { 12 }
+    private var plateCorner: CGFloat { 28 }
+    private var craterInset: CGFloat { 22 }
+
+    /// The tappable artwork itself (pixel-sort interaction preserved),
+    /// clipped to its rounded rect. No shadows here — the mount adds those.
+    @ViewBuilder
+    private var coverArtwork: some View {
+        RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .frame(width: coverSize, height: coverSize)
+            .overlay {
+                if let albumImage {
+                    // Tap to kick off a luminance-based pixel-sort
+                    // animation; tap again at the sorted state to replay
+                    // the log in reverse back to the original.
+                    PixelSortCoverView(
+                        image: albumImage,
+                        size: coverSize,
+                        cornerRadius: coverCorner
+                    )
+                } else {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+    }
+
+    /// The cover extruded above a debossed "crater" plate. The plate is a
+    /// rounded panel carved into the surface via inner shadows (dark at the
+    /// top-inner lip, faint light at the bottom lip — reads as concave under
+    /// top-down light); the cover floats above it with a soft ambient
+    /// shadow, a tight contact shadow, and a top rim highlight so its edge
+    /// catches light like a raised physical part. Hard, precise, tactile —
+    /// the OP-1 faceplate feel.
+    private var craterCover: some View {
+        let plateSize = coverSize + craterInset * 2
+        return ZStack {
+            RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
+                .fill(
+                    Color(uiColor: .secondarySystemBackground)
+                        .shadow(.inner(color: .black.opacity(0.6), radius: 7, x: 0, y: 4))
+                        .shadow(.inner(color: .white.opacity(0.05), radius: 2, x: 0, y: -2))
+                )
+                .frame(width: plateSize, height: plateSize)
+                .overlay {
+                    // Carved-lip edge: bright at the top, dark at the bottom.
+                    RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                }
+
+            coverArtwork
+                .shadow(color: .black.opacity(0.55), radius: 16, x: 0, y: 12)
+                .shadow(color: .black.opacity(0.40), radius: 4, x: 0, y: 3)
+                .overlay {
+                    // Top rim highlight on the raised part's edge.
+                    RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.18), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.5
+                        )
+                }
+        }
+    }
+
     private var headerSection: some View {
         Section {
             VStack(spacing: 16) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: coverSize, height: coverSize)
-                    .overlay {
-                        if let albumImage {
-                            // Tap to kick off a luminance-based
-                            // pixel-sort animation; tap again at
-                            // the sorted state to replay the log
-                            // in reverse back to the original.
-                            PixelSortCoverView(
-                                image: albumImage,
-                                size: coverSize,
-                                cornerRadius: 12
-                            )
-                        } else {
-                            Image(systemName: "music.note")
-                                .font(.system(size: 48))
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                craterCover
 
                 VStack(spacing: 4) {
                     Text(album.name)
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
+                        .engraved()
 
                     Text(album.artistName ?? "Unknown Artist")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .engraved()
                 }
 
-                HStack(spacing: 12) {
+                HStack(spacing: 20) {
                     Button {
                         playerService.playAlbum(album)
                     } label: {
                         Image(systemName: "play.fill")
+                            .foregroundStyle(.primary)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(TactileButtonStyle())
 
                     Button {
                         if isThisAlbumPlaying {
@@ -160,10 +224,14 @@ struct AlbumDetailView: View {
                         }
                     } label: {
                         Image(systemName: "shuffle")
+                            .foregroundStyle(shuffleEngaged ? themeService.accentColor.legibleForeground : .primary)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(isThisAlbumPlaying && playerService.isShuffleOn ? themeService.accentColor : nil)
+                    .buttonStyle(TactileButtonStyle(engaged: shuffleEngaged ? themeService.accentColor : nil))
                 }
+                .padding(.top, 4)
+                // Room for the raised buttons' drop shadow so the List row
+                // doesn't clip it at the bottom edge.
+                .padding(.bottom, 20)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
@@ -293,10 +361,10 @@ struct AlbumDetailView: View {
             Divider()
 
             Button {
-                downloadAlbumAsZip()
+                exportAlbum()
                 withAnimation { showToolbarActions = false }
             } label: {
-                Label("Download", systemImage: "square.and.arrow.up")
+                Label("Export", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 16)
@@ -355,7 +423,7 @@ struct AlbumDetailView: View {
                 toggleCache(for: track)
             },
             onDownload: {
-                downloadAndShare(track: track)
+                exportTrack(track)
             },
             onToggleHidden: {
                 track.isHidden.toggle()
@@ -539,6 +607,12 @@ struct AlbumDetailView: View {
         playerService.currentTrack?.album?.googleFolderId == album.googleFolderId
     }
 
+    /// Shuffle button reads as "engaged" only while this album is the one
+    /// playing AND shuffle is on.
+    private var shuffleEngaged: Bool {
+        isThisAlbumPlaying && playerService.isShuffleOn
+    }
+
     var body: some View {
         List {
             if isSyncing && album.tracks.isEmpty {
@@ -563,6 +637,7 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        .appBackground()
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -663,7 +738,15 @@ struct AlbumDetailView: View {
         }
         .sheet(isPresented: Binding(
             get: { shareFileURL != nil },
-            set: { if !$0 { shareFileURL = nil } }
+            set: { if !$0 {
+                // Discard the transient temp file once sharing is done so a
+                // "send only" leaves nothing behind. (If it was a hardlink to
+                // the cache, this just drops the extra link, not the bytes.)
+                if let url = shareFileURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                shareFileURL = nil
+            } }
         )) {
             if let url = shareFileURL {
                 ShareSheet(activityItems: [url])
@@ -813,99 +896,126 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func downloadAlbumAsZip() {
-        guard !isDownloadingAlbum else { return }
-        isDownloadingAlbum = true
+    /// A per-track snapshot taken on the main actor so the zip build can run
+    /// entirely off it without touching SwiftData models.
+    private struct ZipTrackPlan: Sendable {
+        let fileId: String
+        let name: String
+        let localURL: URL?      // populated for local albums
+        let cachedURL: URL?     // existing offline copy, for cloud albums
+    }
+
+    private func exportAlbum() {
+        guard !isExportingAlbum else { return }
+        isExportingAlbum = true
+
+        // Snapshot everything we need off the SwiftData models up front, on
+        // the main actor. The heavy download/copy/zip work below runs on a
+        // detached task (so playback doesn't stutter) and must not reach back
+        // into Track/Album, which are main-actor-confined.
+        let isLocal = album.isLocal
+        let albumName = album.name
+        let coverFileId = album.coverFileId
+        let coverMimeType = album.coverMimeType
+        let localCoverPath = album.resolvedLocalCoverPath
+        let additDataFileId = album.additDataFileId
+        let artistName = album.artistName
+        let client = driveService
+        let plans: [ZipTrackPlan] = sortedTracks.map { track in
+            ZipTrackPlan(
+                fileId: track.googleFileId,
+                name: track.name,
+                localURL: track.localFileURL,
+                cachedURL: cacheService.cachedFileURL(for: track)
+            )
+        }
+        let tracklist = album.cachedTracklist.isEmpty ? plans.map(\.name) : album.cachedTracklist
+        // Encode .addit-data here (AdditMetadata's Encodable conformance is
+        // main-actor-isolated) and hand the bytes to the detached writer.
+        let additDataBytes: Data? = isLocal
+            ? try? JSONEncoder().encode(AdditMetadata(tracklist: tracklist, artist: artistName))
+            : nil
+
         Task {
-            defer { isDownloadingAlbum = false }
+            defer { isExportingAlbum = false }
             do {
-                let fm = FileManager.default
-                let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                let albumDir = tempDir.appendingPathComponent(album.name)
-                try fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+                let zipURL = try await Task.detached(priority: .userInitiated) {
+                    let fm = FileManager.default
+                    let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    let albumDir = tempDir.appendingPathComponent(albumName)
+                    try fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
 
-                if album.isLocal {
-                    // Copy all local tracks
-                    for track in sortedTracks {
-                        guard let sourceURL = track.localFileURL,
-                              fm.fileExists(atPath: sourceURL.path) else { continue }
-                        let destination = albumDir.appendingPathComponent(track.name)
-                        try fm.copyItem(at: sourceURL, to: destination)
-                    }
-
-                    // Copy cover if present
-                    if let coverPath = album.resolvedLocalCoverPath,
-                       fm.fileExists(atPath: coverPath) {
-                        let coverURL = albumDir.appendingPathComponent("cover.jpg")
-                        try fm.copyItem(atPath: coverPath, toPath: coverURL.path)
-                    }
-
-                    // Generate .addit-data from cachedTracklist + artist
-                    let metadata = AdditMetadata(
-                        tracklist: album.cachedTracklist.isEmpty ? sortedTracks.map(\.name) : album.cachedTracklist,
-                        artist: album.artistName
-                    )
-                    let additData = try JSONEncoder().encode(metadata)
-                    let additURL = albumDir.appendingPathComponent(".addit-data")
-                    try additData.write(to: additURL)
-                } else {
-                    // Download all tracks from Drive
-                    for track in sortedTracks {
-                        let fileURL = try await cacheService.cacheTrack(track)
-                        cachedTrackIds.insert(track.googleFileId)
-                        let destination = albumDir.appendingPathComponent(track.name)
-                        try fm.copyItem(at: fileURL, to: destination)
-                    }
-
-                    // Download cover if present
-                    if let coverFileId = album.coverFileId {
-                        let coverData = try await driveService.downloadFileData(fileId: coverFileId)
-                        let ext: String
-                        switch album.coverMimeType {
-                        case "image/png": ext = "png"
-                        case "image/gif": ext = "gif"
-                        case "image/webp": ext = "webp"
-                        default: ext = "jpg"
+                    if isLocal {
+                        for plan in plans {
+                            guard let sourceURL = plan.localURL,
+                                  fm.fileExists(atPath: sourceURL.path) else { continue }
+                            try fm.copyItem(at: sourceURL, to: albumDir.appendingPathComponent(plan.name))
                         }
-                        let coverURL = albumDir.appendingPathComponent("cover.\(ext)")
-                        try coverData.write(to: coverURL)
+                        if let localCoverPath, fm.fileExists(atPath: localCoverPath) {
+                            try fm.copyItem(atPath: localCoverPath,
+                                            toPath: albumDir.appendingPathComponent("cover.jpg").path)
+                        }
+                        if let additDataBytes {
+                            try additDataBytes.write(to: albumDir.appendingPathComponent(".addit-data"))
+                        }
+                    } else {
+                        for plan in plans {
+                            let dest = albumDir.appendingPathComponent(plan.name)
+                            if let cachedURL = plan.cachedURL {
+                                // Reuse the existing offline copy without
+                                // re-downloading or re-caching; hardlink shares
+                                // the bytes, copy is the cross-volume fallback.
+                                do { try fm.linkItem(at: cachedURL, to: dest) }
+                                catch { try fm.copyItem(at: cachedURL, to: dest) }
+                            } else {
+                                // Share-only: fetch straight into the staging
+                                // folder, never touching the persistent cache.
+                                try await client.downloadFile(fileId: plan.fileId, to: dest)
+                            }
+                        }
+
+                        if let coverFileId {
+                            let coverData = try await client.downloadFileData(fileId: coverFileId)
+                            let ext: String
+                            switch coverMimeType {
+                            case "image/png": ext = "png"
+                            case "image/gif": ext = "gif"
+                            case "image/webp": ext = "webp"
+                            default: ext = "jpg"
+                            }
+                            try coverData.write(to: albumDir.appendingPathComponent("cover.\(ext)"))
+                        }
+
+                        if let additDataFileId {
+                            let additData = try await client.downloadFileData(fileId: additDataFileId)
+                            try additData.write(to: albumDir.appendingPathComponent(".addit-data"))
+                        }
                     }
 
-                    // Download addit-data if present
-                    if let additDataId = album.additDataFileId {
-                        let additData = try await driveService.downloadFileData(fileId: additDataId)
-                        let additURL = albumDir.appendingPathComponent(".addit-data")
-                        try additData.write(to: additURL)
+                    // Create zip using NSFileCoordinator
+                    let zipURL = tempDir.appendingPathComponent("\(albumName).zip")
+                    let coordinator = NSFileCoordinator()
+                    var coordinatorError: NSError?
+                    var resultURL: URL?
+                    coordinator.coordinate(readingItemAt: albumDir, options: .forUploading, error: &coordinatorError) { tempZipURL in
+                        do {
+                            try fm.copyItem(at: tempZipURL, to: zipURL)
+                            resultURL = zipURL
+                        } catch {
+                            #if DEBUG
+                            print("Failed to copy zip: \(error)")
+                            #endif
+                        }
                     }
-                }
+                    if let coordinatorError { throw coordinatorError }
 
-                // Create zip using NSFileCoordinator
-                let zipURL = tempDir.appendingPathComponent("\(album.name).zip")
-                let coordinator = NSFileCoordinator()
-                var coordinatorError: NSError?
-                var resultURL: URL?
+                    // Staging folder no longer needed once zipped.
+                    try? fm.removeItem(at: albumDir)
+                    guard let resultURL else { throw CocoaError(.fileWriteUnknown) }
+                    return resultURL
+                }.value
 
-                coordinator.coordinate(readingItemAt: albumDir, options: .forUploading, error: &coordinatorError) { tempZipURL in
-                    do {
-                        try fm.copyItem(at: tempZipURL, to: zipURL)
-                        resultURL = zipURL
-                    } catch {
-                        #if DEBUG
-                        print("Failed to copy zip: \(error)")
-                        #endif
-                    }
-                }
-
-                if let error = coordinatorError {
-                    throw error
-                }
-
-                if let zipURL = resultURL {
-                    shareFileURL = zipURL
-                }
-
-                // Clean up the unzipped folder
-                try? fm.removeItem(at: albumDir)
+                shareFileURL = zipURL
             } catch {
                 #if DEBUG
                 print("Failed to create album zip: \(error)")
@@ -1246,23 +1356,50 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func downloadAndShare(track: Track) {
+    /// Export a track to the iOS share sheet. This is deliberately
+    /// share-*only*: if the track isn't already on-device (local file or
+    /// offline cache) we fetch it straight to a temp file and never touch the
+    /// persistent audio cache — so "send a song to a friend" leaves no
+    /// residue once the share sheet's temp file is purged (we delete it on
+    /// dismiss; iOS reclaims the temp dir regardless). If a local/cached copy
+    /// exists we reuse those bytes via a hardlink (near-zero cost) rather than
+    /// re-downloading or duplicating on disk. All file I/O runs off the main
+    /// actor so playback doesn't stutter during the copy.
+    private func exportTrack(_ track: Track) {
+        let fileId = track.googleFileId
+        // Use the stored filename verbatim so the exported file keeps its
+        // original extension case (e.g. "wav", not the uppercased "WAV" that
+        // `fileExtension` produces for the on-screen badge).
+        let niceName = track.name
+        // A local track already lives on-device; a cached cloud track has an
+        // offline copy. Either is a local source we can reuse without hitting
+        // the network. Only a cloud track with neither needs a download.
+        let localSource = track.localFileURL ?? cacheService.cachedFileURL(for: track)
+        let client = driveService
         Task {
             do {
-                let fileURL = try await cacheService.cacheTrack(track)
-                cachedTrackIds.insert(track.googleFileId)
-                // Copy to temp directory with the original filename so the share sheet shows the proper name
-                let tempDir = FileManager.default.temporaryDirectory
-                let destination = tempDir.appendingPathComponent(track.displayName + "." + track.fileExtension)
-                let fm = FileManager.default
-                if fm.fileExists(atPath: destination.path) {
-                    try fm.removeItem(at: destination)
-                }
-                try fm.copyItem(at: fileURL, to: destination)
-                shareFileURL = destination
+                let url = try await Task.detached(priority: .userInitiated) {
+                    let fm = FileManager.default
+                    let dest = fm.temporaryDirectory.appendingPathComponent(niceName)
+                    if fm.fileExists(atPath: dest.path) {
+                        try fm.removeItem(at: dest)
+                    }
+                    if let localSource {
+                        // Reuse the existing on-device copy: a hardlink shares
+                        // the same bytes, so deleting the temp file later
+                        // doesn't disturb the original. Copy as a fallback in
+                        // case temp and source ever land on different volumes.
+                        do { try fm.linkItem(at: localSource, to: dest) }
+                        catch { try fm.copyItem(at: localSource, to: dest) }
+                    } else {
+                        try await client.downloadFile(fileId: fileId, to: dest)
+                    }
+                    return dest
+                }.value
+                shareFileURL = url
             } catch {
                 #if DEBUG
-                print("Failed to download track for sharing: \(error)")
+                print("Failed to prepare track for sharing: \(error)")
                 #endif
             }
         }
@@ -1513,9 +1650,7 @@ struct TrackRow: View {
     var body: some View {
         HStack(spacing: 12) {
             if isCurrentTrack {
-                Image(systemName: isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
-                    .font(.caption)
-                    .foregroundStyle(themeService.accentColor)
+                MiniEQGrid(isPlaying: isPlaying)
                     .frame(width: 24)
             } else {
                 Text("\(number)")
@@ -1532,8 +1667,9 @@ struct TrackRow: View {
 
                 HStack(spacing: 4) {
                     if isCached {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
+                        // Small dot marks a downloaded/on-device track.
+                        Circle()
+                            .frame(width: 6, height: 6)
                             .foregroundColor(track.isHidden ? Color.secondary.opacity(0.3) : .secondary)
                     }
                     if let size = track.fileSize {
@@ -1575,7 +1711,7 @@ struct TrackRow: View {
                 Button {
                     onDownload?()
                 } label: {
-                    Label("Download", systemImage: "square.and.arrow.up")
+                    Label("Export", systemImage: "square.and.arrow.up")
                 }
 
                 if !isLocal {
