@@ -16,6 +16,7 @@ struct MiniEQGrid: View {
     var size: CGFloat = 20
 
     @Environment(AudioAnalyzerService.self) private var analyzer
+    @Environment(\.colorScheme) private var colorScheme
     /// Unique per grid instance so two coexisting grids can never
     /// register/unregister under the same consumer key.
     @State private var consumerId = UUID().uuidString
@@ -33,23 +34,46 @@ struct MiniEQGrid: View {
         // Observation registers the dependency and re-renders as FFT frames
         // land (~10 Hz from the analyzer's buffer size).
         let bands = analyzer.bands
+        let glow = colorScheme == .dark
         Canvas { context, canvasSize in
             let n = Self.gridSide
             let gap: CGFloat = 1
             let cell = (canvasSize.width - gap * CGFloat(n - 1)) / CGFloat(n)
+
+            func cellRect(col: Int, row: Int) -> CGRect {
+                CGRect(
+                    x: CGFloat(col) * (cell + gap),
+                    // row 0 = bottom of the canvas
+                    y: canvasSize.height - cell - CGFloat(row) * (cell + gap),
+                    width: cell,
+                    height: cell
+                )
+            }
+
+            let litCounts = (0..<n).map { isPlaying ? litRows(bands: bands, column: $0) : 0 }
+
+            // Phosphor bloom pass: one blurred layer under all lit cells so
+            // they read as emitting light (Phosphor language; dark mode only).
+            if glow {
+                context.drawLayer { layer in
+                    layer.addFilter(.blur(radius: 1.6))
+                    for col in 0..<n {
+                        for row in 0..<litCounts[col] {
+                            layer.fill(
+                                Path(cellRect(col: col, row: row).insetBy(dx: -0.5, dy: -0.5)),
+                                with: .color(Self.rowColors[row].opacity(0.65))
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Crisp pixel pass.
             for col in 0..<n {
-                let lit = isPlaying ? litRows(bands: bands, column: col) : 0
                 for row in 0..<n {
-                    let rect = CGRect(
-                        x: CGFloat(col) * (cell + gap),
-                        // row 0 = bottom of the canvas
-                        y: canvasSize.height - cell - CGFloat(row) * (cell + gap),
-                        width: cell,
-                        height: cell
-                    )
-                    let color = row < lit ? Self.rowColors[row] : Color.gray.opacity(0.3)
+                    let color = row < litCounts[col] ? Self.rowColors[row] : Color.gray.opacity(0.3)
                     context.fill(
-                        Path(roundedRect: rect, cornerRadius: cell * 0.25),
+                        Path(roundedRect: cellRect(col: col, row: row), cornerRadius: cell * 0.25),
                         with: .color(color)
                     )
                 }

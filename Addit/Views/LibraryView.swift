@@ -172,10 +172,10 @@ struct LibraryView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(album.name)
-                                    .font(.body.bold())
+                                    .font(.uiBody.weight(.semibold))
                                     .fadingTruncation()
                                 Text(album.artistName ?? "Unknown Artist")
-                                    .font(.caption)
+                                    .font(.uiCaption)
                                     .foregroundStyle(.secondary)
                                     .fadingTruncation()
                             }
@@ -198,10 +198,10 @@ struct LibraryView: View {
                                 AlbumArtworkThumbnail(album: album, size: 48)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(album.name)
-                                        .font(.body.bold())
+                                        .font(.uiBody.bold())
                                         .fadingTruncation()
                                     Text(album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? album.artistName! : "Unknown Artist")
-                                        .font(.caption)
+                                        .font(.uiCaption)
                                         .foregroundStyle(.secondary)
                                         .fadingTruncation()
                                 }
@@ -311,9 +311,9 @@ struct LibraryView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(libraryIsLocal ? "Local Library" : viewedCloudLabel)
-                                .font(.headline)
+                                .font(.uiHeadline)
                             Image(systemName: "chevron.down")
-                                .font(.caption.weight(.semibold))
+                                .font(.uiCaption.weight(.semibold))
                         }
                         .foregroundStyle(.primary)
                         .fixedSize()
@@ -527,10 +527,10 @@ struct LibraryView: View {
 
                             if importProgress.total > 0 {
                                 Text("Track \(importProgress.current) of \(importProgress.total)")
-                                    .font(.subheadline.bold())
+                                    .font(.uiSubheadline.bold())
 
                                 Text(importProgress.trackName)
-                                    .font(.caption)
+                                    .font(.uiCaption)
                                     .foregroundStyle(.secondary)
                                     .fadingTruncation()
 
@@ -550,7 +550,7 @@ struct LibraryView: View {
                                 .padding(.horizontal, 4)
                             } else {
                                 Text("Importing...")
-                                    .font(.subheadline)
+                                    .font(.uiSubheadline)
                             }
                         }
                         .frame(width: 220)
@@ -1052,19 +1052,24 @@ struct AlbumCard: View {
         VStack(alignment: .leading, spacing: 4) {
             AlbumArtworkThumbnail(album: album)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(album.name)
-                    .font(.subheadline.bold())
+                    .font(.uiSubheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .fadingTruncation()
 
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.uiCaption)
                     .foregroundStyle(.secondary)
                     .fadingTruncation()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 36, alignment: .top)
+            // Indent the text block to visually align with the cover's
+            // rounded corners (its straight edge reads inset from x=0).
+            // Symmetric padding also pulls the trailing fade in by the same
+            // amount, keeping the right edge balanced with the left.
+            .padding(.horizontal, 4)
         }
         .frame(width: 148)
     }
@@ -1156,7 +1161,7 @@ struct AlbumMetadataEditorSheet: View {
                                                 .scaledToFill()
                                         } else {
                                             Image(systemName: "music.note")
-                                                .font(.system(size: 48))
+                                                .font(.ui(48))
                                                 .foregroundStyle(.white.opacity(0.8))
                                         }
                                     }
@@ -1186,24 +1191,24 @@ struct AlbumMetadataEditorSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             TextField("Album title", text: $editedTitle)
-                                .font(.title2.bold())
+                                .font(.uiTitle2.bold())
                                 .multilineTextAlignment(.leading)
                                 .focused($focusedField, equals: .title)
 
                             Image(systemName: "pencil")
-                                .font(.caption)
+                                .font(.uiCaption)
                                 .foregroundStyle(.secondary)
                         }
 
                         HStack(spacing: 6) {
                             TextField("Artist", text: $editedArtist)
-                                .font(.subheadline)
+                                .font(.uiSubheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.leading)
                                 .focused($focusedField, equals: .artist)
 
                             Image(systemName: "pencil")
-                                .font(.caption2)
+                                .font(.uiCaption2)
                                 .foregroundStyle(.tertiary)
                         }
                     }
@@ -1212,7 +1217,7 @@ struct AlbumMetadataEditorSheet: View {
 
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     }
@@ -1230,7 +1235,7 @@ struct AlbumMetadataEditorSheet: View {
                                             trackToDelete = track
                                         } label: {
                                             Image(systemName: "trash")
-                                                .font(.caption)
+                                                .font(.uiCaption)
                                                 .foregroundStyle(.red)
                                         }
                                         .buttonStyle(.plain)
@@ -1243,19 +1248,19 @@ struct AlbumMetadataEditorSheet: View {
                                             set: { editedTrackNames[track.googleFileId] = $0 }
                                         )
                                     )
-                                    .font(.body.weight(.medium))
+                                    .font(.uiBody.weight(.medium))
                                     .lineLimit(1)
                                     .focused($focusedField, equals: .track(track.googleFileId))
 
                                     Image(systemName: "pencil")
-                                        .font(.caption2)
+                                        .font(.uiCaption2)
                                         .foregroundStyle(.tertiary)
                                 }
                             case .discMarker:
                                 let discNumber = discNumbersByItemId[item.id] ?? 1
                                 HStack {
                                     Text("Disc \(discNumber)")
-                                        .font(.subheadline.bold())
+                                        .font(.uiSubheadline.bold())
                                         .foregroundStyle(.secondary)
                                     Spacer()
                                     Button {
@@ -1266,7 +1271,7 @@ struct AlbumMetadataEditorSheet: View {
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundStyle(.tertiary)
-                                            .font(.body)
+                                            .font(.uiBody)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -1285,7 +1290,7 @@ struct AlbumMetadataEditorSheet: View {
                                 addDiscMarker()
                             } label: {
                                 Label("Add disc marker", systemImage: "plus")
-                                    .font(.subheadline)
+                                    .font(.uiSubheadline)
                             }
                             .disabled(reorderedItems.filter(\.isDiscMarker).count >= 100)
                         }
@@ -1306,7 +1311,7 @@ struct AlbumMetadataEditorSheet: View {
                                 }
                             } label: {
                                 Label("Add tracks", systemImage: "plus.circle")
-                                    .font(.subheadline)
+                                    .font(.uiSubheadline)
                             }
                             .disabled(isUploadingTracks)
                         }
@@ -1961,13 +1966,16 @@ struct AlbumArtworkThumbnail: View {
                             .transition(.opacity)
                     } else {
                         Image(systemName: "music.note")
-                            .font(.system(size: size * 0.27))
+                            .font(.ui(size * 0.27))
                             .foregroundStyle(.white.opacity(0.8))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            // Glass edge: hairline + gyro specular so covers with dark
+            // borders separate from the dark background (Phosphor kit).
+            .overlay(GlassRim(cornerRadius: 12))
             .onAppear {
                 if album.isLocal {
                     if image == nil, let coverPath = album.resolvedLocalCoverPath {

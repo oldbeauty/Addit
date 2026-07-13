@@ -21,7 +21,7 @@ struct EQVisualizerView: View {
                     Text("-60")
                         .offset(y: 4)
                 }
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(.readout(8))
                 .foregroundStyle(.secondary.opacity(0.7))
                 .frame(width: yLabelWidth - 4, height: plotHeight)
 
@@ -50,7 +50,7 @@ struct EQVisualizerView: View {
                     Spacer()
                     Text("20k")
                 }
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(.readout(8))
                 .foregroundStyle(.secondary.opacity(0.7))
                 .frame(width: plotWidth)
                 .offset(x: yLabelWidth, y: plotHeight + 2)

@@ -40,7 +40,7 @@ struct TactileButtonStyle: ButtonStyle {
 
                 // Raised cap.
                 configuration.label
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.ui(20, weight: .semibold))
                     .frame(width: diameter, height: diameter)
                     .background {
                         Circle()

@@ -81,20 +81,20 @@ private struct QueueTrackRow: View {
         HStack(spacing: 12) {
             if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption)
+                    .font(.uiCaption)
                     .foregroundStyle(themeService.accentColor)
                     .frame(width: 20)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.displayName)
-                    .font(.body)
+                    .font(.uiBody)
                     .foregroundStyle(isPlaying ? themeService.accentColor : .primary)
                     .lineLimit(1)
 
                 if let albumName = track.album?.name {
                     Text(albumName)
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }

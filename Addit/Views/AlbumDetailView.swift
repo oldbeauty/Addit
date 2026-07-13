@@ -69,10 +69,10 @@ struct AlbumDetailView: View {
 
                     if progress.total > 0 {
                         Text("\(countPrefix) \(progress.current) of \(progress.total)")
-                            .font(.subheadline.bold())
+                            .font(.uiSubheadline.bold())
 
                         Text(progress.trackName)
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundStyle(.secondary)
                             .fadingTruncation()
 
@@ -91,7 +91,7 @@ struct AlbumDetailView: View {
                         .padding(.horizontal, 4)
                     } else {
                         Text(fallback)
-                            .font(.subheadline)
+                            .font(.uiSubheadline)
                     }
                 }
                 .frame(width: 220)
@@ -134,7 +134,7 @@ struct AlbumDetailView: View {
                     )
                 } else {
                     Image(systemName: "music.note")
-                        .font(.system(size: 48))
+                        .font(.ui(48))
                         .foregroundStyle(.white.opacity(0.8))
                 }
             }
@@ -196,13 +196,13 @@ struct AlbumDetailView: View {
 
                 VStack(spacing: 4) {
                     Text(album.name)
-                        .font(.title2.bold())
+                        .font(.uiTitle2.bold())
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                         .engraved()
 
                     Text(album.artistName ?? "Unknown Artist")
-                        .font(.subheadline)
+                        .font(.uiSubheadline)
                         .foregroundStyle(.secondary)
                         .engraved()
                 }
@@ -263,10 +263,11 @@ struct AlbumDetailView: View {
             if albumDurationSeconds > 0 {
                 HStack {
                     Spacer()
+                    // Display layer (Phosphor): the album total is a readout.
                     Text(formattedAlbumDuration)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                        .font(.readout(11))
+                        .foregroundStyle(Phosphor.dim)
+                        .phosphorGlow(intensity: 0.4)
                 }
                 // Trailing inset = TrackRow's 8pt row inset + the
                 // ~7pt gap between the "…" glyph's right edge and
@@ -400,7 +401,7 @@ struct AlbumDetailView: View {
             }
         }
         .frame(width: 230)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassPane(cornerRadius: 14)
         .padding(.trailing, 16)
         .padding(.top, 4)
         .transition(.opacity.combined(with: .scale(scale: 0.5, anchor: .topTrailing)))
@@ -460,7 +461,7 @@ struct AlbumDetailView: View {
         .overlay(alignment: .trailing) {
             if queuedTrackId == track.googleFileId {
                 Text("Queued")
-                    .font(.caption2.bold())
+                    .font(.uiCaption2.bold())
                     .foregroundStyle(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -631,7 +632,7 @@ struct AlbumDetailView: View {
                 if let syncError {
                     Section {
                         Label(syncError, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -1653,15 +1654,16 @@ struct TrackRow: View {
                 MiniEQGrid(isPlaying: isPlaying)
                     .frame(width: 24)
             } else {
+                // Display layer (Phosphor): track numbers are readouts.
                 Text("\(number)")
-                    .font(.subheadline)
-                    .foregroundColor(track.isHidden ? Color.secondary.opacity(0.3) : .secondary)
+                    .font(.readout(11))
+                    .foregroundStyle(track.isHidden ? Phosphor.ghost : Phosphor.dim)
                     .frame(width: 24)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.displayName)
-                    .font(.body.weight(.medium))
+                    .font(.uiBody.weight(.medium))
                     .foregroundColor(isCurrentTrack ? themeService.accentColor : track.isHidden ? Color.secondary.opacity(0.5) : .primary)
                     .fadingTruncation()
 
@@ -1674,7 +1676,7 @@ struct TrackRow: View {
                     }
                     if let size = track.fileSize {
                         Text(formatFileSize(size))
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundColor(track.isHidden ? Color.secondary.opacity(0.3) : .secondary)
                     }
                 }
@@ -1688,14 +1690,14 @@ struct TrackRow: View {
                     HStack {
                         if let date = track.formattedModifiedDate {
                             Text(date)
-                                .font(.system(size: 9))
+                                .font(.ui(9))
                         }
                         if track.formattedModifiedDate != nil && !track.fileExtension.isEmpty {
                             Divider()
                         }
                         if !track.fileExtension.isEmpty {
                             Text(track.fileExtension)
-                                .font(.system(size: 9))
+                                .font(.ui(9))
                         }
                     }
                     .frame(height: 10)
@@ -1727,7 +1729,7 @@ struct TrackRow: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.subheadline)
+                    .font(.uiSubheadline)
                     .foregroundStyle(.primary)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
@@ -1769,7 +1771,7 @@ struct DiscMarkerRow: View {
                 .opacity(0)
 
             Text(label)
-                .font(.caption)
+                .font(.uiCaption)
                 .foregroundStyle(.secondary)
 
             // Thin line from the label's right edge to the duration's
@@ -1788,10 +1790,11 @@ struct DiscMarkerRow: View {
 
     @ViewBuilder
     private func durationText(_ value: String) -> some View {
+        // Display layer (Phosphor): durations are readouts.
         Text(value)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
+            .font(.readout(10))
+            .foregroundStyle(Phosphor.dim)
+            .phosphorGlow(intensity: 0.4)
             // Matches the per-row alignment used by the album total:
             // push the text's right edge to line up with each TrackRow's
             // ellipsis glyph (which sits ~7pt inside its 32pt frame,

@@ -9,14 +9,14 @@ struct SignInView: View {
             Spacer()
 
             Image(systemName: "music.note.house.fill")
-                .font(.system(size: 80))
+                .font(.ui(80))
                 .foregroundStyle(themeService.accentColor)
 
             VStack(spacing: 8) {
                 Text("Addit")
-                    .font(.largeTitle.bold())
+                    .font(.uiLargeTitle.bold())
                 Text("Your cloud music library")
-                    .font(.subheadline)
+                    .font(.uiSubheadline)
                     .foregroundStyle(.secondary)
             }
 
@@ -28,7 +28,7 @@ struct SignInView: View {
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "person.crop.circle.fill")
-                            .font(.title3)
+                            .font(.uiTitle3)
                         Text("Sign in with Google")
                             .fontWeight(.semibold)
                     }
@@ -44,7 +44,7 @@ struct SignInView: View {
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "cloud.fill")
-                            .font(.title3)
+                            .font(.uiTitle3)
                         Text("Sign in with Microsoft")
                             .fontWeight(.semibold)
                     }

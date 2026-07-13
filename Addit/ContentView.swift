@@ -15,7 +15,7 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.large)
                     Text("addit")
-                        .font(.title2.weight(.semibold))
+                        .font(.uiTitle2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,6 +49,9 @@ struct ContentView: View {
             }
         }
         .tint(themeService.accentColor)
+        // Default UI font for any text without an explicit .font() — routes
+        // through the same appFamily knob as the ui* tokens (Phosphor.swift).
+        .environment(\.font, .uiBody)
         .preferredColorScheme(themeService.appearanceMode.colorScheme)
         // Bridge SwiftUI's effective colorScheme into ThemeService so
         // its `accentColor` computed property knows which per-scheme

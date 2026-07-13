@@ -17,6 +17,14 @@
 	<string>234191398888-6juqhe695b4p2oua8q6hpjv9o96d0s63.apps.googleusercontent.com</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Select album cover images from your photo library.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>DepartureMono-Regular.otf</string>
+		<string>Geist-Regular.otf</string>
+		<string>Geist-Medium.otf</string>
+		<string>Geist-SemiBold.otf</string>
+		<string>Geist-Bold.otf</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -135,19 +135,19 @@ struct SharingSheet: View {
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: generalAccessIcon)
-                            .font(.title3)
+                            .font(.uiTitle3)
                             .foregroundStyle(.secondary)
                             .frame(width: 32)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(generalAccess.label)
-                                .font(.subheadline.weight(.medium))
+                                .font(.uiSubheadline.weight(.medium))
                             Text(generalAccess.description)
-                                .font(.caption)
+                                .font(.uiCaption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
@@ -156,14 +156,14 @@ struct SharingSheet: View {
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: generalAccessIcon)
-                        .font(.title3)
+                        .font(.uiTitle3)
                         .foregroundStyle(.secondary)
                         .frame(width: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(generalAccess.label)
-                            .font(.subheadline.weight(.medium))
+                            .font(.uiSubheadline.weight(.medium))
                         Text(generalAccess.description)
-                            .font(.caption)
+                            .font(.uiCaption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -207,7 +207,7 @@ struct SharingSheet: View {
                     Task { await addPerson() }
                 } label: {
                     Image(systemName: "plus.circle.fill")
-                        .font(.title3)
+                        .font(.uiTitle3)
                 }
                 .disabled(newEmail.isEmpty || isSaving)
             }
@@ -223,11 +223,11 @@ struct SharingSheet: View {
             avatar(for: permission)
             VStack(alignment: .leading, spacing: 2) {
                 Text(permission.displayName ?? permission.emailAddress ?? "Unknown")
-                    .font(.subheadline.weight(.medium))
+                    .font(.uiSubheadline.weight(.medium))
                     .lineLimit(1)
                 if let email = permission.emailAddress, permission.displayName != nil {
                     Text(email)
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -237,7 +237,7 @@ struct SharingSheet: View {
                 roleMenu(for: permission)
             } else {
                 Text(permission.roleLabel)
-                    .font(.caption)
+                    .font(.uiCaption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -287,9 +287,9 @@ struct SharingSheet: View {
         } label: {
             HStack(spacing: 4) {
                 Text(permission.roleLabel)
-                    .font(.caption)
+                    .font(.uiCaption)
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
+                    .font(.uiCaption2)
             }
             .foregroundStyle(.secondary)
         }
@@ -321,7 +321,7 @@ struct SharingSheet: View {
             .frame(width: 32, height: 32)
             .overlay {
                 Text(avatarInitial(for: permission))
-                    .font(.subheadline.weight(.semibold))
+                    .font(.uiSubheadline.weight(.semibold))
                     .foregroundStyle(.white)
             }
     }

@@ -42,7 +42,7 @@ struct NowPlayingView: View {
 
             // Album / folder name — sits between the drag indicator and the cover
             Text(playerService.currentTrack?.album?.name ?? "")
-                .font(.subheadline)
+                .font(.uiSubheadline)
                 .foregroundStyle(.secondary)
                 .fadingTruncation(alignment: .center)
                 .padding(.horizontal, 24)
@@ -154,13 +154,13 @@ struct NowPlayingView: View {
             HStack(spacing: 12) {
                 // Album icon — small rounded square
                 Image(systemName: "square.fill")
-                    .font(.system(size: 8))
+                    .font(.ui(8))
                     .foregroundColor(showVisualizer ? .secondary.opacity(0.4) : .primary)
                     .clipShape(RoundedRectangle(cornerRadius: 1.5))
 
                 // EQ icon — small bar chart
                 Image(systemName: "chart.bar.fill")
-                    .font(.system(size: 10))
+                    .font(.ui(10))
                     .foregroundColor(showVisualizer ? .primary : .secondary.opacity(0.4))
             }
             .padding(.top, 12)
@@ -175,15 +175,15 @@ struct NowPlayingView: View {
                     text: playerService.currentTrack?.displayName ?? "Not Playing",
                     alignment: .center
                 )
-                .font(.title3.bold())
+                .font(.uiTitle3.bold())
                 if let error = playerService.playbackError {
                     Text(error)
-                        .font(.subheadline)
+                        .font(.uiSubheadline)
                         .foregroundStyle(.red)
                         .fadingTruncation(alignment: .center)
                 } else {
                     Text(nowPlayingSubtitle)
-                        .font(.subheadline)
+                        .font(.uiSubheadline)
                         .foregroundStyle(.secondary)
                         .fadingTruncation(alignment: .center)
                 }
@@ -215,12 +215,12 @@ struct NowPlayingView: View {
 
                 HStack {
                     Text(formatTime(playerService.isSeeking ? seekValue : playerService.currentTime))
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                     Spacer()
                     Text(formatTime(playerService.duration))
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -264,7 +264,7 @@ struct NowPlayingView: View {
                     playerService.toggleShuffle()
                 } label: {
                     Image(systemName: "shuffle")
-                        .font(.caption.bold())
+                        .font(.uiCaption.bold())
                         .foregroundStyle(playerService.isShuffleOn ? .white : .secondary)
                         .frame(width: 32, height: 32)
                         .background {
@@ -279,7 +279,7 @@ struct NowPlayingView: View {
                     playerService.previous()
                 } label: {
                     Image(systemName: "backward.fill")
-                        .font(.title2)
+                        .font(.uiTitle2)
                 }
 
                 Button {
@@ -291,7 +291,7 @@ struct NowPlayingView: View {
                                 .scaleEffect(1.5)
                         } else {
                             Image(systemName: playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.system(size: 60))
+                                .font(.ui(60))
                         }
                     }
                     .frame(width: 60, height: 60)
@@ -301,14 +301,14 @@ struct NowPlayingView: View {
                     playerService.next()
                 } label: {
                     Image(systemName: "forward.fill")
-                        .font(.title2)
+                        .font(.uiTitle2)
                 }
 
                 Button {
                     playerService.cycleRepeatMode()
                 } label: {
                     Image(systemName: repeatIcon)
-                        .font(.caption.bold())
+                        .font(.uiCaption.bold())
                         .foregroundStyle(playerService.repeatMode != .off ? .white : .secondary)
                         .frame(width: 32, height: 32)
                         .background {
@@ -328,12 +328,12 @@ struct NowPlayingView: View {
                     showQueueSheet = true
                 } label: {
                     Image(systemName: "list.bullet")
-                        .font(.title3)
+                        .font(.uiTitle3)
                         .foregroundStyle(.primary.opacity(0.6))
                         .overlay(alignment: .topTrailing) {
                             if !playerService.userQueue.isEmpty {
                                 Text("\(playerService.userQueue.count)")
-                                    .font(.system(size: 10).bold())
+                                    .font(.ui(10, weight: .bold))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
@@ -400,7 +400,7 @@ struct NowPlayingView: View {
                     )
                     .overlay {
                         Image(systemName: "music.note")
-                            .font(.system(size: 80))
+                            .font(.ui(80))
                             .foregroundStyle(.white.opacity(0.7))
                     }
             }

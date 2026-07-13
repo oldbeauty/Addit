@@ -85,7 +85,7 @@ struct ChatView: View {
                         dismiss()
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.title3.weight(.semibold))
+                            .font(.uiTitle3.weight(.semibold))
                             .padding(10)
                             .glassEffect(.regular, in: Circle())
                     }
@@ -157,14 +157,14 @@ struct ChatView: View {
                     }
                     if userMembers.count > 3 {
                         Text("and \(userMembers.count - 3) more")
-                            .font(.caption2)
+                            .font(.uiCaption2)
                             .foregroundStyle(.secondary)
                             .padding(.leading, 10)
                     }
                 }
             }
             Text(album.name)
-                .font(.subheadline.weight(.semibold))
+                .font(.uiSubheadline.weight(.semibold))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -194,7 +194,7 @@ struct ChatView: View {
             .frame(width: 24, height: 24)
             .overlay {
                 Text(String((member.displayName ?? member.emailAddress ?? "?").prefix(1)).uppercased())
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.ui(10, weight: .bold))
                     .foregroundStyle(.secondary)
             }
             .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
@@ -210,7 +210,7 @@ struct ChatView: View {
                         Button("Load earlier messages") {
                             Task { await loadMoreMessages() }
                         }
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 8)
                     }
@@ -307,7 +307,7 @@ struct ChatView: View {
                     Task { await sendMessage() }
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
+                        .font(.uiTitle2)
                         .foregroundStyle(.blue)
                 }
                 .disabled(isSending)
@@ -406,13 +406,13 @@ private struct ChatBubble: View {
             VStack(alignment: .leading, spacing: 2) {
                 if showName {
                     Text(message.author.displayName)
-                        .font(.caption2.bold())
+                        .font(.uiCaption2.bold())
                         .foregroundStyle(.secondary)
                         .padding(.leading, 12)
                 }
 
                 Text(message.content)
-                    .font(.body)
+                    .font(.uiBody)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(isMe ? Color(.systemBlue) : Color(.systemGray5),
@@ -425,7 +425,7 @@ private struct ChatBubble: View {
         .overlay(alignment: .trailing) {
             if let date = message.createdDate {
                 Text(date, format: .dateTime.hour().minute())
-                    .font(.caption2)
+                    .font(.uiCaption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize()
                     .opacity(showTimestamp ? 1 : 0)
@@ -458,7 +458,7 @@ private struct ChatBubble: View {
             .frame(width: 28, height: 28)
             .overlay {
                 Text(String(message.author.displayName.prefix(1)).uppercased())
-                    .font(.caption2.bold())
+                    .font(.uiCaption2.bold())
                     .foregroundStyle(.secondary)
             }
     }
