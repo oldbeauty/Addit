@@ -43,6 +43,7 @@ struct AlbumDetailView: View {
     @State private var isSavingToDrive = false
     @State private var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State private var saveToDriveError: String?
+    @State private var trackToSplit: Track?
 
     private let coverSize: CGFloat = 256
 
@@ -429,7 +430,8 @@ struct AlbumDetailView: View {
             onToggleHidden: {
                 track.isHidden.toggle()
                 try? modelContext.save()
-            }
+            },
+            onSplit: splitAction(for: track)
         )
         .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
         .listRowBackground(Color.clear)
@@ -471,6 +473,13 @@ struct AlbumDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: queuedTrackId)
+    }
+
+    /// Split is only offered where the result can be saved back: local
+    /// albums always, cloud albums only with write access.
+    private func splitAction(for track: Track) -> (() -> Void)? {
+        guard album.isLocal || album.canEdit else { return nil }
+        return { trackToSplit = track }
     }
 
     /// Rebuild the display list for a LOCAL album from its cached
@@ -755,6 +764,13 @@ struct AlbumDetailView: View {
         }
         .sheet(isPresented: $showEditSheet, onDismiss: handleEditSheetDismiss) {
             AlbumMetadataEditorSheet(album: album)
+        }
+        .fullScreenCover(item: $trackToSplit, onDismiss: handleEditSheetDismiss) { splitTrack in
+            TrackSplitView(track: splitTrack, album: album)
+                .environment(cloudRouter)
+                .environment(cacheService)
+                .environment(themeService)
+                .environment(playerService)
         }
         .refreshable {
             await syncFromDrive()
@@ -1646,6 +1662,7 @@ struct TrackRow: View {
     var onToggleCache: (() -> Void)?
     var onDownload: (() -> Void)?
     var onToggleHidden: (() -> Void)?
+    var onSplit: (() -> Void)?
     @Environment(ThemeService.self) private var themeService
 
     var body: some View {
@@ -1714,6 +1731,12 @@ struct TrackRow: View {
                     onDownload?()
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
+                }
+
+                if let onSplit {
+                    Button(action: onSplit) {
+                        Label("Split Track", systemImage: "scissors")
+                    }
                 }
 
                 if !isLocal {

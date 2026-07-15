@@ -77,6 +77,20 @@ final class AudioCacheService {
         return destination
     }
 
+    /// Stores an already-local audio file as the cached copy for `track` —
+    /// e.g. a freshly exported split segment whose bytes were just uploaded,
+    /// so playing the new track doesn't immediately re-download them.
+    func storeCachedFile(for track: Track, from sourceURL: URL) throws {
+        let destination = cacheFilePath(for: track)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
+        }
+    }
+
     func removeTrack(_ track: Track) {
         let url = cacheFilePath(for: track)
         try? fileManager.removeItem(at: url)

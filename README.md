@@ -1,16 +1,222 @@
-# README.md
+# Addit
 
-This file is encoded. To restore it, run:
+A native iOS music player backed by Google Drive, OneDrive, and local iPhone storage. Browse your cloud folders as albums, import audio from your device, build a personal library, and stream with full playback controls — without downloading your entire collection.
+
+## Features
+
+- **Dual library: Cloud + iPhone Storage** — Toggle between your cloud library and locally imported music from the nav bar dropdown
+- **Google Drive and OneDrive backends** — Sign in with Google or Microsoft; each account's cloud drive becomes a music library with the same feature set (browse, stream, upload, share). OneDrive albums skip Google-only features (chat, starred folders, commenter role)
+- **Multi-account, multi-provider sign-in** — Google and Microsoft accounts live in one account switcher; each account has its own isolated library and data
+- **Your cloud as your music library** — Add any folder (owned or shared) as an album, or create new albums directly from the app
+- **iPhone Storage library** — Import audio files or folders directly from your device; files are copied into the app for permanent offline access
+- **Streaming with smart caching** — Cloud tracks stream on demand and cache locally; upcoming tracks are prefetched for gapless playback
+- **Gapless playback** — Seamless transitions between tracks with no gap, using pre-scheduled audio segments via AVAudioEngine
+- **Full playback controls** — Play/pause, skip, shuffle, repeat, scrubbing, and queue management from both the in-app player and mini player bar
+- **Cross-library queueing** — Queue and play tracks from cloud and iPhone Storage libraries simultaneously
+- **Lock screen & Control Center** — Background audio with Now Playing controls and album artwork
+- **Live EQ visualizer** — Swipe left on the album cover in full player mode to see a real-time frequency spectrum analyzer (20 Hz–20 kHz, powered by AVAudioEngine + Accelerate FFT)
+- **Album art** — Set cover images from your photo library or files, with cropping; artwork displays in the library, player, and lock screen
+- **Collaborative track ordering** — Editors can reorder tracks and organize with disc markers; ordering is stored as `.addit-data` in the cloud folder so all users see the same layout
+- **Sharing & permissions** — View and manage cloud folder permissions directly in the app — add people, change roles, toggle link sharing (Google Drive supports viewer/commenter/editor; OneDrive is viewer/editor)
+- **Group chat** — Real-time per-album messaging via Google Drive comments, with liquid glass UI, member avatars, and inline navigation to sharing settings (Google Drive albums only — the Microsoft Graph API has no comments equivalent)
+- **Library modes** — Grid or list view with drag-to-arrange album ordering and search
+- **Track management** — Per-track ellipsis menu with file info (date modified, file type), download/share via iOS share sheet, and offline access toggle
+- **Album download** — Download an entire album as a zip file via the iOS share sheet
+- **Broad format support** — Plays MP3, M4A, WAV, AAC, AIFF, FLAC, and more; automatically converts incompatible formats using AVAssetExportSession/AVAssetReader fallbacks
+- **Theming** — Choose from a palette of accent colors
+- **Auto-sync** — Album contents sync from the cloud each time you open them
+
+## Requirements
+
+- iOS 26.0+
+- Xcode 26.0+
+- An Apple ID for code signing (free Apple Developer account is fine — no paid Developer Program enrollment required)
+
+## Getting Started
+
+The project intentionally keeps signing settings out of the shared `project.pbxproj`. Each developer supplies their own bundle identifier and team ID via a gitignored `Local.xcconfig` file. This avoids the constant tug-of-war that happens when multiple people on free Apple accounts try to sign the same app — Apple won't let two personal teams claim the same bundle ID.
+
+### 1. Clone and open the project
+
+```bash
+git clone https://github.com/oldbeauty/Addit.git
+cd Addit
+open Addit.xcodeproj
+```
+
+Let Xcode resolve the **GoogleSignIn-iOS** SPM dependency (should happen automatically on first open).
+
+### 2. Create your `Local.xcconfig`
+
+A template is committed at `Addit/Local.xcconfig.example`. Copy it to `Local.xcconfig` (same folder) — this file is gitignored, so your values stay on your machine.
+
+```bash
+cp Addit/Local.xcconfig.example Addit/Local.xcconfig
+```
+
+Edit the new file:
 
 ```
-./decode
+PRODUCT_BUNDLE_IDENTIFIER = yourname.Addit
+DEVELOPMENT_TEAM = ABCDE12345
 ```
 
-To re-encode after decoding, run `./encode`. Both scripts are
-idempotent — running either when the file is already in that state is a
-no-op, so you can run them as many times as you want without corrupting
-anything. Encoded and decoded are the only two possible states.
+- **`PRODUCT_BUNDLE_IDENTIFIER`**: pick a string unique to you (e.g. `yourname.Addit`, `com.yourname.addit`). Apple will refuse signing if another personal team has already claimed the same string.
+- **`DEVELOPMENT_TEAM`**: your 10-character team ID. Find it in **Xcode → Settings → Accounts → click your Apple ID → "Personal Team" row → "Team ID" column**.
 
-<!-- ----- ENCODED ----- -->
-IyBBZGRpdAoKQSBuYXRpdmUgaU9TIG11c2ljIHBsYXllciBiYWNrZWQgYnkgR29vZ2xlIERyaXZlLCBPbmVEcml2ZSwgYW5kIGxvY2FsIGlQaG9uZSBzdG9yYWdlLiBCcm93c2UgeW91ciBjbG91ZCBmb2xkZXJzIGFzIGFsYnVtcywgaW1wb3J0IGF1ZGlvIGZyb20geW91ciBkZXZpY2UsIGJ1aWxkIGEgcGVyc29uYWwgbGlicmFyeSwgYW5kIHN0cmVhbSB3aXRoIGZ1bGwgcGxheWJhY2sgY29udHJvbHMg4oCUIHdpdGhvdXQgZG93bmxvYWRpbmcgeW91ciBlbnRpcmUgY29sbGVjdGlvbi4KCiMjIEZlYXR1cmVzCgotICoqRHVhbCBsaWJyYXJ5OiBDbG91ZCArIGlQaG9uZSBTdG9yYWdlKiog4oCUIFRvZ2dsZSBiZXR3ZWVuIHlvdXIgY2xvdWQgbGlicmFyeSBhbmQgbG9jYWxseSBpbXBvcnRlZCBtdXNpYyBmcm9tIHRoZSBuYXYgYmFyIGRyb3Bkb3duCi0gKipHb29nbGUgRHJpdmUgYW5kIE9uZURyaXZlIGJhY2tlbmRzKiog4oCUIFNpZ24gaW4gd2l0aCBHb29nbGUgb3IgTWljcm9zb2Z0OyBlYWNoIGFjY291bnQncyBjbG91ZCBkcml2ZSBiZWNvbWVzIGEgbXVzaWMgbGlicmFyeSB3aXRoIHRoZSBzYW1lIGZlYXR1cmUgc2V0IChicm93c2UsIHN0cmVhbSwgdXBsb2FkLCBzaGFyZSkuIE9uZURyaXZlIGFsYnVtcyBza2lwIEdvb2dsZS1vbmx5IGZlYXR1cmVzIChjaGF0LCBzdGFycmVkIGZvbGRlcnMsIGNvbW1lbnRlciByb2xlKQotICoqTXVsdGktYWNjb3VudCwgbXVsdGktcHJvdmlkZXIgc2lnbi1pbioqIOKAlCBHb29nbGUgYW5kIE1pY3Jvc29mdCBhY2NvdW50cyBsaXZlIGluIG9uZSBhY2NvdW50IHN3aXRjaGVyOyBlYWNoIGFjY291bnQgaGFzIGl0cyBvd24gaXNvbGF0ZWQgbGlicmFyeSBhbmQgZGF0YQotICoqWW91ciBjbG91ZCBhcyB5b3VyIG11c2ljIGxpYnJhcnkqKiDigJQgQWRkIGFueSBmb2xkZXIgKG93bmVkIG9yIHNoYXJlZCkgYXMgYW4gYWxidW0sIG9yIGNyZWF0ZSBuZXcgYWxidW1zIGRpcmVjdGx5IGZyb20gdGhlIGFwcAotICoqaVBob25lIFN0b3JhZ2UgbGlicmFyeSoqIOKAlCBJbXBvcnQgYXVkaW8gZmlsZXMgb3IgZm9sZGVycyBkaXJlY3RseSBmcm9tIHlvdXIgZGV2aWNlOyBmaWxlcyBhcmUgY29waWVkIGludG8gdGhlIGFwcCBmb3IgcGVybWFuZW50IG9mZmxpbmUgYWNjZXNzCi0gKipTdHJlYW1pbmcgd2l0aCBzbWFydCBjYWNoaW5nKiog4oCUIENsb3VkIHRyYWNrcyBzdHJlYW0gb24gZGVtYW5kIGFuZCBjYWNoZSBsb2NhbGx5OyB1cGNvbWluZyB0cmFja3MgYXJlIHByZWZldGNoZWQgZm9yIGdhcGxlc3MgcGxheWJhY2sKLSAqKkdhcGxlc3MgcGxheWJhY2sqKiDigJQgU2VhbWxlc3MgdHJhbnNpdGlvbnMgYmV0d2VlbiB0cmFja3Mgd2l0aCBubyBnYXAsIHVzaW5nIHByZS1zY2hlZHVsZWQgYXVkaW8gc2VnbWVudHMgdmlhIEFWQXVkaW9FbmdpbmUKLSAqKkZ1bGwgcGxheWJhY2sgY29udHJvbHMqKiDigJQgUGxheS9wYXVzZSwgc2tpcCwgc2h1ZmZsZSwgcmVwZWF0LCBzY3J1YmJpbmcsIGFuZCBxdWV1ZSBtYW5hZ2VtZW50IGZyb20gYm90aCB0aGUgaW4tYXBwIHBsYXllciBhbmQgbWluaSBwbGF5ZXIgYmFyCi0gKipDcm9zcy1saWJyYXJ5IHF1ZXVlaW5nKiog4oCUIFF1ZXVlIGFuZCBwbGF5IHRyYWNrcyBmcm9tIGNsb3VkIGFuZCBpUGhvbmUgU3RvcmFnZSBsaWJyYXJpZXMgc2ltdWx0YW5lb3VzbHkKLSAqKkxvY2sgc2NyZWVuICYgQ29udHJvbCBDZW50ZXIqKiDigJQgQmFja2dyb3VuZCBhdWRpbyB3aXRoIE5vdyBQbGF5aW5nIGNvbnRyb2xzIGFuZCBhbGJ1bSBhcnR3b3JrCi0gKipMaXZlIEVRIHZpc3VhbGl6ZXIqKiDigJQgU3dpcGUgbGVmdCBvbiB0aGUgYWxidW0gY292ZXIgaW4gZnVsbCBwbGF5ZXIgbW9kZSB0byBzZWUgYSByZWFsLXRpbWUgZnJlcXVlbmN5IHNwZWN0cnVtIGFuYWx5emVyICgyMCBIeuKAkzIwIGtIeiwgcG93ZXJlZCBieSBBVkF1ZGlvRW5naW5lICsgQWNjZWxlcmF0ZSBGRlQpCi0gKipBbGJ1bSBhcnQqKiDigJQgU2V0IGNvdmVyIGltYWdlcyBmcm9tIHlvdXIgcGhvdG8gbGlicmFyeSBvciBmaWxlcywgd2l0aCBjcm9wcGluZzsgYXJ0d29yayBkaXNwbGF5cyBpbiB0aGUgbGlicmFyeSwgcGxheWVyLCBhbmQgbG9jayBzY3JlZW4KLSAqKkNvbGxhYm9yYXRpdmUgdHJhY2sgb3JkZXJpbmcqKiDigJQgRWRpdG9ycyBjYW4gcmVvcmRlciB0cmFja3MgYW5kIG9yZ2FuaXplIHdpdGggZGlzYyBtYXJrZXJzOyBvcmRlcmluZyBpcyBzdG9yZWQgYXMgYC5hZGRpdC1kYXRhYCBpbiB0aGUgY2xvdWQgZm9sZGVyIHNvIGFsbCB1c2VycyBzZWUgdGhlIHNhbWUgbGF5b3V0Ci0gKipTaGFyaW5nICYgcGVybWlzc2lvbnMqKiDigJQgVmlldyBhbmQgbWFuYWdlIGNsb3VkIGZvbGRlciBwZXJtaXNzaW9ucyBkaXJlY3RseSBpbiB0aGUgYXBwIOKAlCBhZGQgcGVvcGxlLCBjaGFuZ2Ugcm9sZXMsIHRvZ2dsZSBsaW5rIHNoYXJpbmcgKEdvb2dsZSBEcml2ZSBzdXBwb3J0cyB2aWV3ZXIvY29tbWVudGVyL2VkaXRvcjsgT25lRHJpdmUgaXMgdmlld2VyL2VkaXRvcikKLSAqKkdyb3VwIGNoYXQqKiDigJQgUmVhbC10aW1lIHBlci1hbGJ1bSBtZXNzYWdpbmcgdmlhIEdvb2dsZSBEcml2ZSBjb21tZW50cywgd2l0aCBsaXF1aWQgZ2xhc3MgVUksIG1lbWJlciBhdmF0YXJzLCBhbmQgaW5saW5lIG5hdmlnYXRpb24gdG8gc2hhcmluZyBzZXR0aW5ncyAoR29vZ2xlIERyaXZlIGFsYnVtcyBvbmx5IOKAlCB0aGUgTWljcm9zb2Z0IEdyYXBoIEFQSSBoYXMgbm8gY29tbWVudHMgZXF1aXZhbGVudCkKLSAqKkxpYnJhcnkgbW9kZXMqKiDigJQgR3JpZCBvciBsaXN0IHZpZXcgd2l0aCBkcmFnLXRvLWFycmFuZ2UgYWxidW0gb3JkZXJpbmcgYW5kIHNlYXJjaAotICoqVHJhY2sgbWFuYWdlbWVudCoqIOKAlCBQZXItdHJhY2sgZWxsaXBzaXMgbWVudSB3aXRoIGZpbGUgaW5mbyAoZGF0ZSBtb2RpZmllZCwgZmlsZSB0eXBlKSwgZG93bmxvYWQvc2hhcmUgdmlhIGlPUyBzaGFyZSBzaGVldCwgYW5kIG9mZmxpbmUgYWNjZXNzIHRvZ2dsZQotICoqQWxidW0gZG93bmxvYWQqKiDigJQgRG93bmxvYWQgYW4gZW50aXJlIGFsYnVtIGFzIGEgemlwIGZpbGUgdmlhIHRoZSBpT1Mgc2hhcmUgc2hlZXQKLSAqKkJyb2FkIGZvcm1hdCBzdXBwb3J0Kiog4oCUIFBsYXlzIE1QMywgTTRBLCBXQVYsIEFBQywgQUlGRiwgRkxBQywgYW5kIG1vcmU7IGF1dG9tYXRpY2FsbHkgY29udmVydHMgaW5jb21wYXRpYmxlIGZvcm1hdHMgdXNpbmcgQVZBc3NldEV4cG9ydFNlc3Npb24vQVZBc3NldFJlYWRlciBmYWxsYmFja3MKLSAqKlRoZW1pbmcqKiDigJQgQ2hvb3NlIGZyb20gYSBwYWxldHRlIG9mIGFjY2VudCBjb2xvcnMKLSAqKkF1dG8tc3luYyoqIOKAlCBBbGJ1bSBjb250ZW50cyBzeW5jIGZyb20gdGhlIGNsb3VkIGVhY2ggdGltZSB5b3Ugb3BlbiB0aGVtCgojIyBSZXF1aXJlbWVudHMKCi0gaU9TIDI2LjArCi0gWGNvZGUgMjYuMCsKLSBBbiBBcHBsZSBJRCBmb3IgY29kZSBzaWduaW5nIChmcmVlIEFwcGxlIERldmVsb3BlciBhY2NvdW50IGlzIGZpbmUg4oCUIG5vIHBhaWQgRGV2ZWxvcGVyIFByb2dyYW0gZW5yb2xsbWVudCByZXF1aXJlZCkKCiMjIEdldHRpbmcgU3RhcnRlZAoKVGhlIHByb2plY3QgaW50ZW50aW9uYWxseSBrZWVwcyBzaWduaW5nIHNldHRpbmdzIG91dCBvZiB0aGUgc2hhcmVkIGBwcm9qZWN0LnBieHByb2pgLiBFYWNoIGRldmVsb3BlciBzdXBwbGllcyB0aGVpciBvd24gYnVuZGxlIGlkZW50aWZpZXIgYW5kIHRlYW0gSUQgdmlhIGEgZ2l0aWdub3JlZCBgTG9jYWwueGNjb25maWdgIGZpbGUuIFRoaXMgYXZvaWRzIHRoZSBjb25zdGFudCB0dWctb2Ytd2FyIHRoYXQgaGFwcGVucyB3aGVuIG11bHRpcGxlIHBlb3BsZSBvbiBmcmVlIEFwcGxlIGFjY291bnRzIHRyeSB0byBzaWduIHRoZSBzYW1lIGFwcCDigJQgQXBwbGUgd29uJ3QgbGV0IHR3byBwZXJzb25hbCB0ZWFtcyBjbGFpbSB0aGUgc2FtZSBidW5kbGUgSUQuCgojIyMgMS4gQ2xvbmUgYW5kIG9wZW4gdGhlIHByb2plY3QKCmBgYGJhc2gKZ2l0IGNsb25lIGh0dHBzOi8vZ2l0aHViLmNvbS9vbGRiZWF1dHkvQWRkaXQuZ2l0CmNkIEFkZGl0Cm9wZW4gQWRkaXQueGNvZGVwcm9qCmBgYAoKTGV0IFhjb2RlIHJlc29sdmUgdGhlICoqR29vZ2xlU2lnbkluLWlPUyoqIFNQTSBkZXBlbmRlbmN5IChzaG91bGQgaGFwcGVuIGF1dG9tYXRpY2FsbHkgb24gZmlyc3Qgb3BlbikuCgojIyMgMi4gQ3JlYXRlIHlvdXIgYExvY2FsLnhjY29uZmlnYAoKQSB0ZW1wbGF0ZSBpcyBjb21taXR0ZWQgYXQgYEFkZGl0L0xvY2FsLnhjY29uZmlnLmV4YW1wbGVgLiBDb3B5IGl0IHRvIGBMb2NhbC54Y2NvbmZpZ2AgKHNhbWUgZm9sZGVyKSDigJQgdGhpcyBmaWxlIGlzIGdpdGlnbm9yZWQsIHNvIHlvdXIgdmFsdWVzIHN0YXkgb24geW91ciBtYWNoaW5lLgoKYGBgYmFzaApjcCBBZGRpdC9Mb2NhbC54Y2NvbmZpZy5leGFtcGxlIEFkZGl0L0xvY2FsLnhjY29uZmlnCmBgYAoKRWRpdCB0aGUgbmV3IGZpbGU6CgpgYGAKUFJPRFVDVF9CVU5ETEVfSURFTlRJRklFUiA9IHlvdXJuYW1lLkFkZGl0CkRFVkVMT1BNRU5UX1RFQU0gPSBBQkNERTEyMzQ1CmBgYAoKLSAqKmBQUk9EVUNUX0JVTkRMRV9JREVOVElGSUVSYCoqOiBwaWNrIGEgc3RyaW5nIHVuaXF1ZSB0byB5b3UgKGUuZy4gYHlvdXJuYW1lLkFkZGl0YCwgYGNvbS55b3VybmFtZS5hZGRpdGApLiBBcHBsZSB3aWxsIHJlZnVzZSBzaWduaW5nIGlmIGFub3RoZXIgcGVyc29uYWwgdGVhbSBoYXMgYWxyZWFkeSBjbGFpbWVkIHRoZSBzYW1lIHN0cmluZy4KLSAqKmBERVZFTE9QTUVOVF9URUFNYCoqOiB5b3VyIDEwLWNoYXJhY3RlciB0ZWFtIElELiBGaW5kIGl0IGluICoqWGNvZGUg4oaSIFNldHRpbmdzIOKGkiBBY2NvdW50cyDihpIgY2xpY2sgeW91ciBBcHBsZSBJRCDihpIgIlBlcnNvbmFsIFRlYW0iIHJvdyDihpIgIlRlYW0gSUQiIGNvbHVtbioqLgoKIyMjIDMuIFRyaWdnZXIgc2lnbmluZyBpbiBYY29kZQoKMS4gSW4gdGhlIHByb2plY3QgbmF2aWdhdG9yLCBzZWxlY3QgdGhlIHByb2plY3QsIHRoZW4gdGhlIGBBZGRpdGAgdGFyZ2V0LgoyLiBHbyB0byB0aGUgKipTaWduaW5nICYgQ2FwYWJpbGl0aWVzKiogdGFiLgozLiBDb25maXJtICoqQXV0b21hdGljYWxseSBtYW5hZ2Ugc2lnbmluZyoqIGlzIGNoZWNrZWQuCjQuIEJ1bmRsZSBJZGVudGlmaWVyIHNob3VsZCBhbHJlYWR5IHJlYWQgd2hhdGV2ZXIgeW91IHB1dCBpbiBgTG9jYWwueGNjb25maWdgLgo1LiBJZiAqKlRlYW0qKiBzaG93cyAiTm9uZSIsIHBpY2sgeW91ciBQZXJzb25hbCBUZWFtIGZyb20gdGhlIGRyb3Bkb3duLgoKUGlja2luZyBhIHRlYW0gaW4gdGhlIFVJIG1heSBjYXVzZSBYY29kZSB0byByZS1zdGFtcCBgREVWRUxPUE1FTlRfVEVBTWAgZGlyZWN0bHkgaW50byBgcHJvamVjdC5wYnhwcm9qYC4gSWYgeW91IHBsYW4gdG8gY29tbWl0IGFuZCBwdXNoIGJhY2ssIHJ1biB0aGlzIGNsZWFudXAgZmlyc3Qgc28geW91ciB0ZWFtIElEIGRvZXNuJ3QgZW5kIHVwIGluIHRoZSBzaGFyZWQgZmlsZToKCmBgYGJhc2gKc2VkIC1pICcnICcvREVWRUxPUE1FTlRfVEVBTSA9IC9kJyBBZGRpdC54Y29kZXByb2ovcHJvamVjdC5wYnhwcm9qCmBgYAoKVGhlbiB2ZXJpZnkgZXZlcnl0aGluZyBzdGlsbCByZXNvbHZlcyBjb3JyZWN0bHkgZnJvbSB0aGUgeGNjb25maWc6CgpgYGBiYXNoCnhjb2RlYnVpbGQgLXByb2plY3QgQWRkaXQueGNvZGVwcm9qIC1zY2hlbWUgQWRkaXQgLWRlc3RpbmF0aW9uICdnZW5lcmljL3BsYXRmb3JtPWlPUycgXAogIC1zaG93QnVpbGRTZXR0aW5ncyAyPi9kZXYvbnVsbCB8IGdyZXAgLUUgIlBST0RVQ1RfQlVORExFX0lERU5USUZJRVJ8REVWRUxPUE1FTlRfVEVBTSIKYGBgCgpZb3Ugc2hvdWxkIHNlZSB5b3VyIGJ1bmRsZSBJRCBhbmQgdGVhbSBJRCwgYm90aCBzb3VyY2VkIGZyb20gYExvY2FsLnhjY29uZmlnYC4KCiMjIyA0LiBCdWlsZCBhbmQgcnVuCgpQbHVnIGluIHlvdXIgaVBob25lIChvciBwaWNrIGEgc2ltdWxhdG9yKSwgc2VsZWN0IGl0IGFzIHRoZSBydW4gZGVzdGluYXRpb24sIGFuZCBoaXQg4oyYUi4KCj4gKipGcmVlIHNpZ25pbmcgY2F2ZWF0Kio6IHByb3Zpc2lvbmluZyBwcm9maWxlcyBmb3IgZnJlZSBBcHBsZSBhY2NvdW50cyBleHBpcmUgZXZlcnkgKio3IGRheXMqKi4gWW91J2xsIG5lZWQgdG8gcmVkZXBsb3kgZnJvbSBYY29kZSByb3VnaGx5IHdlZWtseS4gVGhlIHBhaWQgQXBwbGUgRGV2ZWxvcGVyIFByb2dyYW0gKCQ5OS95ZWFyKSBleHRlbmRzIHRoaXMgdG8gYSB5ZWFyLCBidXQgaXNuJ3QgcmVxdWlyZWQgdG8gZGV2ZWxvcCBvciB0ZXN0LgoKIyMjIE9BdXRoIGNsaWVudHMgKEdvb2dsZSArIE1pY3Jvc29mdCkKCkJvdGggT0F1dGggY2xpZW50cyBhcmUgcHJvdmlkZWQgYnkgdGhlIHByb2plY3Qgb3duZXIg4oCUIG5vIHNldHVwIGlzIG5lZWRlZCBvbiB5b3VyIGVuZDsgc2lnbi1pbiB3b3JrcyBvdXQgb2YgdGhlIGJveCBvbmNlIHRoZSBhcHAgaXMgcnVubmluZy4KCi0gKipHb29nbGUqKjogY2xpZW50IElEIGxpdmVzIGluIGBDb25zdGFudHMuZ29vZ2xlQ2xpZW50SURgLCBkdXBsaWNhdGVkIGluIGBJbmZvLnBsaXN0YCAoYEdJRENsaWVudElEYCArIHRoZSBgY29tLmdvb2dsZXVzZXJjb250ZW50LmFwcHMuKmAgVVJMIHNjaGVtZSkuCi0gKipNaWNyb3NvZnQqKjogY2xpZW50IElEIGxpdmVzIGluIGBDb25zdGFudHMubWljcm9zb2Z0Q2xpZW50SURgIChhbiBBenVyZSAiQXBwIHJlZ2lzdHJhdGlvbiIgQXBwbGljYXRpb24gSUQpLiBUaGUgcmVkaXJlY3QgVVJJIGlzIGEgZml4ZWQgY3VzdG9tIHNjaGVtZSAoYGFkZGl0LW1zYXV0aDovL2NhbGxiYWNrYCkgaGFuZGxlZCBieSBgQVNXZWJBdXRoZW50aWNhdGlvblNlc3Npb25gIOKAlCBkZWxpYmVyYXRlbHkgbm90IE1TQUwncyBgbXNhdXRoLjxidW5kbGVJZD5gIHBhdHRlcm4sIHNvIHBlci1kZXZlbG9wZXIgYnVuZGxlIElEcyBuZWVkIG5vIEF6dXJlIGNoYW5nZXMgYW5kIG5vIEluZm8ucGxpc3QgVVJMIHNjaGVtZSBlbnRyeS4KCiMjIyBXb3JraW5nIHdpdGggY29sbGFib3JhdG9ycwoKVGhlIHhjY29uZmlnIHNldHVwIGlzIHdoYXQgYWxsb3dzIG11bHRpcGxlIGRldmVsb3BlcnMgb24gZnJlZSBBcHBsZSBhY2NvdW50cyB0byBzaGFyZSB0aGlzIGNvZGViYXNlIHdpdGhvdXQgc3RlcHBpbmcgb24gZWFjaCBvdGhlcidzIHNpZ25pbmcgc2V0dGluZ3MuIEEgZmV3IHRoaW5ncyB0byBrbm93OgoKLSAqKllvdXIgYExvY2FsLnhjY29uZmlnYCBuZXZlciBnb2VzIHRocm91Z2ggZ2l0LioqIEl0J3MgY292ZXJlZCBieSB0aGUgYCoueGNjb25maWdgIHJ1bGUgaW4gYC5naXRpZ25vcmVgLiBQdWxscyBhbmQgcHVzaGVzIGxlYXZlIGl0IHVudG91Y2hlZC4KLSAqKkRvbid0IGVkaXQgc2lnbmluZyBzZXR0aW5ncyBpbiBYY29kZSB1bmxlc3MgeW91IGhhdmUgdG8uKiogVG9nZ2xpbmcgYXV0by1zaWduaW5nIG9yIGNoYW5naW5nIHRlYW0gcGlja3MgdGVuZHMgdG8gbWFrZSBYY29kZSByZS1zdGFtcCBgREVWRUxPUE1FTlRfVEVBTWAgaW50byBgcHJvamVjdC5wYnhwcm9qYC4gSWYgdGhhdCBoYXBwZW5zLCBydW4gdGhlIGBzZWRgIGxpbmUgZnJvbSBzdGVwIDMgYWJvdmUgYmVmb3JlIGNvbW1pdHRpbmcuCi0gKipCdW5kbGUgSURzIGFyZSBjbGFpbWVkIHBlciBBcHBsZSBJRC4qKiBXaG9ldmVyIHNpZ25zIGZpcnN0IHdpdGggYSBnaXZlbiBidW5kbGUgSUQgbG9ja3MgaXQgdG8gdGhlaXIgdGVhbS4gSWYgeW91IHNlZSAiRmFpbGVkIFJlZ2lzdGVyaW5nIEJ1bmRsZSBJZGVudGlmaWVyOiBjYW5ub3QgYmUgcmVnaXN0ZXJlZCB0byB5b3VyIGRldmVsb3BtZW50IHRlYW0sIiBhbm90aGVyIGNvbGxhYm9yYXRvciAob3Igc29tZW9uZSBlbHNlIGVudGlyZWx5KSBoYXMgYWxyZWFkeSBjbGFpbWVkIHRoYXQgc3RyaW5nLiBKdXN0IHBpY2sgYSBtb3JlIHVuaXF1ZSBvbmUgaW4geW91ciBgTG9jYWwueGNjb25maWdgLgotICoqRmlyc3QgcnVuIG9uIGEgZGV2aWNlIGdpdmVzIHlvdSBhbiBlbXB0eSBsaWJyYXJ5LioqIERpZmZlcmVudCBidW5kbGUgSURzIGFyZSBkaWZmZXJlbnQgYXBwcyB0byBpT1Mg4oCUIHlvdXIgb2xkIGluc3RhbGwgbGl2ZXMgaW4gaXRzIG93biBzYW5kYm94IGNvbnRhaW5lciB3aXRoIGl0cyBvd24gZGF0YS4gRWl0aGVyIGRlbGV0ZSB0aGUgb2xkIGluc3RhbGwgdmlhICoqU2V0dGluZ3Mg4oaSIEdlbmVyYWwg4oaSIGlQaG9uZSBTdG9yYWdlKiogb3IgYWNjZXB0IHRoYXQgeW91J2xsIHJlLXNpZ24gaW4gdG8gRHJpdmUgb24gdGhlIG5ldyBidWlsZC4KCiMjIEFyY2hpdGVjdHVyZQoKYGBgCi4K4pSc4pSA4pSAIEFkZGl0Lnhjb2RlcHJvagrilJzilIDilIAgSW5mby5wbGlzdArilJzilIDilIAgUkVBRE1FLm1kICAgICAgICAgICAgICAgICAgICAgICAgICAjIEh1bWFuLWZhY2luZyBzZXR1cC9mZWF0dXJlIGRvY3MgKHRoaXMgZmlsZSkK4pSc4pSA4pSAIEFHRU5UUy5tZCAgICAgICAgICAgICAgICAgICAgICAgICAgIyBTbGltIGFsd2F5cy1vbiBhZ2VudCBjb250ZXh0IChhdXRvLWxvYWRlZCkK4pSc4pSA4pSAIENMQVVERS5tZCAgICAgICAgICAgICAgICAgICAgICAgICAgIyBTeW1saW5rIOKGkiBBR0VOVFMubWQgKENsYXVkZSBDb2RlIGNvbXBhdGliaWxpdHkpCuKUnOKUgOKUgCAub21wLwrilIIgICDilJTilIDilIAgc2tpbGxzLwrilIIgICAgICAg4pSU4pSA4pSAIGF1ZGlvLXBsYXliYWNrL1NLSUxMLm1kICAgICMgRGVlcCBwbGF5YmFjayBpbnRlcm5hbHMsIGxvYWRlZCBvbiBkZW1hbmQK4pSU4pSA4pSAIEFkZGl0LwogICAg4pSc4pSA4pSAIExvY2FsLnhjY29uZmlnLmV4YW1wbGUgICAgICAgICAjIFRlbXBsYXRlIOKAlCBjb3B5IHRvIExvY2FsLnhjY29uZmlnIChnaXRpZ25vcmVkKQogICAg4pSCCiAgICDilJzilIDilIAgQWRkaXRBcHAuc3dpZnQgICAgICAgICAgICAgICAgICMgRW50cnkgcG9pbnQsIHNlcnZpY2Ugd2lyaW5nLCBzaGFyZWQgU3dpZnREYXRhIGNvbnRhaW5lciwgQWNjb3VudENvbnRhaW5lclZpZXcKICAgIOKUnOKUgOKUgCBDb250ZW50Vmlldy5zd2lmdCAgICAgICAgICAgICAgIyBBdXRoIGdhdGUgKyByb290IG5hdmlnYXRpb24KICAgIOKUnOKUgOKUgCBMYXVuY2hTY3JlZW4uc3Rvcnlib2FyZAogICAg4pSCCiAgICDilJzilIDilIAgTW9kZWxzLwogICAg4pSCICAg4pSc4pSA4pSAIEFsYnVtLnN3aWZ0ICAgICAgICAgICAgICAgICMgU3dpZnREYXRhIG1vZGVsIOKAlCBEcml2ZSBmb2xkZXIgb3IgbG9jYWwgYWxidW0KICAgIOKUgiAgIOKUnOKUgOKUgCBUcmFjay5zd2lmdCAgICAgICAgICAgICAgICAjIFN3aWZ0RGF0YSBtb2RlbCDigJQgYXVkaW8gZmlsZSAoRHJpdmUgb3IgbG9jYWwpCiAgICDilIIgICDilJzilIDilIAgQWRkaXRNZXRhZGF0YS5zd2lmdCAgICAgICAgIyAuYWRkaXQtZGF0YSBKU09OIHNjaGVtYSwgZGlzYyBtYXJrZXJzCiAgICDilIIgICDilJTilIDilIAgRHJpdmVNb2RlbHMuc3dpZnQgICAgICAgICAgIyBEcml2ZSBBUEkgcmVzcG9uc2UgdHlwZXMsIHBlcm1pc3Npb25zCiAgICDilIIKICAgIOKUnOKUgOKUgCBTZXJ2aWNlcy8KICAgIOKUgiAgIOKUnOKUgOKUgCBHb29nbGVBdXRoU2VydmljZS5zd2lmdCAgICAgICAjIEdvb2dsZSBTaWduLUluLCBtdWx0aS1hY2NvdW50LCB0b2tlbiBtYW5hZ2VtZW50CiAgICDilIIgICDilJzilIDilIAgTWljcm9zb2Z0QXV0aFNlcnZpY2Uuc3dpZnQgICAgIyBNaWNyb3NvZnQgT0F1dGggKFBLQ0UgKyBBU1dlYkF1dGhlbnRpY2F0aW9uU2Vzc2lvbiksIEtleWNoYWluIHRva2VucwogICAg4pSCICAg4pSc4pSA4pSAIENsb3VkQXV0aENvb3JkaW5hdG9yLnN3aWZ0ICAgICMgVW5pZmllZCBzZXNzaW9uIGZhY2FkZSBvdmVyIGJvdGggYXV0aCBwcm92aWRlcnMKICAgIOKUgiAgIOKUnOKUgOKUgCBHb29nbGVEcml2ZVNlcnZpY2Uuc3dpZnQgICAgICAjIERyaXZlIEFQSSB2MyBSRVNUIGNsaWVudAogICAg4pSCICAg4pSc4pSA4pSAIE9uZURyaXZlU2VydmljZS5zd2lmdCAgICAgICAgICMgTWljcm9zb2Z0IEdyYXBoIGNsaWVudCBtYXBwZWQgaW50byB0aGUgc2hhcmVkIERyaXZlIERUT3MKICAgIOKUgiAgIOKUnOKUgOKUgCBDbG91ZERyaXZlU2VydmljZS5zd2lmdCAgICAgICAjIFByb3ZpZGVyLW5ldXRyYWwgcHJvdG9jb2wgKyBwZXItYWxidW0gcm91dGluZyAoQ2xvdWRTZXJ2aWNlUm91dGVyKQogICAg4pSCICAg4pSc4pSA4pSAIEF1ZGlvUGxheWVyU2VydmljZS5zd2lmdCAgICAgICMgQVZBdWRpb0VuZ2luZSBwbGF5YmFjaywgZ2FwbGVzcywgcXVldWUsIHJlbW90ZSBjb21tYW5kcwogICAg4pSCICAg4pSc4pSA4pSAIEF1ZGlvQ2FjaGVTZXJ2aWNlLnN3aWZ0ICAgICAgICMgT24tZGV2aWNlIGF1ZGlvIGZpbGUgY2FjaGUgd2l0aCBmb3JtYXQgY29udmVyc2lvbgogICAg4pSCICAg4pSc4pSA4pSAIEF1ZGlvQW5hbHl6ZXJTZXJ2aWNlLnN3aWZ0ICAgICMgUmVhbC10aW1lIEZGVCBzcGVjdHJ1bSBhbmFseXNpcyBmb3IgRVEgdmlzdWFsaXplcgogICAg4pSCICAg4pSc4pSA4pSAIEFsYnVtQXJ0U2VydmljZS5zd2lmdCAgICAgICAgICMgQ292ZXIgYXJ0IG1lbW9yeSArIGRpc2sgY2FjaGUKICAgIOKUgiAgIOKUnOKUgOKUgCBBY2NvdW50TWFuYWdlci5zd2lmdCAgICAgICAgICAjIE11bHRpLWFjY291bnQgc3RvcmFnZSwgcGVyLWFjY291bnQgaXNvbGF0aW9uCiAgICDilIIgICDilJTilIDilIAgVGhlbWVTZXJ2aWNlLnN3aWZ0ICAgICAgICAgICAgIyBBY2NlbnQgY29sb3IgcGVyc2lzdGVuY2UKICAgIOKUggogICAg4pSc4pSA4pSAIFZpZXdzLwogICAg4pSCICAg4pSc4pSA4pSAIFNpZ25JblZpZXcuc3dpZnQgICAgICAgICAgICMgU2lnbi1pbiBzY3JlZW4KICAgIOKUgiAgIOKUnOKUgOKUgCBMaWJyYXJ5Vmlldy5zd2lmdCAgICAgICAgICAjIEFsYnVtIGdyaWQvbGlzdCwgc2VhcmNoLCBhcnJhbmdlIG1vZGUsIG1ldGFkYXRhIGVkaXRvciwgbG9jYWwgaW1wb3J0CiAgICDilIIgICDilJzilIDilIAgQWxidW1EZXRhaWxWaWV3LnN3aWZ0ICAgICAgIyBUcmFjayBsaXN0LCBkaXNjIG1hcmtlcnMsIHN5bmMsIHBsYXliYWNrLCB0cmFjayBtZW51cwogICAg4pSCICAg4pSc4pSA4pSAIEFkZEFsYnVtVmlldy5zd2lmdCAgICAgICAgICMgQnJvd3NlIERyaXZlIGZvbGRlcnMgdG8gYWRkIGV4aXN0aW5nIGFsYnVtcwogICAg4pSCICAg4pSc4pSA4pSAIENyZWF0ZUFsYnVtVmlldy5zd2lmdCAgICAgICMgUGljayBsb2NhdGlvbiArIGNyZWF0ZSBuZXcgYWxidW0gZm9sZGVyCiAgICDilIIgICDilJzilIDilIAgRHJpdmVBdWRpb1BpY2tlclZpZXcuc3dpZnQgIyBCcm93c2UgRHJpdmUgdG8gYWRkIHRyYWNrcyB0byBhbiBhbGJ1bQogICAg4pSCICAg4pSc4pSA4pSAIE5vd1BsYXlpbmdWaWV3LnN3aWZ0ICAgICAgICMgRnVsbC1zY3JlZW4gcGxheWVyIHdpdGggYWxidW0tdG8taGFsbyBtb3JwaCBhbmQgRVEgc3dpcGUKICAgIOKUgiAgIOKUnOKUgOKUgCBOb3dQbGF5aW5nQmFyLnN3aWZ0ICAgICAgICAjIE1pbmkgcGxheWVyIG92ZXJsYXkgd2l0aCB3YXZlZm9ybSBzY3J1YmJlcgogICAg4pSCICAg4pSc4pSA4pSAIEVRVmlzdWFsaXplclZpZXcuc3dpZnQgICAgICMgUmVhbC10aW1lIGZyZXF1ZW5jeSBzcGVjdHJ1bSBkaXNwbGF5CiAgICDilIIgICDilJzilIDilIAgUXVldWVWaWV3LnN3aWZ0ICAgICAgICAgICAgIyBQbGF5YmFjayBxdWV1ZSBkaXNwbGF5CiAgICDilIIgICDilJzilIDilIAgQ2hhdFZpZXcuc3dpZnQgICAgICAgICAgICAgIyBQZXItYWxidW0gZ3JvdXAgY2hhdCAoRHJpdmUgY29tbWVudHMpCiAgICDilIIgICDilJzilIDilIAgU2V0dGluZ3NWaWV3LnN3aWZ0ICAgICAgICAgIyBTZXR0aW5ncyArIHRoZW1lIHBpY2tlcgogICAg4pSCICAg4pSc4pSA4pSAIEltYWdlQ3JvcHBlclZpZXcuc3dpZnQgICAgICMgQ292ZXIgYXJ0IGNyb3AgdG9vbAogICAg4pSCICAg4pSc4pSA4pSAIFNoYXJpbmdTaGVldC5zd2lmdCAgICAgICAgICMgRHJpdmUgcGVybWlzc2lvbnMgbWFuYWdlbWVudAogICAg4pSCICAg4pSc4pSA4pSAIFBpeGVsU29ydENvdmVyVmlldy5zd2lmdCAgICMgVGFwLXRvLXNvcnQgbHVtaW5hbmNlIHZpc3VhbGl6ZXIgZm9yIGFsYnVtIGNvdmVycwogICAg4pSCICAg4pSU4pSA4pSAIEZhZGluZ1RydW5jYXRpb24uc3dpZnQgICAgICMgUmV1c2FibGUgdGV4dC1mYWRlLW91dCBtb2RpZmllciBmb3IgY2xpcHBlZCBsYWJlbHMKICAgIOKUggogICAg4pSU4pSA4pSAIFV0aWxpdGllcy8KICAgICAgICDilJTilIDilIAgQ29uc3RhbnRzLnN3aWZ0ICAgICAgICAgICAgIyBDbGllbnQgSUQsIEFQSSBiYXNlIFVSTCwgTUlNRSB0eXBlcwpgYGAKCiMjIyBTZXJ2aWNlcwoKQWxsIHNlcnZpY2VzIHVzZSBgQE9ic2VydmFibGVgIGFuZCBhcmUgaW5qZWN0ZWQgdmlhIFN3aWZ0VUkncyBgQEVudmlyb25tZW50YC4KCnwgU2VydmljZSB8IFJvbGUgfAp8LS0tfC0tLXwKfCAqKkdvb2dsZUF1dGhTZXJ2aWNlKiogfCBHb29nbGUgT0F1dGggMi4wIHNpZ24taW4sIHRva2VuIHJlZnJlc2ggKEdvb2dsZVNpZ25JbiBTREspIHwKfCAqKk1pY3Jvc29mdEF1dGhTZXJ2aWNlKiogfCBNaWNyb3NvZnQgT0F1dGggMi4wICsgUEtDRSB2aWEgQVNXZWJBdXRoZW50aWNhdGlvblNlc3Npb247IHJlZnJlc2ggdG9rZW5zIGluIEtleWNoYWluIHwKfCAqKkNsb3VkQXV0aENvb3JkaW5hdG9yKiogfCBVbmlmaWVkIHNlc3Npb24gZmFjYWRlIOKAlCBvbmUgYWNjb3VudCBzd2l0Y2hlciwgZGlzcGF0Y2hlcyB0byB0aGUgcmlnaHQgcHJvdmlkZXIgfAp8ICoqR29vZ2xlRHJpdmVTZXJ2aWNlKiogfCBBbGwgRHJpdmUgQVBJIGNhbGxzIOKAlCBmaWxlcywgZm9sZGVycywgcGVybWlzc2lvbnMsIGNvbW1lbnRzLCB1cGxvYWRzIHwKfCAqKk9uZURyaXZlU2VydmljZSoqIHwgTWljcm9zb2Z0IEdyYXBoIGNhbGxzIG1hcHBlZCBpbnRvIHRoZSBzYW1lIERUT3M7IGNvbXBvc2l0ZSBgZHJpdmVJZFx8aXRlbUlkYCBmaWxlIElEcyB8CnwgKipDbG91ZFNlcnZpY2VSb3V0ZXIqKiB8IFBpY2tzIEdvb2dsZS9PbmVEcml2ZSBjbGllbnQgcGVyIGFsYnVtIChgc3RvcmFnZVNvdXJjZWApLCBwZXIgZmlsZSBJRCwgb3IgcGVyIGFjdGl2ZSBhY2NvdW50IHwKfCAqKkF1ZGlvUGxheWVyU2VydmljZSoqIHwgQVZBdWRpb0VuZ2luZSBxdWV1ZSwgZ2FwbGVzcyBwbGF5YmFjaywgc2h1ZmZsZS9yZXBlYXQsIE5vdyBQbGF5aW5nIGluZm8gY2VudGVyIHwKfCAqKkF1ZGlvQ2FjaGVTZXJ2aWNlKiogfCBEb3dubG9hZHMgYW5kIGNhY2hlcyBhdWRpbyB0byBkaXNrLCBwcmVmZXRjaGVzIG5leHQgdHJhY2tzLCBmb3JtYXQgY29udmVyc2lvbiB8CnwgKipBdWRpb0FuYWx5emVyU2VydmljZSoqIHwgUmVhbC10aW1lIEZGVCBzcGVjdHJ1bSBhbmFseXNpcyB2aWEgQWNjZWxlcmF0ZSBmcmFtZXdvcmsgfAp8ICoqQWxidW1BcnRTZXJ2aWNlKiogfCBUd28tdGllciBjb3ZlciBhcnQgY2FjaGUgKE5TQ2FjaGUgKyBkaXNrKSwgY2xvdWQgZG93bmxvYWQgZmFsbGJhY2sgfAp8ICoqQWNjb3VudE1hbmFnZXIqKiB8IFBlcnNpc3RzIGtub3duIGFjY291bnRzIChib3RoIHByb3ZpZGVycyksIGhhbmRsZXMgcGVyLWFjY291bnQgZGF0YSBpc29sYXRpb24gfAp8ICoqVGhlbWVTZXJ2aWNlKiogfCBQZXJzaXN0cyBzZWxlY3RlZCBhY2NlbnQgY29sb3IgdG8gVXNlckRlZmF1bHRzIHwKCioqUHJvdmlkZXIgcGFyaXR5Kio6IGJvdGggYmFja2VuZHMgaW1wbGVtZW50IHRoZSBgQ2xvdWREcml2ZVNlcnZpY2VgIHByb3RvY29sLCBzbyBhbGJ1bXMgZnJvbSBlaXRoZXIgcHJvdmlkZXIgZ2V0IHRoZSBzYW1lIGZlYXR1cmUgc2V0LiBPbmVEcml2ZSBkaWZmZXJlbmNlczogbm8gcGVyLWFsYnVtIGNoYXQgKEdyYXBoIGhhcyBubyBjb21tZW50cyBBUEkpLCBubyBTdGFycmVkIGJyb3dzZSB0YWIsIGFuZCBzaGFyaW5nIHJvbGVzIGFyZSBWaWV3ZXIvRWRpdG9yIG9ubHkgKG5vIENvbW1lbnRlcikuIFRoZXNlIGFyZSBnYXRlZCBieSBjYXBhYmlsaXR5IGZsYWdzIG9uIHRoZSBwcm90b2NvbCAoYHN1cHBvcnRzQ29tbWVudHNgLCBgc3VwcG9ydHNTdGFycmVkYCwgYHN1cHBvcnRzQ29tbWVudGVyUm9sZWApIHJhdGhlciB0aGFuIGhhcmRjb2RlZCBwcm92aWRlciBjaGVja3MuCgojIyMgRGF0YQoKTG9jYWwgcGVyc2lzdGVuY2UgdXNlcyAqKlN3aWZ0RGF0YSoqIHdpdGggdHdvIG1vZGVsczoKCi0gKipBbGJ1bSoqIOKAlCBNYXBzIHRvIGEgY2xvdWQgZm9sZGVyIChHb29nbGUgRHJpdmUgb3IgT25lRHJpdmUpIG9yIGEgbG9jYWxseSBpbXBvcnRlZCBhbGJ1bS4gU3RvcmVzIGZvbGRlciBJRCwgZGlzcGxheSBuYW1lLCBhcnRpc3QsIGNvdmVyIGFydCByZWZlcmVuY2VzLCB0cmFjayBjb3VudCwgb3JkZXJpbmcsIGVkaXQgcGVybWlzc2lvbnMsIGFuZCBzdG9yYWdlIHNvdXJjZSAoYGdvb2dsZURyaXZlYCAvIGBvbmVEcml2ZWAgLyBgbG9jYWxTdG9yYWdlYCkuCi0gKipUcmFjayoqIOKAlCBNYXBzIHRvIGFuIGF1ZGlvIGZpbGUgaW4gdGhlIGNsb3VkIG9yIGEgbG9jYWwgZmlsZSBvbiBkZXZpY2UuIFN0b3JlcyBmaWxlIElELCBuYW1lLCBNSU1FIHR5cGUsIGR1cmF0aW9uLCB0cmFjayBudW1iZXIsIGFuZCBvcHRpb25hbCBsb2NhbCBmaWxlIHBhdGguIE9uZURyaXZlIGZpbGUgSURzIGFyZSBjb21wb3NpdGUgYGRyaXZlSWR8aXRlbUlkYCBzdHJpbmdzIChHcmFwaCBpdGVtIElEcyBhcmUgb25seSB1bmlxdWUgd2l0aGluIG9uZSBkcml2ZSkuCgpUcmFjayBvcmRlcmluZyBhbmQgZGlzYyBtYXJrZXJzIGFyZSBzdG9yZWQgaW4gYSBgLmFkZGl0LWRhdGFgIEpTT04gZmlsZSB3aXRoaW4gZWFjaCBjbG91ZCBmb2xkZXIgKGZvciBjbG91ZCBhbGJ1bXMpIG9yIGluIHRoZSBTd2lmdERhdGEgYGNhY2hlZFRyYWNrbGlzdGAgZmllbGQgKGZvciBsb2NhbCBhbGJ1bXMpLCBrZWVwaW5nIHRoZSBsYXlvdXQgY29sbGFib3JhdGl2ZSBhY3Jvc3MgZGV2aWNlcyBhbmQgdXNlcnMuCgpBbGwgYWNjb3VudHMgc2hhcmUgYSBzaW5nbGUgU3dpZnREYXRhIHN0b3JlOyBkYXRhIGlzIGlzb2xhdGVkIHBlciBhY2NvdW50IHZpYSBhbiBgYWNjb3VudElkYCBvbiBlYWNoIGBBbGJ1bWAgKGxlZ2FjeSBwZXItYWNjb3VudCBzdG9yZXMgYXJlIG1pZ3JhdGVkIGluIG9uIGZpcnN0IGxhdW5jaCkuIEVhY2ggYWNjb3VudCBzdGlsbCBnZXRzIGl0cyBvd24gb24tZGlzayBhdWRpbyBjYWNoZSBkaXJlY3RvcnkuCgojIyBEb2MgZW5jb2RpbmcKCmBSRUFETUUubWRgIGNhbiBiZSB0b2dnbGVkIGJldHdlZW4gaXRzIHBsYWludGV4dCBmb3JtIGFuZCBhIGJhc2U2NC1lbmNvZGVkIGZvcm0gd2l0aCB0d28gaGVscGVyIHNjcmlwdHMgYXQgdGhlIHJlcG8gcm9vdDoKCmBgYGJhc2gKLi9lbmNvZGUgICAgIyBwbGFpbnRleHQg4oaSIGVuY29kZWQKLi9kZWNvZGUgICAgIyBlbmNvZGVkIOKGkiBwbGFpbnRleHQKYGBgCgpXaGVuIGVuY29kZWQsIGBSRUFETUUubWRgIGlzIHJlcGxhY2VkIHdpdGggYSBzaG9ydCBkZWNvZGUtaW5zdHJ1Y3Rpb24gc3R1YiBwbHVzIGEgYmFzZTY0IGJsb2IuIFJ1biBgLi9kZWNvZGVgIHRvIHJlc3RvcmUgaXQgYnl0ZS1mb3ItYnl0ZS4gQm90aCBzY3JpcHRzIGFyZSAqKmlkZW1wb3RlbnQqKiDigJQgdGhlcmUgYXJlIG9ubHkgdHdvIHBvc3NpYmxlIHN0YXRlcyAoZW5jb2RlZCBhbmQgZGVjb2RlZCksIGFuZCBydW5uaW5nIGVpdGhlciBzY3JpcHQgd2hlbiB0aGUgZmlsZSBpcyBhbHJlYWR5IGluIHRoYXQgc3RhdGUgaXMgYSBuby1vcC4KCk9ubHkgYFJFQURNRS5tZGAgaXMgZW5jb2RhYmxlLiBgQUdFTlRTLm1kYCAoYW5kIGl0cyBgQ0xBVURFLm1kYCBzeW1saW5rKSBpcyBkZWxpYmVyYXRlbHkgZXhjbHVkZWQ6IGl0J3MgYXV0by1sb2FkZWQgaW50byB0aGUgY29kaW5nIGFnZW50J3MgY29udGV4dCBldmVyeSBzZXNzaW9uLCBzbyBhIGJhc2U2NCBibG9iIHRoZXJlIHdvdWxkIHBvaXNvbiB0aGF0IGNvbnRleHQuCgpUaGUgc2NyaXB0cyBhcmUgcHVyZSBiYXNoIHdpdGggbm8gZGVwZW5kZW5jaWVzIGJleW9uZCBgYmFzZTY0YCBhbmQgYGF3a2AsIGJvdGggcHJlLWluc3RhbGxlZCBvbiBtYWNPUyBhbmQgYW55IHN0YW5kYXJkIExpbnV4IGVudmlyb25tZW50LgoKIyMgTGljZW5zZQoKVGhpcyBwcm9qZWN0IGlzIHByb3ZpZGVkIGFzLWlzIGZvciBwZXJzb25hbCB1c2UuCg==
-<!-- ----- END ----- -->
+### 3. Trigger signing in Xcode
+
+1. In the project navigator, select the project, then the `Addit` target.
+2. Go to the **Signing & Capabilities** tab.
+3. Confirm **Automatically manage signing** is checked.
+4. Bundle Identifier should already read whatever you put in `Local.xcconfig`.
+5. If **Team** shows "None", pick your Personal Team from the dropdown.
+
+Picking a team in the UI may cause Xcode to re-stamp `DEVELOPMENT_TEAM` directly into `project.pbxproj`. If you plan to commit and push back, run this cleanup first so your team ID doesn't end up in the shared file:
+
+```bash
+sed -i '' '/DEVELOPMENT_TEAM = /d' Addit.xcodeproj/project.pbxproj
+```
+
+Then verify everything still resolves correctly from the xcconfig:
+
+```bash
+xcodebuild -project Addit.xcodeproj -scheme Addit -destination 'generic/platform=iOS' \
+  -showBuildSettings 2>/dev/null | grep -E "PRODUCT_BUNDLE_IDENTIFIER|DEVELOPMENT_TEAM"
+```
+
+You should see your bundle ID and team ID, both sourced from `Local.xcconfig`.
+
+### 4. Build and run
+
+Plug in your iPhone (or pick a simulator), select it as the run destination, and hit ⌘R.
+
+> **Free signing caveat**: provisioning profiles for free Apple accounts expire every **7 days**. You'll need to redeploy from Xcode roughly weekly. The paid Apple Developer Program ($99/year) extends this to a year, but isn't required to develop or test.
+
+### OAuth clients (Google + Microsoft)
+
+Both OAuth clients are provided by the project owner — no setup is needed on your end; sign-in works out of the box once the app is running.
+
+- **Google**: client ID lives in `Constants.googleClientID`, duplicated in `Info.plist` (`GIDClientID` + the `com.googleusercontent.apps.*` URL scheme).
+- **Microsoft**: client ID lives in `Constants.microsoftClientID` (an Azure "App registration" Application ID). The redirect URI is a fixed custom scheme (`addit-msauth://callback`) handled by `ASWebAuthenticationSession` — deliberately not MSAL's `msauth.<bundleId>` pattern, so per-developer bundle IDs need no Azure changes and no Info.plist URL scheme entry.
+
+### Working with collaborators
+
+The xcconfig setup is what allows multiple developers on free Apple accounts to share this codebase without stepping on each other's signing settings. A few things to know:
+
+- **Your `Local.xcconfig` never goes through git.** It's covered by the `*.xcconfig` rule in `.gitignore`. Pulls and pushes leave it untouched.
+- **Don't edit signing settings in Xcode unless you have to.** Toggling auto-signing or changing team picks tends to make Xcode re-stamp `DEVELOPMENT_TEAM` into `project.pbxproj`. If that happens, run the `sed` line from step 3 above before committing.
+- **Bundle IDs are claimed per Apple ID.** Whoever signs first with a given bundle ID locks it to their team. If you see "Failed Registering Bundle Identifier: cannot be registered to your development team," another collaborator (or someone else entirely) has already claimed that string. Just pick a more unique one in your `Local.xcconfig`.
+- **First run on a device gives you an empty library.** Different bundle IDs are different apps to iOS — your old install lives in its own sandbox container with its own data. Either delete the old install via **Settings → General → iPhone Storage** or accept that you'll re-sign in to Drive on the new build.
+
+## Architecture
+
+```
+.
+├── Addit.xcodeproj
+├── Info.plist
+├── README.md                          # Human-facing setup/feature docs (this file)
+├── AGENTS.md                          # Slim always-on agent context (auto-loaded)
+├── CLAUDE.md                          # Symlink → AGENTS.md (Claude Code compatibility)
+├── .omp/
+│   └── skills/
+│       └── audio-playback/SKILL.md    # Deep playback internals, loaded on demand
+└── Addit/
+    ├── Local.xcconfig.example         # Template — copy to Local.xcconfig (gitignored)
+    │
+    ├── AdditApp.swift                 # Entry point, service wiring, shared SwiftData container, AccountContainerView
+    ├── ContentView.swift              # Auth gate + root navigation
+    ├── LaunchScreen.storyboard
+    │
+    ├── Models/
+    │   ├── Album.swift                # SwiftData model — Drive folder or local album
+    │   ├── Track.swift                # SwiftData model — audio file (Drive or local)
+    │   ├── AdditMetadata.swift        # .addit-data JSON schema, disc markers
+    │   └── DriveModels.swift          # Drive API response types, permissions
+    │
+    ├── Services/
+    │   ├── GoogleAuthService.swift       # Google Sign-In, multi-account, token management
+    │   ├── MicrosoftAuthService.swift    # Microsoft OAuth (PKCE + ASWebAuthenticationSession), Keychain tokens
+    │   ├── CloudAuthCoordinator.swift    # Unified session facade over both auth providers
+    │   ├── GoogleDriveService.swift      # Drive API v3 REST client
+    │   ├── OneDriveService.swift         # Microsoft Graph client mapped into the shared Drive DTOs
+    │   ├── CloudDriveService.swift       # Provider-neutral protocol + per-album routing (CloudServiceRouter)
+    │   ├── AudioPlayerService.swift      # AVAudioEngine playback, gapless, queue, remote commands
+    │   ├── AudioCacheService.swift       # On-device audio file cache with format conversion
+    │   ├── AudioAnalyzerService.swift    # Real-time FFT spectrum analysis for EQ visualizer
+    │   ├── AlbumArtService.swift         # Cover art memory + disk cache
+    │   ├── AccountManager.swift          # Multi-account storage, per-account isolation
+    │   └── ThemeService.swift            # Accent color persistence
+    │
+    ├── Views/
+    │   ├── SignInView.swift           # Sign-in screen
+    │   ├── LibraryView.swift          # Album grid/list, search, arrange mode, metadata editor, local import
+    │   ├── AlbumDetailView.swift      # Track list, disc markers, sync, playback, track menus
+    │   ├── AddAlbumView.swift         # Browse Drive folders to add existing albums
+    │   ├── CreateAlbumView.swift      # Pick location + create new album folder
+    │   ├── DriveAudioPickerView.swift # Browse Drive to add tracks to an album
+    │   ├── NowPlayingView.swift       # Full-screen player with album-to-halo morph and EQ swipe
+    │   ├── NowPlayingBar.swift        # Mini player overlay with waveform scrubber
+    │   ├── EQVisualizerView.swift     # Real-time frequency spectrum display
+    │   ├── QueueView.swift            # Playback queue display
+    │   ├── ChatView.swift             # Per-album group chat (Drive comments)
+    │   ├── SettingsView.swift         # Settings + theme picker
+    │   ├── ImageCropperView.swift     # Cover art crop tool
+    │   ├── SharingSheet.swift         # Drive permissions management
+    │   ├── PixelSortCoverView.swift   # Tap-to-sort luminance visualizer for album covers
+    │   └── FadingTruncation.swift     # Reusable text-fade-out modifier for clipped labels
+    │
+    └── Utilities/
+        └── Constants.swift            # Client ID, API base URL, MIME types
+```
+
+### Services
+
+All services use `@Observable` and are injected via SwiftUI's `@Environment`.
+
+| Service | Role |
+|---|---|
+| **GoogleAuthService** | Google OAuth 2.0 sign-in, token refresh (GoogleSignIn SDK) |
+| **MicrosoftAuthService** | Microsoft OAuth 2.0 + PKCE via ASWebAuthenticationSession; refresh tokens in Keychain |
+| **CloudAuthCoordinator** | Unified session facade — one account switcher, dispatches to the right provider |
+| **GoogleDriveService** | All Drive API calls — files, folders, permissions, comments, uploads |
+| **OneDriveService** | Microsoft Graph calls mapped into the same DTOs; composite `driveId\|itemId` file IDs |
+| **CloudServiceRouter** | Picks Google/OneDrive client per album (`storageSource`), per file ID, or per active account |
+| **AudioPlayerService** | AVAudioEngine queue, gapless playback, shuffle/repeat, Now Playing info center |
+| **AudioCacheService** | Downloads and caches audio to disk, prefetches next tracks, format conversion |
+| **AudioAnalyzerService** | Real-time FFT spectrum analysis via Accelerate framework |
+| **AlbumArtService** | Two-tier cover art cache (NSCache + disk), cloud download fallback |
+| **AccountManager** | Persists known accounts (both providers), handles per-account data isolation |
+| **ThemeService** | Persists selected accent color to UserDefaults |
+
+**Provider parity**: both backends implement the `CloudDriveService` protocol, so albums from either provider get the same feature set. OneDrive differences: no per-album chat (Graph has no comments API), no Starred browse tab, and sharing roles are Viewer/Editor only (no Commenter). These are gated by capability flags on the protocol (`supportsComments`, `supportsStarred`, `supportsCommenterRole`) rather than hardcoded provider checks.
+
+### Data
+
+Local persistence uses **SwiftData** with two models:
+
+- **Album** — Maps to a cloud folder (Google Drive or OneDrive) or a locally imported album. Stores folder ID, display name, artist, cover art references, track count, ordering, edit permissions, and storage source (`googleDrive` / `oneDrive` / `localStorage`).
+- **Track** — Maps to an audio file in the cloud or a local file on device. Stores file ID, name, MIME type, duration, track number, and optional local file path. OneDrive file IDs are composite `driveId|itemId` strings (Graph item IDs are only unique within one drive).
+
+Track ordering and disc markers are stored in a `.addit-data` JSON file within each cloud folder (for cloud albums) or in the SwiftData `cachedTracklist` field (for local albums), keeping the layout collaborative across devices and users.
+
+All accounts share a single SwiftData store; data is isolated per account via an `accountId` on each `Album` (legacy per-account stores are migrated in on first launch). Each account still gets its own on-disk audio cache directory.
+
+## Doc encoding
+
+`README.md` can be toggled between its plaintext form and a base64-encoded form with two helper scripts at the repo root:
+
+```bash
+./encode    # plaintext → encoded
+./decode    # encoded → plaintext
+```
+
+When encoded, `README.md` is replaced with a short decode-instruction stub plus a base64 blob. Run `./decode` to restore it byte-for-byte. Both scripts are **idempotent** — there are only two possible states (encoded and decoded), and running either script when the file is already in that state is a no-op.
+
+Only `README.md` is encodable. `AGENTS.md` (and its `CLAUDE.md` symlink) is deliberately excluded: it's auto-loaded into the coding agent's context every session, so a base64 blob there would poison that context.
+
+The scripts are pure bash with no dependencies beyond `base64` and `awk`, both pre-installed on macOS and any standard Linux environment.
+
+## License
+
+This project is provided as-is for personal use.
