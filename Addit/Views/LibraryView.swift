@@ -1113,10 +1113,20 @@ struct AlbumMetadataEditorSheet: View {
     @State private var showAddTrackSheet = false
     @State private var showDocumentPicker = false
     @State private var isUploadingTracks = false
-    @FocusState private var focusedField: EditField?
+    @State private var renameTarget: RenameTarget?
+    @State private var renameText = ""
 
-    private enum EditField: Hashable {
-        case title, artist, track(String)
+    /// What the rename popup is editing — album title, artist, or one track.
+    private enum RenameTarget: Identifiable {
+        case title, artist, track(Track)
+
+        var id: String {
+            switch self {
+            case .title: return "title"
+            case .artist: return "artist"
+            case .track(let track): return "track-\(track.googleFileId)"
+            }
+        }
     }
 
     private let coverSize: CGFloat = 180
@@ -1189,28 +1199,37 @@ struct AlbumMetadataEditorSheet: View {
 
                     // Title and artist
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            TextField("Album title", text: $editedTitle)
-                                .font(.uiTitle2.bold())
-                                .multilineTextAlignment(.leading)
-                                .focused($focusedField, equals: .title)
+                        Button {
+                            beginRename(.title)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(editedTitle)
+                                    .font(.uiTitle2.bold())
+                                    .foregroundStyle(.primary)
+                                    .multilineTextAlignment(.leading)
 
-                            Image(systemName: "pencil")
-                                .font(.uiCaption)
-                                .foregroundStyle(.secondary)
+                                Image(systemName: "pencil")
+                                    .font(.uiCaption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
 
-                        HStack(spacing: 6) {
-                            TextField("Artist", text: $editedArtist)
-                                .font(.uiSubheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.leading)
-                                .focused($focusedField, equals: .artist)
+                        Button {
+                            beginRename(.artist)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(editedArtist.isEmpty ? "Artist" : editedArtist)
+                                    .font(.uiSubheadline)
+                                    .foregroundStyle(editedArtist.isEmpty ? .tertiary : .secondary)
+                                    .multilineTextAlignment(.leading)
 
-                            Image(systemName: "pencil")
-                                .font(.uiCaption2)
-                                .foregroundStyle(.tertiary)
+                                Image(systemName: "pencil")
+                                    .font(.uiCaption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -1241,20 +1260,23 @@ struct AlbumMetadataEditorSheet: View {
                                         .buttonStyle(.plain)
                                     }
 
-                                    TextField(
-                                        track.displayName,
-                                        text: Binding(
-                                            get: { editedTrackNames[track.googleFileId] ?? track.displayName },
-                                            set: { editedTrackNames[track.googleFileId] = $0 }
-                                        )
-                                    )
-                                    .font(.uiBody.weight(.medium))
-                                    .lineLimit(1)
-                                    .focused($focusedField, equals: .track(track.googleFileId))
+                                    Button {
+                                        beginRename(.track(track))
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text(editedTrackNames[track.googleFileId] ?? track.displayName)
+                                                .font(.uiBody.weight(.medium))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
 
-                                    Image(systemName: "pencil")
-                                        .font(.uiCaption2)
-                                        .foregroundStyle(.tertiary)
+                                            Image(systemName: "pencil")
+                                                .font(.uiCaption2)
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Spacer(minLength: 0)
                                 }
                             case .discMarker:
                                 let discNumber = discNumbersByItemId[item.id] ?? 1
@@ -1320,7 +1342,6 @@ struct AlbumMetadataEditorSheet: View {
             }
             .listStyle(.plain)
             .environment(\.editMode, .constant(.active))
-            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Edit Album")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1332,12 +1353,17 @@ struct AlbumMetadataEditorSheet: View {
                         ProgressView()
                     } else {
                         Button("Save") {
-                            focusedField = nil
                             Task { await saveMetadata() }
                         }
                         .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+            }
+            .selectAllInTextFields(while: renameTarget != nil)
+            .alert(renameAlertTitle, isPresented: renameAlertBinding) {
+                TextField(renamePlaceholder, text: $renameText)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") { applyRename() }
             }
             .task {
                 editedTitle = album.name
@@ -1426,6 +1452,55 @@ struct AlbumMetadataEditorSheet: View {
                     .ignoresSafeArea()
                 }
             }
+        }
+    }
+
+    // MARK: Rename popup
+
+    private var renameAlertBinding: Binding<Bool> {
+        Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )
+    }
+
+    private var renameAlertTitle: String {
+        switch renameTarget {
+        case .artist: return "Edit Artist"
+        case .track: return "Rename Track"
+        default: return "Rename Album"
+        }
+    }
+
+    private var renamePlaceholder: String {
+        switch renameTarget {
+        case .artist: return "Artist"
+        case .track: return "Track name"
+        default: return "Album title"
+        }
+    }
+
+    private func beginRename(_ target: RenameTarget) {
+        switch target {
+        case .title: renameText = editedTitle
+        case .artist: renameText = editedArtist
+        case .track(let track): renameText = editedTrackNames[track.googleFileId] ?? track.displayName
+        }
+        renameTarget = target
+    }
+
+    /// Applies the popup's text. Empty input keeps the old title/track name
+    /// (both are required); an empty artist clears the field.
+    private func applyRename() {
+        guard let target = renameTarget else { return }
+        let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch target {
+        case .title:
+            if !trimmed.isEmpty { editedTitle = trimmed }
+        case .artist:
+            editedArtist = trimmed
+        case .track(let track):
+            if !trimmed.isEmpty { editedTrackNames[track.googleFileId] = trimmed }
         }
     }
 

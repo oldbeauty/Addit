@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import MediaPlayer
 import SwiftUI
+import SwiftData
 import Accelerate
 
 enum RepeatMode {
@@ -615,6 +616,9 @@ final class AudioPlayerService {
             }
 
             var audioFile: AVAudioFile
+            // Waveform extraction must read whatever AVAudioFile can — the
+            // converted copy when the original format needed converting.
+            var waveformSourceURL = fileURL
             do {
                 audioFile = try AVAudioFile(forReading: fileURL)
             } catch {
@@ -624,6 +628,7 @@ final class AudioPlayerService {
                 #endif
                 let convertedURL = try await convertToCompatibleFormat(fileURL)
                 audioFile = try AVAudioFile(forReading: convertedURL)
+                waveformSourceURL = convertedURL
             }
 
             anchor = PlaybackAnchor(audioFile: audioFile, seekFrame: 0, playerTimeOffset: 0)
@@ -636,7 +641,7 @@ final class AudioPlayerService {
             currentTime = 0
 
             // Generate waveform asynchronously from the file URL
-            generateWaveform(from: fileURL)
+            generateWaveform(from: waveformSourceURL, for: track)
 
             playerNode.scheduleSegment(audioFile, startingFrame: 0, frameCount: AVAudioFrameCount(audioFile.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.completionFired(generation: gen)
@@ -960,11 +965,15 @@ final class AudioPlayerService {
                 guard gen == scheduleGeneration else { return }
 
                 var audioFile: AVAudioFile
+                // As in loadAndPlay: extract the waveform from the converted
+                // copy when the original format needed converting.
+                var waveformSourceURL = fileURL
                 do {
                     audioFile = try AVAudioFile(forReading: fileURL)
                 } catch {
                     let convertedURL = try await convertToCompatibleFormat(fileURL)
                     audioFile = try AVAudioFile(forReading: convertedURL)
+                    waveformSourceURL = convertedURL
                 }
 
                 try Task.checkCancellation()
@@ -981,10 +990,22 @@ final class AudioPlayerService {
                     return
                 }
 
-                // Pre-generate waveform for seamless visual transition
+                // Pre-generate waveform for seamless visual transition,
+                // reusing the track's cached copy when one exists.
                 let nextDuration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
                 let nextBarCount = Self.waveformSampleCount(for: nextDuration)
-                let precomputedWaveform = Self.extractWaveform(from: fileURL, barCount: nextBarCount)
+                let precomputedWaveform: [Float]?
+                if let cached = nextTrack.cachedWaveform(expectedCount: nextBarCount) {
+                    precomputedWaveform = cached
+                } else {
+                    precomputedWaveform = Self.extractWaveform(from: waveformSourceURL, barCount: nextBarCount)
+                    if let extracted = precomputedWaveform {
+                        await MainActor.run {
+                            nextTrack.storeWaveform(extracted)
+                            try? nextTrack.modelContext?.save()
+                        }
+                    }
+                }
                 let nextSps: Double = {
                     guard let w = precomputedWaveform, nextDuration > 0 else { return 0 }
                     return Double(w.count) / nextDuration
@@ -1500,16 +1521,27 @@ final class AudioPlayerService {
         max(waveformMinSamples, Int(duration * waveformSamplesPerSecond))
     }
 
-    /// Reads the audio file at `url` on a background thread, downsamples
-    /// into peak-amplitude buckets (0…1), and publishes the result on the
-    /// main thread.
-    private func generateWaveform(from url: URL) {
+    /// Publishes `track`'s cached waveform instantly when one exists;
+    /// otherwise reads the audio file at `url` on a background thread,
+    /// downsamples into peak-amplitude buckets (0…1), publishes the result
+    /// on the main thread, and stores it on the track for next time.
+    private func generateWaveform(from url: URL, for track: Track?) {
         waveformTask?.cancel()
         waveformSamples = []
         waveformSamplesPerSecond = 0
 
         let trackDuration = duration
         let barCount = Self.waveformSampleCount(for: trackDuration)
+
+        if let cached = track?.cachedWaveform(expectedCount: barCount) {
+            #if DEBUG
+            print("[Player] waveform cache hit bars=\(cached.count)")
+            #endif
+            waveformSamples = cached
+            waveformSamplesPerSecond = trackDuration > 0 ? Double(cached.count) / trackDuration : 0
+            return
+        }
+
         waveformTask = Task.detached(priority: .utility) { [weak self] in
             guard let samples = Self.extractWaveform(from: url, barCount: barCount) else { return }
             guard !Task.isCancelled else { return }
@@ -1517,6 +1549,8 @@ final class AudioPlayerService {
             await MainActor.run { [weak self] in
                 self?.waveformSamples = samples
                 self?.waveformSamplesPerSecond = sps
+                track?.storeWaveform(samples)
+                try? track?.modelContext?.save()
             }
         }
     }

@@ -35,7 +35,7 @@ struct TrackSplitView: View {
     @State private var sourceURL: URL?
     @State private var convertedTempURL: URL?
     @State private var waveform: TrackSplitEngine.Waveform?
-    @State private var plan = SplitPlan(duration: 0, masterDisplayName: "")
+    @State private var plan = SplitPlan(duration: 0)
 
     /// Time under the fixed center playhead. The single scrub state — the
     /// window, minimap, readouts, and Add Split all key off it.
@@ -121,6 +121,7 @@ struct TrackSplitView: View {
         } message: {
             Text("The original track is never changed — but your unsaved split points will be lost.")
         }
+        .selectAllInTextFields(while: renamingSegmentID != nil)
         .alert("Rename Track", isPresented: renameAlertBinding) {
             TextField("Track name", text: $renameText)
             Button("Cancel", role: .cancel) {}
@@ -633,7 +634,7 @@ struct TrackSplitView: View {
             }
 
             waveform = loaded
-            plan = SplitPlan(duration: loaded.duration, masterDisplayName: track.displayName)
+            plan = SplitPlan(duration: loaded.duration)
             centerTime = 0
             phase = .ready
         } catch is CancellationError {

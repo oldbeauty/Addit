@@ -10,8 +10,9 @@ struct SplitSegment: Identifiable, Equatable {
     let id: UUID
     var start: TimeInterval
     var end: TimeInterval
-    /// User-assigned name. `nil` = derive the timestamped default from the
-    /// current bounds (so defaults recompute when neighboring splits move).
+    /// User-assigned name. `nil` = derive the numbered default from the
+    /// segment's current position (so defaults recompute as splits are
+    /// added and removed).
     var customName: String?
 
     var length: TimeInterval { end - start }
@@ -23,21 +24,12 @@ struct SplitSegment: Identifiable, Equatable {
 struct SplitPlan {
     private(set) var segments: [SplitSegment]
     let duration: TimeInterval
-    /// Name embedded in default segment names. If the master is itself a
-    /// previously saved split ("03:45 - 07:12 Foo"), the timestamp prefix is
-    /// stripped so re-splitting a split doesn't nest prefixes unboundedly.
-    let baseName: String
-    /// Uniform timestamp width for every name of this master (hours iff the
-    /// master runs ≥ 1 h) — keeps lexicographic order == chronological order.
-    let showsHours: Bool
 
     /// Refuse splits that would create a segment shorter than this.
     static let minimumSegmentLength: TimeInterval = 1.0
 
-    init(duration: TimeInterval, masterDisplayName: String) {
+    init(duration: TimeInterval) {
         self.duration = duration
-        self.showsHours = duration >= 3600
-        self.baseName = Self.strippingTimestampPrefix(from: masterDisplayName)
         self.segments = [SplitSegment(id: UUID(), start: 0, end: duration, customName: nil)]
     }
 
@@ -98,17 +90,8 @@ struct SplitPlan {
     }
 
     func defaultName(for segment: SplitSegment) -> String {
-        let start = TrackSplitEngine.timestamp(segment.start, includeHours: showsHours)
-        let end = TrackSplitEngine.timestamp(segment.end, includeHours: showsHours)
-        return "\(start) - \(end) \(baseName)"
-    }
-
-    /// "03:45 - 07:12 Foo" → "Foo"; anything else passes through unchanged.
-    private static func strippingTimestampPrefix(from name: String) -> String {
-        let pattern = #/^\d{1,2}(?::\d{2}){1,2}\ -\ \d{1,2}(?::\d{2}){1,2}\ /#
-        guard let match = name.prefixMatch(of: pattern) else { return name }
-        let remainder = String(name[match.range.upperBound...])
-        return remainder.isEmpty ? name : remainder
+        let index = segments.firstIndex(where: { $0.id == segment.id }) ?? 0
+        return "Untitled-\(index + 1)"
     }
 }
 
@@ -281,8 +264,7 @@ enum TrackSplitEngine {
     }
 
     /// Makes a segment name safe as a file name on-device and in Drive.
-    /// Colons are legal on both (default names contain them); slashes and
-    /// leading dots are not.
+    /// Colons are legal on both; slashes and leading dots are not.
     static func sanitizedFileName(_ name: String) -> String {
         var cleaned = name
             .replacingOccurrences(of: "/", with: "-")

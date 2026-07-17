@@ -13,6 +13,10 @@ final class Track {
     var modifiedTime: String?
     var localFilePath: String?
     var isHidden: Bool = false
+    /// Cached scrubber waveform: one byte per bar (0…255 peak amplitude),
+    /// written after the first full extraction so replays skip the file scan
+    /// (~30 B per second of audio).
+    @Attribute(.externalStorage) var waveformData: Data? = nil
 
     init(googleFileId: String, name: String, album: Album? = nil,
          durationSeconds: Double? = nil, mimeType: String,
@@ -78,5 +82,20 @@ final class Track {
     var displayName: String {
         let nameWithoutExt = (name as NSString).deletingPathExtension
         return nameWithoutExt
+    }
+
+    // MARK: Waveform cache
+
+    /// Decoded waveform samples (0…1), or nil when nothing is cached or the
+    /// cached bar count doesn't match `expectedCount` — a mismatch means the
+    /// file's audio changed or the extraction density did, and forces a
+    /// fresh extraction.
+    func cachedWaveform(expectedCount: Int) -> [Float]? {
+        guard let waveformData, waveformData.count == expectedCount else { return nil }
+        return waveformData.map { Float($0) / 255 }
+    }
+
+    func storeWaveform(_ samples: [Float]) {
+        waveformData = Data(samples.map { UInt8((min(max($0, 0), 1) * 255).rounded()) })
     }
 }

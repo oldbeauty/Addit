@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import UIKit
 import AVFoundation
+import PhotosUI
 
 struct AlbumDetailView: View {
     let album: Album
@@ -44,6 +45,43 @@ struct AlbumDetailView: View {
     @State private var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State private var saveToDriveError: String?
     @State private var trackToSplit: Track?
+
+    // MARK: Inline edit mode state (mirrors AlbumMetadataEditorSheet)
+
+    @State private var isEditing = false
+    /// Working copy of `displayItems` while editing — unfiltered, so hidden
+    /// tracks stay reorderable/deletable. Committed back on Save.
+    @State private var editItems: [TracklistItem] = []
+    @State private var editedTitle = ""
+    @State private var editedArtist = ""
+    @State private var editedTrackNames: [String: String] = [:]
+    @State private var editRenameTarget: EditRenameTarget?
+    @State private var editRenameText = ""
+    @State private var editTrackToDelete: Track?
+    @State private var isSavingEdits = false
+    @State private var editErrorMessage: String?
+    @State private var editAdditDataFileId: String?
+    @State private var editAdditDataOwnedByMe = true
+    @State private var selectedCoverPhoto: PhotosPickerItem?
+    @State private var isUploadingCover = false
+    @State private var coverUploadErrorMessage: String?
+    @State private var imageToCrop: CoverCropItem?
+    @State private var showEditDocumentPicker = false
+    @State private var showEditDriveAudioPicker = false
+    @State private var isUploadingTracks = false
+
+    /// What the rename popup is editing — album title, artist, or one track.
+    private enum EditRenameTarget: Identifiable {
+        case title, artist, track(Track)
+
+        var id: String {
+            switch self {
+            case .title: return "title"
+            case .artist: return "artist"
+            case .track(let track): return "track-\(track.googleFileId)"
+            }
+        }
+    }
 
     private let coverSize: CGFloat = 256
 
@@ -149,28 +187,34 @@ struct AlbumDetailView: View {
     /// shadow, a tight contact shadow, and a top rim highlight so its edge
     /// catches light like a raised physical part. Hard, precise, tactile —
     /// the OP-1 faceplate feel.
-    private var craterCover: some View {
+    /// The recessed plate alone — shared by the normal cover mount and the
+    /// edit-mode cover (which swaps the artwork for a PhotosPicker).
+    private var craterPlate: some View {
         let plateSize = coverSize + craterInset * 2
-        return ZStack {
-            RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
-                .fill(
-                    Color(uiColor: .secondarySystemBackground)
-                        .shadow(.inner(color: .black.opacity(0.6), radius: 7, x: 0, y: 4))
-                        .shadow(.inner(color: .white.opacity(0.05), radius: 2, x: 0, y: -2))
-                )
-                .frame(width: plateSize, height: plateSize)
-                .overlay {
-                    // Carved-lip edge: bright at the top, dark at the bottom.
-                    RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
-                }
+        return RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
+            .fill(
+                Color(uiColor: .secondarySystemBackground)
+                    .shadow(.inner(color: .black.opacity(0.6), radius: 7, x: 0, y: 4))
+                    .shadow(.inner(color: .white.opacity(0.05), radius: 2, x: 0, y: -2))
+            )
+            .frame(width: plateSize, height: plateSize)
+            .overlay {
+                // Carved-lip edge: bright at the top, dark at the bottom.
+                RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            }
+    }
+
+    private var craterCover: some View {
+        ZStack {
+            craterPlate
 
             coverArtwork
                 .shadow(color: .black.opacity(0.55), radius: 16, x: 0, y: 12)
@@ -193,51 +237,183 @@ struct AlbumDetailView: View {
     private var headerSection: some View {
         Section {
             VStack(spacing: 16) {
-                craterCover
-
-                VStack(spacing: 4) {
-                    Text(album.name)
-                        .font(.uiTitle2.bold())
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .engraved()
-
-                    Text(album.artistName ?? "Unknown Artist")
-                        .font(.uiSubheadline)
-                        .foregroundStyle(.secondary)
-                        .engraved()
+                if isEditing {
+                    editableCraterCover
+                    editTitleBlock
+                    editControlsRow
+                } else {
+                    craterCover
+                    titleBlock
+                    playButtons
                 }
-
-                HStack(spacing: 20) {
-                    Button {
-                        playerService.playAlbum(album)
-                    } label: {
-                        Image(systemName: "play.fill")
-                            .foregroundStyle(.primary)
-                    }
-                    .buttonStyle(TactileButtonStyle())
-
-                    Button {
-                        if isThisAlbumPlaying {
-                            playerService.toggleShuffle()
-                        } else {
-                            playerService.playAlbum(album, shuffled: true)
-                        }
-                    } label: {
-                        Image(systemName: "shuffle")
-                            .foregroundStyle(shuffleEngaged ? themeService.accentColor.legibleForeground : .primary)
-                    }
-                    .buttonStyle(TactileButtonStyle(engaged: shuffleEngaged ? themeService.accentColor : nil))
-                }
-                .padding(.top, 4)
-                // Room for the raised buttons' drop shadow so the List row
-                // doesn't clip it at the bottom edge.
-                .padding(.bottom, 20)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets())
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(spacing: 4) {
+            Text(album.name)
+                .font(.uiTitle2.bold())
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .engraved()
+
+            Text(album.artistName ?? "Unknown Artist")
+                .font(.uiSubheadline)
+                .foregroundStyle(.secondary)
+                .engraved()
+        }
+    }
+
+    private var playButtons: some View {
+        HStack(spacing: 20) {
+            Button {
+                playerService.playAlbum(album)
+            } label: {
+                Image(systemName: "play.fill")
+                    .foregroundStyle(.primary)
+            }
+            .buttonStyle(TactileButtonStyle())
+
+            Button {
+                if isThisAlbumPlaying {
+                    playerService.toggleShuffle()
+                } else {
+                    playerService.playAlbum(album, shuffled: true)
+                }
+            } label: {
+                Image(systemName: "shuffle")
+                    .foregroundStyle(shuffleEngaged ? themeService.accentColor.legibleForeground : .primary)
+            }
+            .buttonStyle(TactileButtonStyle(engaged: shuffleEngaged ? themeService.accentColor : nil))
+        }
+        .padding(.top, 4)
+        // The artist→buttons gap is 20pt (16 VStack spacing + 4 top pad).
+        // Below the buttons, the header VStack's bottom pad (8) + the first
+        // row's inset (3) + row padding (8) already total 19 with section
+        // spacing zeroed, so 1pt here makes the tracklist sit exactly 20pt
+        // away too — buttons dead-center between artist and first track.
+        .padding(.bottom, 1)
+    }
+
+    /// Edit-mode title/artist: tap to open the rename popup, like the sheet.
+    /// Flat text — no engraving, no pencil — with the same fonts and line
+    /// limits as `titleBlock` so both header variants measure identically.
+    private var editTitleBlock: some View {
+        VStack(spacing: 4) {
+            Button {
+                beginEditRename(.title)
+            } label: {
+                Text(editedTitle)
+                    .font(.uiTitle2.bold())
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                beginEditRename(.artist)
+            } label: {
+                Text(editedArtist.isEmpty ? "Artist" : editedArtist)
+                    .font(.uiSubheadline)
+                    .foregroundStyle(editedArtist.isEmpty ? .tertiary : .secondary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Edit-mode cover: same crater plate, but the artwork is a PhotosPicker
+    /// with the sheet's dashed "tap to replace" ring. The pixel-sort tap
+    /// interaction is swapped out so the tap goes to the picker.
+    private var editableCraterCover: some View {
+        ZStack {
+            craterPlate
+
+            PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
+                editCoverArtwork
+            }
+            .buttonStyle(.plain)
+            .disabled(isUploadingCover)
+        }
+        .onChange(of: selectedCoverPhoto) { _, newValue in
+            guard let newValue else { return }
+            Task {
+                guard let data = try? await newValue.loadTransferable(type: Data.self),
+                      let loaded = UIImage(data: data) else {
+                    coverUploadErrorMessage = "The selected photo couldn't be loaded."
+                    selectedCoverPhoto = nil
+                    return
+                }
+                selectedCoverPhoto = nil
+                imageToCrop = CoverCropItem(image: loaded)
+            }
+        }
+        .alert(
+            "Couldn't Change Album Cover",
+            isPresented: Binding(
+                get: { coverUploadErrorMessage != nil },
+                set: { if !$0 { coverUploadErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(coverUploadErrorMessage ?? "")
+        }
+        .fullScreenCover(item: $imageToCrop) { item in
+            ImageCropperView(
+                image: item.image,
+                onCropped: { croppedImage in
+                    imageToCrop = nil
+                    Task { await uploadEditCroppedCover(croppedImage) }
+                },
+                onCancelled: {
+                    imageToCrop = nil
+                }
+            )
+        }
+    }
+
+    private var editCoverArtwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: coverSize, height: coverSize)
+                .overlay {
+                    if let albumImage {
+                        Image(uiImage: albumImage)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "music.note")
+                            .font(.ui(48))
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+                .padding(4)
+                .overlay {
+                    RoundedRectangle(cornerRadius: coverCorner + 2, style: .continuous)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                        .foregroundStyle(.secondary.opacity(0.6))
+                }
+
+            if isUploadingCover {
+                RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .frame(width: coverSize, height: coverSize)
+                ProgressView()
+            }
         }
     }
 
@@ -318,8 +494,7 @@ struct AlbumDetailView: View {
             }
 
             Button {
-                showEditSheet = true
-                withAnimation { showToolbarActions = false }
+                enterEditMode()
             } label: {
                 Label("Edit", systemImage: "pencil")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -636,7 +811,11 @@ struct AlbumDetailView: View {
                 }
             } else {
                 headerSection
-                tracksSection
+                if isEditing {
+                    editTracksSection
+                } else {
+                    tracksSection
+                }
 
                 if let syncError {
                     Section {
@@ -648,40 +827,60 @@ struct AlbumDetailView: View {
             }
         }
         .appBackground()
+        .listSectionSpacing(0)
+        .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(isEditing)
         .toolbar {
-            // Album-download progress indicator. Visible only while a
-            // "Make Available Offline" run is in flight — appears the
-            // moment `saveProgress.total` becomes non-zero and disappears
-            // again when the download finishes (the existing flow resets
-            // `saveProgress` to `(0, 0, "")`). Placed before the ellipsis
-            // so it renders to the left of it in the trailing toolbar
-            // group.
-            ToolbarItem(placement: .primaryAction) {
-                if let progress = cacheService.albumCacheProgress[album.googleFolderId],
-                   progress.total > 0 {
-                    Button {
-                        // Intentionally a no-op for now — the button is
-                        // here as a visual progress affordance. Hooking
-                        // it up to "cancel download" / "show details"
-                        // is a one-line change later.
-                    } label: {
-                        DownloadProgressRing(
-                            progress: Double(progress.current) /
-                                Double(max(progress.total, 1))
-                        )
-                    }
-                    .transition(.scale.combined(with: .opacity))
+            if isEditing {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { cancelEdits() }
+                        .disabled(isSavingEdits)
                 }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        showToolbarActions.toggle()
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSavingEdits {
+                        ProgressView()
+                    } else {
+                        Button("Save") {
+                            Task { await saveEdits() }
+                        }
+                        .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                } label: {
-                    Label("More", systemImage: "ellipsis")
+                }
+            } else {
+                // Album-download progress indicator. Visible only while a
+                // "Make Available Offline" run is in flight — appears the
+                // moment `saveProgress.total` becomes non-zero and disappears
+                // again when the download finishes (the existing flow resets
+                // `saveProgress` to `(0, 0, "")`). Placed before the ellipsis
+                // so it renders to the left of it in the trailing toolbar
+                // group.
+                ToolbarItem(placement: .primaryAction) {
+                    if let progress = cacheService.albumCacheProgress[album.googleFolderId],
+                       progress.total > 0 {
+                        Button {
+                            // Intentionally a no-op for now — the button is
+                            // here as a visual progress affordance. Hooking
+                            // it up to "cancel download" / "show details"
+                            // is a one-line change later.
+                        } label: {
+                            DownloadProgressRing(
+                                progress: Double(progress.current) /
+                                    Double(max(progress.total, 1))
+                            )
+                        }
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            showToolbarActions.toggle()
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
+                    }
                 }
             }
         }
@@ -773,7 +972,11 @@ struct AlbumDetailView: View {
                 .environment(playerService)
         }
         .refreshable {
-            await syncFromDrive()
+            // A pull-to-refresh mid-edit would clobber the working copy
+            // with a fresh sync — ignored until the user saves or cancels.
+            if !isEditing {
+                await syncFromDrive()
+            }
         }
         .task {
             await initialLoad()
@@ -910,6 +1113,810 @@ struct AlbumDetailView: View {
                     // Download failed silently
                 }
             }
+        }
+    }
+
+    // MARK: - Inline edit mode
+
+    /// Add-tracks "From cloud" pulls from the active account's provider for
+    /// local albums (sheet parity); cloud albums use their own provider.
+    private var editDriveService: any CloudDriveService {
+        album.isLocal ? cloudRouter.activeService : driveService
+    }
+
+    /// Provider name for UI labels ("Google Drive" / "OneDrive").
+    private var cloudLabel: String {
+        album.isOneDrive ? "OneDrive"
+            : album.isLocal ? cloudRouter.activeProvider.displayName
+            : "Google Drive"
+    }
+
+    /// Pre-computed disc numbers keyed by TracklistItem.id, so each
+    /// disc-marker row can render its label without slicing `editItems`
+    /// inside the ForEach body (which interacts badly with `.onMove`
+    /// diffing on UICollectionView).
+    private var editDiscNumbersByItemId: [String: Int] {
+        var result: [String: Int] = [:]
+        var counter = 0
+        for item in editItems where item.isDiscMarker {
+            counter += 1
+            result[item.id] = counter
+        }
+        return result
+    }
+
+    /// Inline replacement for `tracksSection` while editing: trash button in
+    /// the number slot, tap-to-rename names, removable disc markers, and
+    /// system reorder handles trailing (edit mode + `.onMove`). No section
+    /// header — the add controls live in the album header where play/shuffle
+    /// sit, so the first row lands at the same offset as in normal mode.
+    private var editTracksSection: some View {
+        Section {
+            ForEach(editItems) { item in
+                switch item {
+                case .track(let track):
+                    editTrackRow(for: track)
+                case .discMarker:
+                    editDiscMarkerRow(for: item)
+                }
+            }
+            .onMove { source, destination in
+                withAnimation {
+                    editItems.move(fromOffsets: source, toOffset: destination)
+                }
+            }
+        }
+    }
+
+    /// Mirrors `TrackRow`'s exact geometry (24pt leading slot, two-line
+    /// name + size stack, 8pt vertical padding, same row insets) so rows
+    /// keep their proportions when edit mode toggles — only the leading
+    /// slot's content and the trailing control change.
+    @ViewBuilder
+    private func editTrackRow(for track: Track) -> some View {
+        let isCurrentTrack = playerService.currentTrack?.googleFileId == track.googleFileId
+        HStack(spacing: 12) {
+            if album.canEdit {
+                Button {
+                    editTrackToDelete = track
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.uiSubheadline)
+                        .foregroundStyle(.red)
+                        .frame(width: 24)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("\(editTrackNumbers[track.googleFileId] ?? 0)")
+                    .font(.readout(11))
+                    .foregroundStyle(track.isHidden ? Phosphor.ghost : Phosphor.dim)
+                    .frame(width: 24)
+            }
+
+            Button {
+                beginEditRename(.track(track))
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(editedTrackNames[track.googleFileId] ?? track.displayName)
+                        .font(.uiBody.weight(.medium))
+                        .foregroundColor(isCurrentTrack ? themeService.accentColor : track.isHidden ? Color.secondary.opacity(0.5) : .primary)
+                        .fadingTruncation()
+
+                    HStack(spacing: 4) {
+                        if track.isLocal || cachedTrackIds.contains(track.googleFileId) {
+                            Circle()
+                                .frame(width: 6, height: 6)
+                                .foregroundColor(track.isHidden ? Color.secondary.opacity(0.3) : .secondary)
+                        }
+                        if let size = track.fileSize {
+                            Text(String(format: "%.1f MB", Double(size) / 1_048_576.0))
+                                .font(.uiCaption)
+                                .foregroundColor(track.isHidden ? Color.secondary.opacity(0.3) : .secondary)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowBackground(Color.clear)
+    }
+
+    /// Track numbers for the read-only edit fallback (no delete permission).
+    private var editTrackNumbers: [String: Int] {
+        var numbers: [String: Int] = [:]
+        var count = 0
+        for item in editItems {
+            if case .track(let track) = item {
+                count += 1
+                numbers[track.googleFileId] = count
+            }
+        }
+        return numbers
+    }
+
+    /// Mirrors `DiscMarkerRow`'s chassis — same caption font, same
+    /// flex-divider centering, same 4pt vertical padding — with the remove
+    /// button sitting where the duration readout does, so disc rows keep
+    /// their height and the label its position when edit mode toggles.
+    @ViewBuilder
+    private func editDiscMarkerRow(for item: TracklistItem) -> some View {
+        HStack(spacing: 8) {
+            removeDiscMarkerButton(for: item).hidden()
+
+            VStack { Divider() }
+                .opacity(0)
+
+            Text("Disc \(editDiscNumbersByItemId[item.id] ?? 1)")
+                .font(.uiCaption)
+                .foregroundStyle(.secondary)
+
+            VStack { Divider() }
+
+            removeDiscMarkerButton(for: item)
+        }
+        .padding(.vertical, 4)
+        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private func removeDiscMarkerButton(for item: TracklistItem) -> some View {
+        Button {
+            let targetId = item.id
+            withAnimation {
+                editItems.removeAll { $0.id == targetId }
+            }
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.uiCaption)
+                .foregroundStyle(.tertiary)
+                // Same trailing offset as DiscMarkerRow's durationText, so
+                // the icon's right edge lines up with the duration readout.
+                .padding(.trailing, 7)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "Add disc marker" / "Add tracks" controls in the header column —
+    /// also the attachment point for every edit-mode presentation modifier
+    /// (rename popup, delete confirmation, error alert, file importer, cloud
+    /// picker), kept off the main body chain for type-checker budget.
+    private var editControlsRow: some View {
+        editControlsRowContent
+            .selectAllInTextFields(while: editRenameTarget != nil)
+            .alert(editRenameAlertTitle, isPresented: editRenameAlertBinding) {
+                TextField(editRenamePlaceholder, text: $editRenameText)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") { applyEditRename() }
+            }
+            .alert("Delete Track?", isPresented: Binding(
+                get: { editTrackToDelete != nil },
+                set: { if !$0 { editTrackToDelete = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    if let track = editTrackToDelete {
+                        Task { await deleteEditTrack(track) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { editTrackToDelete = nil }
+            } message: {
+                Text(deleteEditTrackMessage)
+            }
+            .alert("Couldn't Save Changes", isPresented: Binding(
+                get: { editErrorMessage != nil },
+                set: { if !$0 { editErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(editErrorMessage ?? "")
+            }
+            .fileImporter(
+                isPresented: $showEditDocumentPicker,
+                allowedContentTypes: [.audio],
+                allowsMultipleSelection: true
+            ) { result in
+                Task { await handleEditPickedFiles(result) }
+            }
+            .sheet(isPresented: $showEditDriveAudioPicker) {
+                DriveAudioPickerView(targetFolderId: album.googleFolderId) { files in
+                    Task { await handleEditDriveFilesAdded(files) }
+                }
+            }
+    }
+
+    /// Laid out on the edit rows' grid: the plus glyph is centered in the
+    /// same 24pt leading slot as the trash buttons, so the "Add disc
+    /// marker" text starts exactly where the song titles do. Occupies
+    /// `playButtons`' exact vertical envelope (4 + 70pt socket + 1) so the
+    /// tracklist below starts at the same level in both modes.
+    private var editControlsRowContent: some View {
+        HStack(spacing: 12) {
+            if !editItems.isEmpty {
+                Button {
+                    addEditDiscMarker()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "plus")
+                            .font(.uiSubheadline)
+                            .frame(width: 24)
+                        Text("Add disc marker")
+                            .font(.uiSubheadline)
+                    }
+                }
+                .disabled(editItems.filter(\.isDiscMarker).count >= 100)
+            }
+
+            Spacer()
+
+            if isUploadingTracks {
+                ProgressView()
+                    .controlSize(.small)
+            } else if album.canEdit {
+                Menu {
+                    Button {
+                        showEditDriveAudioPicker = true
+                    } label: {
+                        Label("From \(cloudLabel)", systemImage: "cloud")
+                    }
+                    Button {
+                        showEditDocumentPicker = true
+                    } label: {
+                        Label("From iPhone", systemImage: "iphone")
+                    }
+                } label: {
+                    Label("Add tracks", systemImage: "plus.circle")
+                        .font(.uiSubheadline)
+                }
+            }
+        }
+        // Edit rows' 8pt edge inset, so the 24pt slot sits on the
+        // trash-button grid.
+        .padding(.horizontal, 8)
+        .frame(height: 70)
+        .padding(.top, 4)
+        .padding(.bottom, 1)
+    }
+
+    private var deleteEditTrackMessage: String {
+        let trackName = editTrackToDelete?.name ?? ""
+        return album.isLocal
+            ? "This will delete \"\(trackName)\" from \"\(album.name)\" on this iPhone."
+            : "This will delete \"\(trackName)\" from \"\(album.name)\" in \(cloudLabel)."
+    }
+
+    // MARK: Edit-mode rename popup
+
+    private var editRenameAlertBinding: Binding<Bool> {
+        Binding(
+            get: { editRenameTarget != nil },
+            set: { if !$0 { editRenameTarget = nil } }
+        )
+    }
+
+    private var editRenameAlertTitle: String {
+        switch editRenameTarget {
+        case .artist: return "Edit Artist"
+        case .track: return "Rename Track"
+        default: return "Rename Album"
+        }
+    }
+
+    private var editRenamePlaceholder: String {
+        switch editRenameTarget {
+        case .artist: return "Artist"
+        case .track: return "Track name"
+        default: return "Album title"
+        }
+    }
+
+    private func beginEditRename(_ target: EditRenameTarget) {
+        switch target {
+        case .title: editRenameText = editedTitle
+        case .artist: editRenameText = editedArtist
+        case .track(let track): editRenameText = editedTrackNames[track.googleFileId] ?? track.displayName
+        }
+        editRenameTarget = target
+    }
+
+    /// Applies the popup's text. Empty input keeps the old title/track name
+    /// (both are required); an empty artist clears the field.
+    private func applyEditRename() {
+        guard let target = editRenameTarget else { return }
+        let trimmed = editRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch target {
+        case .title:
+            if !trimmed.isEmpty { editedTitle = trimmed }
+        case .artist:
+            editedArtist = trimmed
+        case .track(let track):
+            if !trimmed.isEmpty { editedTrackNames[track.googleFileId] = trimmed }
+        }
+    }
+
+    // MARK: Edit-mode lifecycle
+
+    private func enterEditMode() {
+        editedTitle = album.name
+        editedArtist = album.artistName ?? ""
+        editedTrackNames = [:]
+        editItems = displayItems
+        editErrorMessage = nil
+        editAdditDataFileId = album.additDataFileId
+        editAdditDataOwnedByMe = true
+        withAnimation {
+            showToolbarActions = false
+            isEditing = true
+        }
+        if !album.isLocal {
+            Task { await resolveEditOwnership() }
+        }
+    }
+
+    /// Best-effort refresh of folder ownership and the `.addit-data` file id
+    /// before a save needs them (mirrors the sheet's resolve pair). Errors
+    /// keep the values seeded from the album.
+    private func resolveEditOwnership() async {
+        if let folderMeta = try? await driveService.getFileMetadata(fileId: album.googleFolderId),
+           let ownedByMe = folderMeta.ownedByMe, ownedByMe != album.isFolderOwner {
+            album.isFolderOwner = ownedByMe
+            try? modelContext.save()
+        }
+        do {
+            if let item = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId) {
+                editAdditDataFileId = item.id
+                editAdditDataOwnedByMe = item.ownedByMe ?? true
+            } else {
+                editAdditDataFileId = nil
+                editAdditDataOwnedByMe = true
+            }
+        } catch {
+            // Keep the seeded value.
+        }
+    }
+
+    private func cancelEdits() {
+        withAnimation { isEditing = false }
+        editedTrackNames = [:]
+        // Deletes, added tracks, and cover changes apply immediately (sheet
+        // parity) — rebuild the display list so they survive the cancel.
+        handleEditSheetDismiss()
+    }
+
+    private func finishEditing() {
+        withAnimation {
+            displayItems = editItems
+            isEditing = false
+        }
+        editedTrackNames = [:]
+    }
+
+    private func saveEdits() async {
+        let trimmedTitle = editedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
+        isSavingEdits = true
+        defer { isSavingEdits = false }
+
+        let trimmedArtist = editedArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newArtist: String? = trimmedArtist.isEmpty ? nil : trimmedArtist
+
+        if album.isLocal {
+            album.name = trimmedTitle
+            album.artistName = newArtist
+
+            // Update track names, numbers, and persist tracklist with disc markers
+            var tracklist: [String] = []
+            var trackIndex = 0
+            var discNumber = 0
+            for item in editItems {
+                switch item {
+                case .track(let track):
+                    if let newName = editedTrackNames[track.googleFileId], newName != track.displayName,
+                       let oldURL = track.localFileURL {
+                        let ext = oldURL.pathExtension
+                        let newFileName = "\(newName).\(ext)"
+                        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(newFileName)
+                        if oldURL != newURL {
+                            try? FileManager.default.moveItem(at: oldURL, to: newURL)
+                            // Store relative path
+                            if let localFilePath = track.localFilePath,
+                               let lastSlash = localFilePath.range(of: "/", options: .backwards) {
+                                track.localFilePath = localFilePath[localFilePath.startIndex..<lastSlash.upperBound] + newFileName
+                            }
+                            track.name = newFileName
+                        }
+                    }
+                    trackIndex += 1
+                    track.trackNumber = trackIndex
+                    tracklist.append(track.name)
+                case .discMarker:
+                    discNumber += 1
+                    tracklist.append("\(AdditMetadata.discMarkerPrefix)Disc \(discNumber)")
+                }
+            }
+            album.cachedTracklist = tracklist
+            try? modelContext.save()
+            finishEditing()
+            return
+        }
+
+        // Snapshot current state for rollback
+        let previousName = album.name
+        let previousArtist = album.artistName
+        let allTracks = editItems.compactMap(\.asTrack)
+        let previousTrackNames = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.googleFileId, $0.name) })
+        let previousTrackNumbers = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.googleFileId, $0.trackNumber) })
+
+        album.name = trimmedTitle
+        album.artistName = newArtist
+        try? modelContext.save()
+
+        do {
+            // Rename the Drive folder only when the title actually changed —
+            // a plain reorder shouldn't need rename permission.
+            if trimmedTitle != previousName {
+                _ = try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
+            }
+
+            try await renameChangedEditTracks()
+            try await saveEditAdditData(artist: newArtist)
+            finishEditing()
+        } catch {
+            // Revert all local changes on failure; stay in edit mode.
+            album.name = previousName
+            album.artistName = previousArtist
+            for item in editItems {
+                if case .track(let track) = item {
+                    if let oldName = previousTrackNames[track.googleFileId] {
+                        track.name = oldName
+                    }
+                    if let oldNumber = previousTrackNumbers[track.googleFileId] {
+                        track.trackNumber = oldNumber
+                    }
+                }
+            }
+            try? modelContext.save()
+            editErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func renameChangedEditTracks() async throws {
+        for item in editItems {
+            guard case .track(let track) = item else { continue }
+            guard let editedName = editedTrackNames[track.googleFileId] else { continue }
+            let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            // Preserve the original file extension
+            let ext = (track.name as NSString).pathExtension
+            let newFileName = ext.isEmpty ? trimmed : "\(trimmed).\(ext)"
+            guard newFileName != track.name else { continue }
+
+            _ = try await driveService.renameFile(fileId: track.googleFileId, newName: newFileName)
+            track.name = newFileName
+        }
+        try? modelContext.save()
+    }
+
+    private func saveEditAdditData(artist: String?) async throws {
+        // Build interleaved tracklist with disc markers
+        var discNumber = 0
+        let tracklist: [String] = editItems.map { item in
+            switch item {
+            case .track(let track):
+                return track.name
+            case .discMarker:
+                discNumber += 1
+                return "\(AdditMetadata.discMarkerPrefix)Disc \(discNumber)"
+            }
+        }
+
+        let metadata = AdditMetadata(tracklist: tracklist, artist: artist)
+        let data = try JSONEncoder().encode(metadata)
+        let folderId = album.googleFolderId
+
+        if let existingId = editAdditDataFileId {
+            if album.isFolderOwner && !editAdditDataOwnedByMe {
+                // Claim ownership: remove the file we don't own and create a new one
+                try await driveService.removeFileFromFolder(fileId: existingId, folderId: folderId)
+                let item = try await driveService.createFile(
+                    name: ".addit-data",
+                    mimeType: "application/json",
+                    inFolder: folderId,
+                    data: data
+                )
+                editAdditDataFileId = item.id
+                album.additDataFileId = item.id
+                editAdditDataOwnedByMe = true
+                // Notify chat that history was reset due to ownership
+                // change. Chat (Drive comments) is Google-only, so this
+                // goes through the concrete Google client and is skipped
+                // for OneDrive albums.
+                if album.storageSource == .googleDrive {
+                    _ = try? await cloudRouter.google.createComment(
+                        fileId: item.id,
+                        content: "File ownership data was changed. Previous chat history may not persist."
+                    )
+                }
+            } else {
+                try await driveService.updateFileData(fileId: existingId, data: data, mimeType: "application/json")
+            }
+        } else {
+            let item = try await driveService.createFile(
+                name: ".addit-data",
+                mimeType: "application/json",
+                inFolder: folderId,
+                data: data
+            )
+            editAdditDataFileId = item.id
+            album.additDataFileId = item.id
+            editAdditDataOwnedByMe = true
+        }
+
+        // Assign track numbers (skip disc markers)
+        var trackNumber = 1
+        for item in editItems {
+            if case .track(let track) = item {
+                track.trackNumber = trackNumber
+                trackNumber += 1
+            }
+        }
+        // Mirror the saved ordering so the next visit renders it instantly
+        // without waiting on the .addit-data download.
+        album.cachedTracklist = tracklist
+        try? modelContext.save()
+    }
+
+    // MARK: Edit-mode immediate actions (delete / add / cover — sheet parity)
+
+    private func addEditDiscMarker() {
+        let existingDiscCount = editItems.filter(\.isDiscMarker).count
+        guard existingDiscCount < 100 else { return }
+
+        let newMarker = TracklistItem.discMarker(id: UUID(), label: "")
+
+        if existingDiscCount == 0 {
+            editItems.insert(newMarker, at: 0)
+        } else if let lastDiscIndex = editItems.lastIndex(where: \.isDiscMarker) {
+            editItems.insert(newMarker, at: lastDiscIndex + 1)
+        }
+    }
+
+    private func deleteEditTrack(_ track: Track) async {
+        if track.isLocal {
+            if let url = track.localFileURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+        } else {
+            do {
+                try await driveService.deleteFile(fileId: track.googleFileId)
+                // Drop the offline copy too — a deleted track's cache
+                // entry would never be reachable again.
+                cacheService.removeTrack(track)
+                cachedTrackIds.remove(track.googleFileId)
+            } catch {
+                editErrorMessage = "Failed to delete: \(error.localizedDescription)"
+                editTrackToDelete = nil
+                return
+            }
+        }
+        let targetId = track.googleFileId
+        withAnimation {
+            editItems.removeAll { $0.id == targetId }
+            displayItems.removeAll { $0.id == targetId }
+        }
+        editedTrackNames.removeValue(forKey: targetId)
+        modelContext.delete(track)
+        album.trackCount = max(0, album.trackCount - 1)
+        try? modelContext.save()
+        editTrackToDelete = nil
+    }
+
+    private func handleEditPickedFiles(_ result: Result<[URL], Error>) async {
+        guard case .success(let urls) = result, !urls.isEmpty else { return }
+
+        isUploadingTracks = true
+        defer { isUploadingTracks = false }
+
+        for url in urls {
+            guard url.startAccessingSecurityScopedResource() else { continue }
+            defer { url.stopAccessingSecurityScopedResource() }
+
+            do {
+                let data = try Data(contentsOf: url)
+                let fileName = url.lastPathComponent
+                let mimeType = mimeTypeForExtension(url.pathExtension)
+
+                if album.isLocal {
+                    // Save file locally
+                    let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+                    let fm = FileManager.default
+                    let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("LocalAlbums", isDirectory: true)
+                        .appendingPathComponent(albumId, isDirectory: true)
+                    try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+                    let destURL = albumDir.appendingPathComponent(fileName)
+                    try data.write(to: destURL)
+
+                    let track = Track(
+                        googleFileId: "local_\(UUID().uuidString)",
+                        name: fileName,
+                        album: album,
+                        mimeType: mimeType,
+                        fileSize: Int64(data.count),
+                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                        localFilePath: "LocalAlbums/\(albumId)/\(fileName)"
+                    )
+                    modelContext.insert(track)
+                    editItems.append(.track(track))
+                    album.trackCount += 1
+                } else {
+                    let driveItem = try await editDriveService.createFile(
+                        name: fileName,
+                        mimeType: mimeType,
+                        inFolder: album.googleFolderId,
+                        data: data
+                    )
+
+                    let track = Track(
+                        googleFileId: driveItem.id,
+                        name: driveItem.name,
+                        album: album,
+                        mimeType: driveItem.mimeType,
+                        fileSize: driveItem.fileSizeBytes,
+                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                        modifiedTime: driveItem.modifiedTime
+                    )
+                    modelContext.insert(track)
+                    editItems.append(.track(track))
+                    album.trackCount += 1
+                }
+            } catch {
+                editErrorMessage = "Upload failed: \(error.localizedDescription)"
+            }
+        }
+        try? modelContext.save()
+    }
+
+    private func handleEditDriveFilesAdded(_ files: [DriveItem]) async {
+        isUploadingTracks = true
+        defer { isUploadingTracks = false }
+
+        for file in files {
+            do {
+                if album.isLocal {
+                    // Download from the cloud and save locally
+                    let data = try await editDriveService.downloadFileData(fileId: file.id)
+                    let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+                    let fm = FileManager.default
+                    let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("LocalAlbums", isDirectory: true)
+                        .appendingPathComponent(albumId, isDirectory: true)
+                    try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+                    let destURL = albumDir.appendingPathComponent(file.name)
+                    try data.write(to: destURL)
+
+                    let track = Track(
+                        googleFileId: "local_\(UUID().uuidString)",
+                        name: file.name,
+                        album: album,
+                        mimeType: file.mimeType,
+                        fileSize: Int64(data.count),
+                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                        localFilePath: "LocalAlbums/\(albumId)/\(file.name)"
+                    )
+                    modelContext.insert(track)
+                    editItems.append(.track(track))
+                    album.trackCount += 1
+                } else {
+                    let copiedItem = try await editDriveService.copyFile(
+                        fileId: file.id,
+                        toFolder: album.googleFolderId
+                    )
+
+                    let track = Track(
+                        googleFileId: copiedItem.id,
+                        name: copiedItem.name,
+                        album: album,
+                        mimeType: copiedItem.mimeType,
+                        fileSize: copiedItem.fileSizeBytes,
+                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                        modifiedTime: copiedItem.modifiedTime
+                    )
+                    modelContext.insert(track)
+                    editItems.append(.track(track))
+                    album.trackCount += 1
+                }
+            } catch {
+                editErrorMessage = "Copy failed: \(error.localizedDescription)"
+            }
+        }
+        try? modelContext.save()
+    }
+
+    private func mimeTypeForExtension(_ ext: String) -> String {
+        switch ext.lowercased() {
+        case "mp3": return "audio/mpeg"
+        case "m4a": return "audio/x-m4a"
+        case "mp4": return "audio/mp4"
+        case "aac": return "audio/aac"
+        case "flac": return "audio/flac"
+        case "wav": return "audio/wav"
+        case "aiff", "aif": return "audio/aiff"
+        case "ogg": return "audio/ogg"
+        case "alac": return "audio/alac"
+        default: return "audio/mpeg"
+        }
+    }
+
+    private func uploadEditCroppedCover(_ croppedImage: UIImage) async {
+        guard !isUploadingCover else { return }
+
+        isUploadingCover = true
+        defer { isUploadingCover = false }
+
+        if album.isLocal {
+            // Save cover locally
+            guard let jpegData = croppedImage.jpegData(compressionQuality: 0.9) else {
+                coverUploadErrorMessage = "The selected photo couldn't be converted to a JPEG cover."
+                return
+            }
+            let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+            let localBase = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("LocalAlbums", isDirectory: true)
+                .appendingPathComponent(albumId, isDirectory: true)
+            try? FileManager.default.createDirectory(at: localBase, withIntermediateDirectories: true)
+            let coverURL = localBase.appendingPathComponent("cover.jpg")
+            try? jpegData.write(to: coverURL)
+            album.localCoverPath = "LocalAlbums/\(albumId)/cover.jpg"
+            albumImage = croppedImage
+            try? modelContext.save()
+            return
+        }
+
+        do {
+            guard let jpegData = croppedImage.jpegData(compressionQuality: 0.9) else {
+                coverUploadErrorMessage = "The selected photo couldn't be converted to a JPEG cover."
+                return
+            }
+
+            // If folder owner, remove unowned cover so the new one will be owned by us
+            if album.isFolderOwner {
+                if let existingCover = try await driveService.findCoverImage(inFolder: album.googleFolderId),
+                   existingCover.ownedByMe == false {
+                    try await driveService.removeFileFromFolder(fileId: existingCover.id, folderId: album.googleFolderId)
+                }
+            }
+
+            let previousCoverFileId = album.coverFileId
+            let coverItem = try await driveService.upsertCoverImage(inFolder: album.googleFolderId, data: jpegData)
+
+            albumArtService.invalidateImage(for: previousCoverFileId)
+            albumArtService.invalidateImage(for: coverItem.id)
+
+            let cachedImage = albumArtService.cacheImageData(jpegData, for: coverItem.id)
+            albumImage = cachedImage ?? croppedImage
+
+            let resolution = AlbumArtResolution(
+                image: cachedImage,
+                resolvedCoverItem: coverItem,
+                shouldPersistMetadata: true
+            )
+
+            albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+            album.coverModifiedTime = nil
+            album.coverUpdatedAt = .now
+            try? modelContext.save()
+            albumArtService.bumpRefreshToken(for: album.googleFolderId)
+        } catch {
+            coverUploadErrorMessage = error.localizedDescription
         }
     }
 
@@ -1758,7 +2765,7 @@ struct TrackRow: View {
                     .contentShape(Rectangle())
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 
     private func formatFileSize(_ bytes: Int64) -> String {
@@ -1890,6 +2897,13 @@ struct ChooseDriveFolderSheet: View {
             }
         }
     }
+}
+
+/// Identifiable wrapper so a picked cover photo can drive the cropper's
+/// `fullScreenCover(item:)`. Sibling of LibraryView's private `CropItem`.
+private struct CoverCropItem: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }
 
 // MARK: - Download Progress Ring
