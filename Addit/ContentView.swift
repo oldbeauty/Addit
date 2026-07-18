@@ -22,7 +22,7 @@ struct ContentView: View {
             } else if authService.isSignedIn {
                 ZStack(alignment: .bottom) {
                     NavigationStack(path: $libraryPath) {
-                        LibraryView()
+                        LibraryView(libraryPath: $libraryPath)
                     }
 
                     if playerService.currentTrack != nil && !playerService.hideNowPlayingBar {
