@@ -837,6 +837,7 @@ struct AlbumDetailView: View {
             }
         }
         .appBackground()
+        .staticTopFade()
         .listSectionSpacing(0)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .navigationTitle("")

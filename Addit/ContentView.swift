@@ -23,6 +23,7 @@ struct ContentView: View {
                 ZStack(alignment: .bottom) {
                     NavigationStack(path: $libraryPath) {
                         LibraryView(libraryPath: $libraryPath)
+                            .flatSlideNavigation()
                     }
 
                     if playerService.currentTrack != nil && !playerService.hideNowPlayingBar {

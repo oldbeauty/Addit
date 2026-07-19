@@ -46,6 +46,7 @@ struct CreateAlbumView: View {
                 )
                 .id(selectedSource)
             }
+            .flatSlideNavigation()
             .navigationDestination(for: DriveItem.self) { folder in
                 ParentFolderBrowserView(
                     folderId: folder.id,

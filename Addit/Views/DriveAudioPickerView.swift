@@ -52,6 +52,7 @@ struct DriveAudioPickerView: View {
                 )
                 .id(selectedSource)
             }
+            .flatSlideNavigation()
             .navigationDestination(for: DriveItem.self) { folder in
                 AudioFileBrowserView(
                     folderId: folder.id,

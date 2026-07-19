@@ -37,4 +37,43 @@ extension View {
             .scrollContentBackground(.hidden)
             .background(Color.appBackground.ignoresSafeArea())
     }
+
+    /// Replace iOS 26's adaptive top scroll edge effect with a static fade.
+    /// The system effect samples the content scrolling under the top bar and
+    /// flips between light and dark treatments on its own — the status-bar
+    /// clock/wifi text flips with it — regardless of the app's scheme. This
+    /// hides it, draws a fixed `Color.appBackground` fade (white in light,
+    /// charcoal in dark), and pins the bar scheme so nothing up there reacts
+    /// to what scrolls underneath. Apply to a screen's root scrollable
+    /// container, alongside `.appBackground()`.
+    func staticTopFade() -> some View {
+        modifier(StaticTopFadeModifier())
+    }
+}
+
+private struct StaticTopFadeModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .scrollEdgeEffectHidden(true, for: .top)
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .appBackground, location: 0),
+                            .init(color: .appBackground.opacity(0.85), location: 0.4),
+                            .init(color: .appBackground.opacity(0), location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 110)
+                    Spacer(minLength: 0)
+                }
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+            }
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
+    }
 }

@@ -237,6 +237,9 @@ struct ChatView: View {
                 .offset(x: timestampDragOffset)
             }
             .clipped()
+            // Chat draws its own static top fade (above); kill the system's
+            // adaptive scroll edge effect so it can't flip light/dark over it.
+            .scrollEdgeEffectHidden(true, for: .top)
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 30)

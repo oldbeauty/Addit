@@ -77,6 +77,7 @@ struct AddAlbumView: View {
                 )
                 .id(selectedSource)
             }
+            .flatSlideNavigation()
             .navigationDestination(for: DriveItem.self) { folder in
                 FolderBrowserView(
                     folderId: folder.id,
@@ -436,6 +437,7 @@ struct CopyAlbumFromDriveView: View {
                 )
                 .id(selectedSource)
             }
+            .flatSlideNavigation()
             .navigationDestination(for: DriveItem.self) { folder in
                 FolderBrowserView(
                     folderId: folder.id,

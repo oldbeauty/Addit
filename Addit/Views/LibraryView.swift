@@ -276,6 +276,7 @@ struct LibraryView: View {
             }
         }
         .appBackground()
+        .staticTopFade()
         .navigationTitle(isArranging ? "Arrange Library" : "")
         .onAppear {
             // Self-heal: a cloud library whose provider has no account
@@ -323,14 +324,16 @@ struct LibraryView: View {
                             }
                         }
                     } label: {
-                        HStack(spacing: 4) {
-                            Text(libraryIsLocal ? "Local Library" : viewedCloudLabel)
-                                .font(.uiHeadline)
+                        HStack(spacing: 6) {
+                            StorageSourceLogo(source: currentSource)
                             Image(systemName: "chevron.down")
                                 .font(.uiCaption.weight(.semibold))
                         }
                         .foregroundStyle(.primary)
                         .fixedSize()
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .glassEffect(.regular.interactive(), in: .capsule)
                     }
                 }
             }
