@@ -119,7 +119,9 @@ struct TrackSplitView: View {
             Button("Discard Splits", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
         } message: {
-            Text("The original track is never changed — but your unsaved split points will be lost.")
+            Text(savedSegmentIndices.isEmpty
+                ? "The original track is never changed — but your unsaved split points will be lost."
+                : "The \(savedSegmentIndices.count) already-saved tracks stay in the album — only the remaining splits are discarded.")
         }
         .selectAllInTextFields(while: renamingSegmentID != nil)
         .alert("Rename Track", isPresented: renameAlertBinding) {
@@ -460,21 +462,24 @@ struct TrackSplitView: View {
             .frame(width: 2, height: bandHeight + 14)
             .position(x: x, y: bandTop + bandHeight / 2 - 7)
 
-        // Remove chip, below the split mark.
-        Button {
-            withAnimation(.snappy(duration: 0.18)) {
-                plan.removeBoundary(at: boundaryIndex)
+        // Remove chip, below the split mark. Hidden while the plan is
+        // locked after a partial save (see `isPlanLocked`).
+        if !isPlanLocked {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    plan.removeBoundary(at: boundaryIndex)
+                }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(accent, in: Circle())
             }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 20, height: 20)
-                .background(accent, in: Circle())
+            .buttonStyle(.plain)
+            .position(x: x, y: bandTop + bandHeight - 12)
         }
-        .buttonStyle(.plain)
-        .position(x: x, y: bandTop + bandHeight - 12)
     }
 
     /// Where a segment's name capsule sits, or nil when it shouldn't render.
@@ -551,8 +556,8 @@ struct TrackSplitView: View {
                         .foregroundStyle(themeService.accentColor)
                 }
                 .buttonStyle(TactileButtonStyle(diameter: 62))
-                .disabled(!plan.canSplit(at: centerTime))
-                .opacity(plan.canSplit(at: centerTime) ? 1 : 0.45)
+                .disabled(!plan.canSplit(at: centerTime) || isPlanLocked)
+                .opacity(plan.canSplit(at: centerTime) && !isPlanLocked ? 1 : 0.45)
                 Text("ADD SPLIT")
                     .font(.readout(9))
                     .foregroundStyle(.secondary)
@@ -689,8 +694,14 @@ struct TrackSplitView: View {
 
     // MARK: Split actions
 
+    /// After a partial save, some segments already exist as uploaded tracks,
+    /// tracked by their position in `plan.segments`. Freeze the plan so those
+    /// indices (and the exported bounds they refer to) can't shift before the
+    /// retry — editing would silently skip or duplicate segments.
+    private var isPlanLocked: Bool { !savedSegmentIndices.isEmpty }
+
     private func addSplit() {
-        guard plan.canSplit(at: centerTime) else { return }
+        guard !isPlanLocked, plan.canSplit(at: centerTime) else { return }
         withAnimation(.snappy(duration: 0.18)) {
             plan.addSplit(at: centerTime)
         }
@@ -698,6 +709,11 @@ struct TrackSplitView: View {
     }
 
     private func beginRename(_ segment: SplitSegment) {
+        // A saved segment's file is already uploaded under its final name —
+        // renaming the plan entry would change nothing but the label.
+        if isPlanLocked,
+           let index = plan.segments.firstIndex(where: { $0.id == segment.id }),
+           savedSegmentIndices.contains(index) { return }
         renameText = plan.displayName(for: segment)
         renamingSegmentID = segment.id
     }
@@ -850,7 +866,7 @@ struct TrackSplitView: View {
         } catch {
             let done = savedSegmentIndices.count
             saveError = done > 0
-                ? "Saved \(done) of \(total) tracks — \(error.localizedDescription) Tap Save Splits again to retry the rest."
+                ? "Saved \(done) of \(total) tracks — \(error.localizedDescription) Tap Save Splits again to retry the rest. Your split points are locked so the saved tracks stay consistent."
                 : error.localizedDescription
             return
         }

@@ -128,15 +128,18 @@ enum TrackSplitEngine {
     /// under ~90k floats while leaving several buckets inside any ≥1 s
     /// silence gap, so transitions stay visible after peak-downsampling to
     /// screen bars.
-    private static let bucketsPerSecond: Double = 16
+    private nonisolated static let bucketsPerSecond: Double = 16
 
     /// Reads the whole file once (sequential, chunked) and returns peak
     /// buckets. Sibling of `AudioPlayerService.extractWaveform` (private,
     /// per-bar seeking, no progress reporting) — duplicated rather than
     /// shared so the load-bearing player service stays untouched.
     ///
-    /// Runs synchronously inside an async context; yields between chunks and
-    /// honors task cancellation.
+    /// `@concurrent` because the project defaults to MainActor isolation —
+    /// without it the chunked file reads would run on the main thread and
+    /// drop frames during the "Analyzing waveform…" phase on long files.
+    /// Yields between chunks and honors task cancellation.
+    @concurrent
     static func loadWaveform(
         from url: URL,
         progress: @escaping @Sendable (Double) -> Void

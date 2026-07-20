@@ -1,0 +1,35 @@
+#!/bin/zsh
+# deploy — build Addit and launch it on the iPhone with NO Xcode run
+# session: no debugger, no console hookup, nothing to attach or hang.
+# Xcode stays a text editor; use the "Copy of Addit" scheme in Xcode on
+# the days you actually want breakpoints.
+#
+# Device IDs (refresh with `xcrun devicectl list devices` /
+# `xcodebuild -showdestinations` if the phone is replaced):
+#   CoreDevice UUID — used by devicectl
+#   UDID           — used by xcodebuild destinations
+set -e
+COREDEVICE_ID=12D8CD35-0DBF-5411-ACCB-30845543443A
+UDID=00008140-000A3CCE3AE1801C
+BUNDLE_ID=clint.Lang.Addit
+
+cd "$(dirname "$0")"
+
+echo "▸ Building…"
+xcodebuild -project Addit.xcodeproj -scheme Addit \
+  -destination "platform=iOS,id=$UDID" build -quiet
+
+# Resolve the built .app inside DerivedData (shared with Xcode's own
+# builds, so incremental state is reused in both directions).
+APP=$(xcodebuild -project Addit.xcodeproj -scheme Addit \
+  -destination "platform=iOS,id=$UDID" -showBuildSettings 2>/dev/null |
+  awk -F' = ' '/ TARGET_BUILD_DIR =/{d=$2} / WRAPPER_NAME =/{w=$2} END{print d"/"w}')
+[[ -d "$APP" ]] || { echo "✗ built app not found: $APP" >&2; exit 1; }
+
+echo "▸ Installing $(basename "$APP")…"
+xcrun devicectl device install app --device "$COREDEVICE_ID" "$APP" >/dev/null
+
+echo "▸ Launching…"
+xcrun devicectl device process launch --terminate-existing \
+  --device "$COREDEVICE_ID" "$BUNDLE_ID" >/dev/null
+echo "✓ running on iPhone"

@@ -13,6 +13,12 @@ struct NowPlayingBar: View {
     @State private var albumImage: UIImage?
     private let artworkSize: CGFloat = 44
 
+    /// Height the bar occupies above the bottom safe area: scrubber hit area
+    /// (28) + its top padding (8) + artwork row (44 + 2×8 vertical padding) +
+    /// bottom padding (4). Screens the bar overlays reserve this much bottom
+    /// safe area so scrolled-to-end content rests above the bar, not under it.
+    static let overlayHeight: CGFloat = 100
+
     private var artworkTaskID: String? {
         guard let album = playerService.currentTrack?.album else { return nil }
         let refreshMarker = albumArtService.lastUpdatedAlbumFolderId == album.googleFolderId

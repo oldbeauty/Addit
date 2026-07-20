@@ -32,6 +32,14 @@ struct SettingsView: View {
                     accentRow(label: "Light Mode", scheme: .light)
                     accentRow(label: "Dark Mode", scheme: .dark)
                 }
+
+                #if DEBUG
+                Section("Developer") {
+                    NavigationLink("Cache Inspector") {
+                        CacheInspectorView()
+                    }
+                }
+                #endif
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

@@ -104,7 +104,58 @@ struct LibraryView: View {
         Task { await authService.switchAccount(to: account.email) }
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
+    /// One row of the account switcher: name with the email as a smaller
+    /// subtitle beneath it (the second Text renders as a menu subtitle).
+    /// A checkmark marks each account that is currently *in use* (the live
+    /// account for its provider) — with a Google and a Microsoft account
+    /// both signed in, both show a checkmark even though only one library
+    /// is viewed at a time.
+    private func accountMenu(for account: Account) -> some View {
+        Menu {
+            // "Switch to" only makes sense for accounts that are NOT in
+            // use. In-use accounts (the checkmarked ones) are switched
+            // between via the library menu, not here.
+            if !authService.accountManager.isInUse(account) {
+                Button {
+                    selectAccount(account)
+                } label: {
+                    Label("Switch to", systemImage: "arrow.right.arrow.left")
+                }
+            }
+            Button(role: .destructive) {
+                accountToSignOut = account.email
+                showSignOutConfirmation = true
+            } label: {
+                Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+        } label: {
+            // Bare Text/Text/Image in the label builder is the pattern the
+            // menu bridge recognizes as title/subtitle/icon — wrapping the
+            // texts in a Label swallows the subtitle.
+            Text(account.name)
+            Text(account.email)
+            if authService.accountManager.isInUse(account) {
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    /// One gutter width everywhere: the screen-edge margins and the gaps
+    /// between covers all measure `gridGutter`, and cover size is whatever
+    /// fills the remainder. 30 ≈ the old effective edge margin (16pt grid
+    /// padding + the slack the fixed 148pt cards left in their adaptive
+    /// columns) — that edge distance is the look being kept.
+    private static let gridGutter: CGFloat = 30
+    /// Covers never target smaller than this; wider screens add columns.
+    private static let minCoverSize: CGFloat = 150
+
+    private func gridLayout(for width: CGFloat) -> (columns: [GridItem], coverSize: CGFloat) {
+        let gutter = Self.gridGutter
+        let count = max(2, Int((width - gutter) / (Self.minCoverSize + gutter)))
+        let coverSize = max(1, (width - CGFloat(count + 1) * gutter) / CGFloat(count))
+        let column = GridItem(.fixed(coverSize), spacing: gutter)
+        return (Array(repeating: column, count: count), coverSize)
+    }
 
     /// Account whose albums the viewed library shows — resolved from the
     /// VIEWED library's provider (not the global active account), so the
@@ -244,33 +295,37 @@ struct LibraryView: View {
                     if isSearchExpanded { searchBar }
                 }
             } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if isSearchExpanded { searchBar }
-                        LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(filteredAlbums) { album in
-                            NavigationLink(value: album) {
-                                AlbumCard(album: album)
+                GeometryReader { geo in
+                    let layout = gridLayout(for: geo.size.width)
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            if isSearchExpanded { searchBar }
+                            LazyVGrid(columns: layout.columns, spacing: 16) {
+                                ForEach(filteredAlbums) { album in
+                                    NavigationLink(value: album) {
+                                        AlbumCard(album: album, coverSize: layout.coverSize)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button {
+                                            openForEditing(album)
+                                        } label: {
+                                            Label("Edit", systemImage: "pencil")
+                                        }
+                                        Button {
+                                            isArranging = true
+                                        } label: {
+                                            Label("Arrange", systemImage: "arrow.up.arrow.down")
+                                        }
+                                        Button("Remove from Library", role: .destructive) {
+                                            modelContext.delete(album)
+                                        }
+                                    }
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button {
-                                    openForEditing(album)
-                                } label: {
-                                    Label("Edit", systemImage: "pencil")
-                                }
-                                Button {
-                                    isArranging = true
-                                } label: {
-                                    Label("Arrange", systemImage: "arrow.up.arrow.down")
-                                }
-                                Button("Remove from Library", role: .destructive) {
-                                    modelContext.delete(album)
-                                }
-                            }
+                            .padding(.horizontal, Self.gridGutter)
+                            .padding(.vertical, 16)
                         }
-                    }
-                    .padding()
                     }
                 }
             }
@@ -426,66 +481,46 @@ struct LibraryView: View {
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
-                        if !authService.accountManager.accounts.isEmpty {
-                            // Account list — Google and Microsoft accounts
-                            // share one switcher; OneDrive accounts get a
-                            // provider suffix so same-name accounts stay
-                            // distinguishable. A checkmark marks each
-                            // account that is currently *in use* (the live
-                            // account for its provider), so when you have
-                            // both a Google and a Microsoft account signed
-                            // in, both show a checkmark even though you're
-                            // only viewing one library at a time.
+                        // Accounts grouped per provider under a bold service
+                        // header ("Google Drive" / "OneDrive"), so same-name
+                        // accounts stay distinguishable without a suffix.
+                        let accounts = authService.accountManager.accounts
+                        let googleAccounts = accounts.filter { $0.provider == .google }
+                        let microsoftAccounts = accounts.filter { $0.provider == .microsoft }
+                        if !googleAccounts.isEmpty {
                             Section {
-                                ForEach(authService.accountManager.accounts) { account in
-                                    Menu {
-                                        // "Switch to" only makes sense for accounts
-                                        // that are NOT in use. In-use accounts (the
-                                        // checkmarked ones) are switched between via
-                                        // the library menu, not here.
-                                        if !authService.accountManager.isInUse(account) {
-                                            Button {
-                                                selectAccount(account)
-                                            } label: {
-                                                Label("Switch to", systemImage: "arrow.right.arrow.left")
-                                            }
-                                        }
-                                        Button(role: .destructive) {
-                                            accountToSignOut = account.email
-                                            showSignOutConfirmation = true
-                                        } label: {
-                                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                                        }
-                                    } label: {
-                                        Label {
-                                            Text(account.provider == .microsoft
-                                                 ? "\(account.name) · OneDrive"
-                                                 : account.name)
-                                        } icon: {
-                                            if authService.accountManager.isInUse(account) {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
+                                ForEach(googleAccounts) { account in
+                                    accountMenu(for: account)
                                 }
-                                Menu {
-                                    Button {
-                                        Task { await authService.addAccount(provider: .google) }
-                                    } label: {
-                                        Label("Google Account", systemImage: "person.crop.circle")
-                                    }
-                                    Button {
-                                        Task { await authService.addAccount(provider: .microsoft) }
-                                    } label: {
-                                        Label("Microsoft Account", systemImage: "cloud")
-                                    }
-                                } label: {
-                                    Label("Add Account", systemImage: "plus")
+                            } header: {
+                                Text("Google Drive").bold()
+                            }
+                        }
+                        if !microsoftAccounts.isEmpty {
+                            Section {
+                                ForEach(microsoftAccounts) { account in
+                                    accountMenu(for: account)
                                 }
+                            } header: {
+                                Text("OneDrive").bold()
                             }
                         }
 
                         Section {
+                            Menu {
+                                Button {
+                                    Task { await authService.addAccount(provider: .google) }
+                                } label: {
+                                    Label("Google Account", systemImage: "person.crop.circle")
+                                }
+                                Button {
+                                    Task { await authService.addAccount(provider: .microsoft) }
+                                } label: {
+                                    Label("Microsoft Account", systemImage: "cloud")
+                                }
+                            } label: {
+                                Label("Add Account", systemImage: "plus")
+                            }
                             Button {
                                 showSettings = true
                             } label: {
@@ -602,7 +637,10 @@ struct LibraryView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if playerService.currentTrack != nil {
-                Color.clear.frame(height: 64)
+                // Exactly the bar's height: the grid's 16pt bottom padding then
+                // puts the last row's artist line the same distance above the
+                // bar as it would sit above a cover in the row below.
+                Color.clear.frame(height: NowPlayingBar.overlayHeight)
             }
         }
     }
@@ -1062,6 +1100,7 @@ struct LibraryView: View {
 
 struct AlbumCard: View {
     let album: Album
+    var coverSize: CGFloat = 148
 
     private var subtitle: String {
         let trimmedArtist = album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1070,7 +1109,7 @@ struct AlbumCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            AlbumArtworkThumbnail(album: album)
+            AlbumArtworkThumbnail(album: album, size: coverSize)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(album.name)
@@ -1091,7 +1130,7 @@ struct AlbumCard: View {
             // amount, keeping the right edge balanced with the left.
             .padding(.horizontal, 4)
         }
-        .frame(width: 148)
+        .frame(width: coverSize)
     }
 }
 struct AlbumArtworkThumbnail: View {
