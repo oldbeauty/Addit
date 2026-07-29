@@ -247,8 +247,7 @@ extension AlbumDetailView {
             Spacer()
 
             if isUploadingTracks {
-                ProgressView()
-                    .controlSize(.small)
+                LoadingIndicator(size: .small)
             } else if album.canEdit {
                 Menu {
                     Button {
@@ -822,14 +821,38 @@ extension AlbumDetailView {
         let cachedURL: URL?     // existing offline copy, for cloud albums
     }
 
-    func exportAlbum() {
+    /// Drive names collide and can contain "/" — either would throw mid-copy
+    /// and, before this, take the whole export down with it. Sanitize, then
+    /// disambiguate against what's already staged.
+    private static func uniqueStagingName(for name: String, existing: inout Set<String>) -> String {
+        let sanitized = TrackSplitEngine.sanitizedFileName(name)
+        let ns = sanitized as NSString
+        let ext = ns.pathExtension
+        let base = ext.isEmpty ? sanitized : ns.deletingPathExtension
+        var candidate = sanitized
+        var counter = 2
+        while existing.contains(candidate) {
+            candidate = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            counter += 1
+        }
+        existing.insert(candidate)
+        return candidate
+    }
+
+    func exportAlbum() async {
         guard !isExportingAlbum else { return }
         isExportingAlbum = true
+        exportProgress = (0, 0, "")
+        // Function-scope so every exit path clears it. This used to live
+        // inside a detached Task, so a download that stalled rather than
+        // threw left the flag stuck true — and from then on the guard above
+        // swallowed every tap, silently, for the life of the view.
+        defer { isExportingAlbum = false }
 
         // Snapshot everything we need off the SwiftData models up front, on
-        // the main actor. The heavy download/copy/zip work below runs on a
-        // detached task (so playback doesn't stutter) and must not reach back
-        // into Track/Album, which are main-actor-confined.
+        // the main actor. The blocking file work below runs on detached tasks
+        // (so playback doesn't stutter) and must not reach back into
+        // Track/Album, which are main-actor-confined.
         let isLocal = album.isLocal
         let albumName = album.name
         let coverFileId = album.coverFileId
@@ -853,91 +876,132 @@ extension AlbumDetailView {
             ? try? JSONEncoder().encode(AdditMetadata(tracklist: tracklist, artist: artistName))
             : nil
 
-        Task {
-            defer { isExportingAlbum = false }
-            do {
-                let zipURL = try await Task.detached(priority: .userInitiated) {
-                    let fm = FileManager.default
-                    let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                    let albumDir = tempDir.appendingPathComponent(albumName)
-                    try fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        // Sanitized on the main actor because TrackSplitEngine is MainActor-
+        // isolated; the detached zip step captures the finished string.
+        let safeAlbumName = TrackSplitEngine.sanitizedFileName(albumName)
+        let albumDir = tempDir.appendingPathComponent(safeAlbumName)
 
-                    if isLocal {
-                        for plan in plans {
-                            guard let sourceURL = plan.localURL,
-                                  fm.fileExists(atPath: sourceURL.path) else { continue }
-                            try fm.copyItem(at: sourceURL, to: albumDir.appendingPathComponent(plan.name))
-                        }
-                        if let localCoverPath, fm.fileExists(atPath: localCoverPath) {
-                            try fm.copyItem(atPath: localCoverPath,
-                                            toPath: albumDir.appendingPathComponent("cover.jpg").path)
-                        }
-                        if let additDataBytes {
-                            try additDataBytes.write(to: albumDir.appendingPathComponent(".addit-data"))
-                        }
+        do {
+            try fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+
+            // A single unreadable track used to abort the entire export.
+            // Stage what we can and keep a tally instead.
+            var staged = 0
+            var failed: [String] = []
+            var usedNames: Set<String> = []
+
+            for (index, plan) in plans.enumerated() {
+                exportProgress = (current: index + 1, total: plans.count, trackName: plan.name)
+                let dest = albumDir.appendingPathComponent(
+                    Self.uniqueStagingName(for: plan.name, existing: &usedNames)
+                )
+                // A local file or an offline cache copy is reusable as-is;
+                // only a cloud track with neither needs the network. Checking
+                // both regardless of `isLocal` means a mis-stamped album can't
+                // send us down the wrong branch.
+                let source = plan.localURL ?? plan.cachedURL
+                do {
+                    if let source, fm.fileExists(atPath: source.path) {
+                        try await Task.detached(priority: .userInitiated) {
+                            let fm = FileManager.default
+                            // Hardlink shares the bytes with the original;
+                            // copy is the cross-volume fallback.
+                            do { try fm.linkItem(at: source, to: dest) }
+                            catch { try fm.copyItem(at: source, to: dest) }
+                        }.value
+                    } else if isLocal {
+                        // Local album whose file is missing — nothing to fetch.
+                        throw CocoaError(.fileNoSuchFile)
                     } else {
-                        for plan in plans {
-                            let dest = albumDir.appendingPathComponent(plan.name)
-                            if let cachedURL = plan.cachedURL {
-                                // Reuse the existing offline copy without
-                                // re-downloading or re-caching; hardlink shares
-                                // the bytes, copy is the cross-volume fallback.
-                                do { try fm.linkItem(at: cachedURL, to: dest) }
-                                catch { try fm.copyItem(at: cachedURL, to: dest) }
-                            } else {
-                                // Share-only: fetch straight into the staging
-                                // folder, never touching the persistent cache.
-                                try await client.downloadFile(fileId: plan.fileId, to: dest)
-                            }
-                        }
-
-                        if let coverFileId {
-                            let coverData = try await client.downloadFileData(fileId: coverFileId)
-                            let ext: String
-                            switch coverMimeType {
-                            case "image/png": ext = "png"
-                            case "image/gif": ext = "gif"
-                            case "image/webp": ext = "webp"
-                            default: ext = "jpg"
-                            }
-                            try coverData.write(to: albumDir.appendingPathComponent("cover.\(ext)"))
-                        }
-
-                        if let additDataFileId {
-                            let additData = try await client.downloadFileData(fileId: additDataFileId)
-                            try additData.write(to: albumDir.appendingPathComponent(".addit-data"))
-                        }
+                        // Share-only: fetch straight into the staging folder,
+                        // never touching the persistent cache.
+                        try await client.downloadFile(fileId: plan.fileId, to: dest)
                     }
-
-                    // Create zip using NSFileCoordinator
-                    let zipURL = tempDir.appendingPathComponent("\(albumName).zip")
-                    let coordinator = NSFileCoordinator()
-                    var coordinatorError: NSError?
-                    var resultURL: URL?
-                    coordinator.coordinate(readingItemAt: albumDir, options: .forUploading, error: &coordinatorError) { tempZipURL in
-                        do {
-                            try fm.copyItem(at: tempZipURL, to: zipURL)
-                            resultURL = zipURL
-                        } catch {
-                            #if DEBUG
-                            print("Failed to copy zip: \(error)")
-                            #endif
-                        }
-                    }
-                    if let coordinatorError { throw coordinatorError }
-
-                    // Staging folder no longer needed once zipped.
-                    try? fm.removeItem(at: albumDir)
-                    guard let resultURL else { throw CocoaError(.fileWriteUnknown) }
-                    return resultURL
-                }.value
-
-                shareFileURL = zipURL
-            } catch {
-                #if DEBUG
-                print("Failed to create album zip: \(error)")
-                #endif
+                    staged += 1
+                } catch {
+                    failed.append(plan.name)
+                    #if DEBUG
+                    print("[Export] Skipped \(plan.name): \(error)")
+                    #endif
+                }
             }
+
+            guard staged > 0 else {
+                try? fm.removeItem(at: tempDir)
+                exportError = plans.isEmpty
+                    ? "This album has no tracks to export."
+                    : "None of the \(plans.count) tracks could be prepared. Check your connection and try again."
+                return
+            }
+
+            // Cover and metadata are nice-to-have — never fail the export.
+            if isLocal {
+                if let localCoverPath, fm.fileExists(atPath: localCoverPath) {
+                    try? fm.copyItem(atPath: localCoverPath,
+                                     toPath: albumDir.appendingPathComponent("cover.jpg").path)
+                }
+                if let additDataBytes {
+                    try? additDataBytes.write(to: albumDir.appendingPathComponent(".addit-data"))
+                }
+            } else {
+                if let coverFileId,
+                   let coverData = try? await client.downloadFileData(fileId: coverFileId) {
+                    let ext: String
+                    switch coverMimeType {
+                    case "image/png": ext = "png"
+                    case "image/gif": ext = "gif"
+                    case "image/webp": ext = "webp"
+                    default: ext = "jpg"
+                    }
+                    try? coverData.write(to: albumDir.appendingPathComponent("cover.\(ext)"))
+                }
+                if let additDataFileId,
+                   let additData = try? await client.downloadFileData(fileId: additDataFileId) {
+                    try? additData.write(to: albumDir.appendingPathComponent(".addit-data"))
+                }
+            }
+
+            exportProgress = (current: plans.count, total: plans.count, trackName: "Compressing…")
+            let zipURL = try await Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
+                let zipURL = tempDir.appendingPathComponent("\(safeAlbumName).zip")
+                let coordinator = NSFileCoordinator()
+                var coordinatorError: NSError?
+                var copyError: Error?
+                var resultURL: URL?
+                coordinator.coordinate(readingItemAt: albumDir, options: .forUploading, error: &coordinatorError) { tempZipURL in
+                    do {
+                        try fm.copyItem(at: tempZipURL, to: zipURL)
+                        resultURL = zipURL
+                    } catch {
+                        // Previously swallowed, which turned any zip-copy
+                        // failure into a bare "unknown write error".
+                        copyError = error
+                    }
+                }
+                if let coordinatorError { throw coordinatorError }
+                if let copyError { throw copyError }
+
+                // Staging folder no longer needed once zipped.
+                try? fm.removeItem(at: albumDir)
+                guard let resultURL else { throw CocoaError(.fileWriteUnknown) }
+                return resultURL
+            }.value
+
+            #if DEBUG
+            if !failed.isEmpty {
+                print("[Export] \(albumName): shipped \(staged)/\(plans.count), skipped \(failed)")
+            }
+            #endif
+            shareFileURL = zipURL
+        } catch {
+            try? fm.removeItem(at: tempDir)
+            exportError = error.localizedDescription
+            #if DEBUG
+            print("Failed to create album zip: \(error)")
+            #endif
         }
     }
 

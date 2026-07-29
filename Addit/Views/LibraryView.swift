@@ -577,8 +577,7 @@ struct LibraryView: View {
                     .ignoresSafeArea()
                     .overlay {
                         VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.2)
+                            LoadingIndicator()
 
                             if importProgress.total > 0 {
                                 Text("Track \(importProgress.current) of \(importProgress.total)")

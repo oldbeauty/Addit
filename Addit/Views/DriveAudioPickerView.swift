@@ -119,7 +119,7 @@ private struct AudioFileBrowserView: View {
     var body: some View {
         Group {
             if isLoading {
-                ProgressView("Loading...")
+                LoadingIndicator(label: "Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage {
                 ContentUnavailableView(

@@ -89,7 +89,7 @@ struct NowPlayingBar: View {
                 Spacer()
 
                 if playerService.isLoading {
-                    ProgressView()
+                    LoadingIndicator()
                         .frame(width: 32, height: 32)
                 } else {
                     Button {

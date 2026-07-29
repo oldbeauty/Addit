@@ -33,7 +33,7 @@ struct SharingSheet: View {
         NavigationStack {
             Group {
                 if isLoading {
-                    ProgressView()
+                    LoadingIndicator()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let errorMessage {
                     ContentUnavailableView {
@@ -95,7 +95,7 @@ struct SharingSheet: View {
         .overlay {
             if isSaving {
                 Color.black.opacity(0.05).ignoresSafeArea()
-                ProgressView()
+                LoadingIndicator()
             }
         }
     }

@@ -12,8 +12,7 @@ struct ContentView: View {
         Group {
             if authService.isRestoringSession || authService.isSwitchingAccount {
                 VStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
+                    LoadingIndicator(size: .large)
                     Text("addit")
                         .font(.uiTitle2.weight(.semibold))
                         .foregroundStyle(.secondary)

@@ -37,6 +37,8 @@ struct AlbumDetailView: View {
     @State private var toolbarActionGeneration = 0
     @State var shareFileURL: URL?
     @State var isExportingAlbum = false
+    @State var exportProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
+    @State var exportError: String?
     /// Duration (seconds) per track, keyed by `track.googleFileId`. Populated
     /// by `calculateAlbumDuration()` from cached / on-disk audio files. Used
     /// for both the album total and per-disc totals.
@@ -106,8 +108,7 @@ struct AlbumDetailView: View {
             .ignoresSafeArea()
             .overlay {
                 VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.2)
+                    LoadingIndicator()
 
                     if progress.total > 0 {
                         Text("\(countPrefix) \(progress.current) of \(progress.total)")
@@ -413,7 +414,7 @@ struct AlbumDetailView: View {
                 RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
                     .fill(.ultraThinMaterial)
                     .frame(width: coverSize, height: coverSize)
-                ProgressView()
+                LoadingIndicator()
             }
         }
     }
@@ -539,8 +540,8 @@ struct AlbumDetailView: View {
             Divider()
 
             Button {
-                exportAlbum()
                 withAnimation { showToolbarActions = false }
+                Task { await exportAlbum() }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -814,7 +815,7 @@ struct AlbumDetailView: View {
                 Section {
                     HStack {
                         Spacer()
-                        ProgressView("Syncing from Drive...")
+                        LoadingIndicator(label: "Syncing from Drive...")
                         Spacer()
                     }
                     .listRowBackground(Color.clear)
@@ -855,7 +856,7 @@ struct AlbumDetailView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if isSavingEdits {
-                        ProgressView()
+                        LoadingIndicator(size: .small)
                     } else {
                         Button("Save") {
                             Task { await saveEdits() }
@@ -938,6 +939,18 @@ struct AlbumDetailView: View {
                 )
             }
         }
+        // Album export stages every track (downloading the uncached ones)
+        // before the share sheet can appear, which is slow enough that
+        // without this the tap looked like it did nothing at all.
+        .overlay {
+            if isExportingAlbum {
+                progressCardOverlay(
+                    progress: exportProgress,
+                    countPrefix: "Track",
+                    fallback: "Preparing export..."
+                )
+            }
+        }
     }
 
     private var presentationLayer: some View {
@@ -961,23 +974,25 @@ struct AlbumDetailView: View {
         } message: {
             Text(saveToDriveError ?? "")
         }
+        .alert("Export Failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK") { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
         .navigationDestination(isPresented: $navigateToChat) {
             ChatView(album: album)
         }
         .sheet(isPresented: Binding(
             get: { shareFileURL != nil },
-            set: { if !$0 {
-                // Discard the transient temp file once sharing is done so a
-                // "send only" leaves nothing behind. (If it was a hardlink to
-                // the cache, this just drops the extra link, not the bytes.)
-                if let url = shareFileURL {
-                    try? FileManager.default.removeItem(at: url)
-                }
-                shareFileURL = nil
-            } }
+            set: { if !$0 { discardSharedFile() } }
         )) {
             if let url = shareFileURL {
-                ShareSheet(activityItems: [url])
+                // Also cleans up on the activity controller's own dismissal,
+                // which never reaches the binding setter above.
+                ShareSheet(activityItems: [url]) { discardSharedFile() }
             }
         }
         .fullScreenCover(item: $trackToSplit, onDismiss: refreshTracklist) { splitTrack in
@@ -986,6 +1001,28 @@ struct AlbumDetailView: View {
                 .environment(cacheService)
                 .environment(themeService)
                 .environment(playerService)
+        }
+    }
+
+    /// Drops the staged export once sharing ends, so a "send only" leaves
+    /// nothing behind. (A hardlinked source only loses the extra link here,
+    /// never the bytes.) Album exports nest their zip in a per-export UUID
+    /// directory that has to go too, or every export strands a wrapper dir;
+    /// single-track exports sit directly in tmp, so the parent is only removed
+    /// when it is a strict subdirectory — deleting tmp itself would take every
+    /// other subsystem's scratch files with it.
+    func discardSharedFile() {
+        guard let url = shareFileURL else { return }
+        shareFileURL = nil
+
+        let fm = FileManager.default
+        try? fm.removeItem(at: url)
+
+        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+        let parent = url.deletingLastPathComponent()
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        if parent != tmp, parent.hasPrefix(tmp + "/") {
+            try? fm.removeItem(atPath: parent)
         }
     }
 

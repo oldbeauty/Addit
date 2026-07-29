@@ -91,7 +91,7 @@ struct CreateAlbumView: View {
         .overlay {
             if isCreating {
                 Color.black.opacity(0.1).ignoresSafeArea()
-                ProgressView("Creating...")
+                LoadingIndicator(label: "Creating...")
                     .padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
@@ -207,7 +207,7 @@ struct ParentFolderBrowserView: View {
     var body: some View {
         Group {
             if isLoading {
-                ProgressView("Loading...")
+                LoadingIndicator(label: "Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage {
                 ContentUnavailableView(

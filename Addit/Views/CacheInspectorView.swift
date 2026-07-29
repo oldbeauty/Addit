@@ -15,8 +15,9 @@ import SwiftData
 ///     coverFileId matches.
 ///   - Documents/LocalAlbums/<dir>          → orphan if no Track's
 ///     localFilePath points inside that dir.
-///   - tmp/                                 → everything is transient by
-///     definition; listed for visibility, never flagged.
+///   - tmp/                                 → orphan once nothing has written
+///     to it for `staleTmpAfter`; a staged export is only live while its
+///     share sheet is up, so anything older than that was abandoned.
 /// Account-level folders whose account is no longer in the switcher are
 /// called out in the section title.
 struct CacheInspectorView: View {
@@ -198,8 +199,12 @@ struct CacheInspectorView: View {
             }
         ))
 
-        // tmp — transient by definition (exports, conversions); never
-        // orphan-flagged so Clean Orphans won't yank a mid-flight export.
+        // tmp — exports and conversions stage here. This used to be flatly
+        // `isOrphan: false` to keep Clean Orphans off a mid-flight export,
+        // but that also made abandoned exports invisible: they still counted
+        // toward "Total on disk" while "Orphaned items" read 0, and Clean
+        // Orphans skipped them, so they accumulated with no way to reclaim
+        // them. Idle time separates the two cases instead.
         result.append(ScanSection(
             title: "tmp (transient)",
             path: fm.temporaryDirectory.path,
@@ -208,13 +213,15 @@ struct CacheInspectorView: View {
                 .map { url -> ScanEntry in
                     var isDir: ObjCBool = false
                     fm.fileExists(atPath: url.path, isDirectory: &isDir)
+                    let idle = idleInterval(of: url)
+                    let abandoned = idle > Self.staleTmpAfter
                     return ScanEntry(
                         url: url,
                         name: url.lastPathComponent,
                         size: isDir.boolValue ? directorySize(url) : fileSize(url),
                         isDirectory: isDir.boolValue,
-                        isOrphan: false,
-                        note: nil
+                        isOrphan: abandoned,
+                        note: abandoned ? "abandoned · idle \(Self.duration(idle))" : "in flight"
                     )
                 } ?? []
         ))
@@ -267,6 +274,35 @@ struct CacheInspectorView: View {
 
     private func fileSize(_ url: URL) -> Int64 {
         Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+    }
+
+    /// A staged export outlives any single write — the zip lands well after
+    /// its wrapper directory is created — so staleness is measured from the
+    /// newest write *anywhere* inside, not the directory's own timestamp.
+    private func idleInterval(of url: URL) -> TimeInterval {
+        var newest = modificationDate(of: url) ?? .distantPast
+        if let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.contentModificationDateKey], options: []
+        ) {
+            for case let child as URL in enumerator {
+                if let date = modificationDate(of: child), date > newest { newest = date }
+            }
+        }
+        return Date().timeIntervalSince(newest)
+    }
+
+    private func modificationDate(of url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    /// Grace period before an idle tmp entry counts as abandoned. Comfortably
+    /// longer than a slow multi-track export plus time spent in the share
+    /// sheet, short enough that leftovers surface the same session.
+    private static let staleTmpAfter: TimeInterval = 60 * 60
+
+    private static func duration(_ interval: TimeInterval) -> String {
+        let hours = Int(interval) / 3600
+        return hours < 24 ? "\(hours)h" : "\(hours / 24)d"
     }
 
     private func directorySize(_ url: URL) -> Int64 {

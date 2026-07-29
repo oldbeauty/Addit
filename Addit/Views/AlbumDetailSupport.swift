@@ -179,9 +179,19 @@ struct DiscMarkerRow: View {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
+    /// UIActivityViewController dismisses *itself* — via its close button or
+    /// once an activity finishes — without ever touching the SwiftUI
+    /// `isPresented` binding that presented it. Nothing then flips the binding
+    /// to false, so its cleanup closure never runs and the staged export file
+    /// is stranded in tmp for good. This handler is the only signal SwiftUI
+    /// gets; it fires on completion *and* on cancel.
+    var onFinish: () -> Void = {}
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: activityItems,
+                                                  applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in onFinish() }
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

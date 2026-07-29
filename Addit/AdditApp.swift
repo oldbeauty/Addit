@@ -33,6 +33,30 @@ struct AdditApp: App {
         _cloudRouter = State(initialValue: router)
     }
 
+    /// Export staging (zips, hardlinked track copies) lives in tmp and is
+    /// discarded when its share sheet closes. Anything still there at launch
+    /// outlived the process that owned it, so nothing can be mid-flight and
+    /// nothing will ever claim it again — without this it accrues forever, and
+    /// the Cache Inspector that would otherwise expose it is DEBUG-only.
+    private static func sweepTemporaryDirectory() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: fm.temporaryDirectory, includingPropertiesForKeys: [.fileSizeKey], options: []
+        ) else { return }
+        #if DEBUG
+        var reclaimed: Int64 = 0
+        for url in entries {
+            reclaimed += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        if !entries.isEmpty {
+            print("[Cache] tmp sweep: \(entries.count) leftover item(s), ~\(reclaimed) bytes at top level")
+        }
+        #endif
+        for url in entries {
+            try? fm.removeItem(at: url)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             AccountContainerView()
@@ -57,6 +81,7 @@ struct AdditApp: App {
                     playerService.cacheService = cacheService
                     playerService.albumArtService = albumArtService
                     analyzerService.configure(playerService: playerService)
+                    Self.sweepTemporaryDirectory()
                     await authCoordinator.restorePreviousSignIn()
                 }
         }
@@ -68,18 +93,21 @@ struct AccountContainerView: View {
     @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(AudioCacheService.self) private var cacheService
     @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(ThemeService.self) private var themeService
 
     var body: some View {
         Group {
             if authService.isRestoringSession {
                 // Wait for auth to resolve before creating any ModelContainer
                 VStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
+                    LoadingIndicator(size: .large)
                     Text("addit")
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
+                // ContentView tints its own copy of this splash; match it here
+                // so launch and account-switch look identical.
+                .tint(themeService.accentColor)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let email = authService.userEmail {
                 ContentView()

@@ -287,8 +287,7 @@ struct NowPlayingView: View {
                 } label: {
                     ZStack {
                         if playerService.isLoading {
-                            ProgressView()
-                                .scaleEffect(1.5)
+                            LoadingIndicator(size: .large)
                         } else {
                             Image(systemName: playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                                 .font(.ui(60))

@@ -165,8 +165,7 @@ struct TrackSplitView: View {
                     .frame(maxWidth: 220)
                     .tint(themeService.accentColor)
             } else {
-                ProgressView()
-                    .tint(themeService.accentColor)
+                LoadingIndicator(tint: themeService.accentColor)
             }
             Text(label)
                 .font(.uiSubheadline)
@@ -584,8 +583,7 @@ struct TrackSplitView: View {
         ZStack {
             Color.black.opacity(0.55).ignoresSafeArea()
             VStack(spacing: 14) {
-                ProgressView()
-                    .tint(themeService.accentColor)
+                LoadingIndicator(tint: themeService.accentColor)
                 Text(saveStatus)
                     .font(.uiSubheadline)
                     .foregroundStyle(.primary)

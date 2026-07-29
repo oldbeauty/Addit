@@ -37,7 +37,7 @@ struct ChatView: View {
             if isLoading && messages.isEmpty {
                 VStack {
                     Spacer()
-                    ProgressView("Loading messages...")
+                    LoadingIndicator(label: "Loading messages...")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
