@@ -635,7 +635,11 @@ struct AlbumDetailView: View {
             } label: {
                 Label("Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
             }
-            .tint(themeService.accentColor)
+            // The system draws this label white in BOTH schemes and ignores
+            // any styling we put on it, so the tint has to carry the contrast.
+            // Only bites on the pale end of the palette; darker accents pass
+            // through untouched.
+            .tint(themeService.accentColor.legibleUnderWhiteLabel)
         }
         .overlay(alignment: .trailing) {
             if queuedTrackId == track.googleFileId {
@@ -644,7 +648,11 @@ struct AlbumDetailView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(themeService.accentColor, in: Capsule())
+                    // Same deepened fill as the swipe pill that triggers it —
+                    // the confirmation should read as the same object as the
+                    // control. White is always right on it: the fill is capped
+                    // below `legibleForeground`'s flip point by construction.
+                    .background(themeService.accentColor.legibleUnderWhiteLabel, in: Capsule())
                     .transition(.opacity.combined(with: .scale))
                     .padding(.trailing, 8)
             }

@@ -34,7 +34,10 @@ struct SignInView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(themeService.accentColor)
+                    // Deepened like the queue chips so the white label holds up
+                    // against a pale accent — this is the one control on the
+                    // screen a signed-out user has to be able to read.
+                    .background(themeService.accentColor.legibleUnderWhiteLabel)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 }

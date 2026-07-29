@@ -26,6 +26,42 @@ extension Color {
         let luminance = 0.299 * r + 0.587 * g + 0.114 * b
         return luminance > 0.6 ? .black : .white
     }
+
+    /// This color, darkened only as far as it takes for a **white** label to
+    /// stay readable on top of it. Returns itself when it is already dark
+    /// enough.
+    ///
+    /// For controls we draw ourselves, `legibleForeground` is the better tool —
+    /// it keeps the accent exact and flips the text instead. This exists for
+    /// system-drawn chrome where the label color isn't ours to set: a
+    /// `.swipeActions` button template-renders its icon and title white — in
+    /// *both* schemes, verified on iOS 26 — and ignores `foregroundStyle`, a
+    /// `colorScheme` override, and per-component styling inside the `Label`
+    /// alike. The tint is the only lever left, so a pale accent from the
+    /// palette (`F1E9DB`, `FFFFFF`) has to give way here or the glyph vanishes
+    /// into its own pill. Note this is not a dark-mode-only problem even though
+    /// that's where it shows up: accents are stored per scheme, so it surfaces
+    /// in whichever scheme the pale color was picked for.
+    ///
+    /// The one escape hatch, if you ever want the accent shown at its exact
+    /// value: a `UIImage` carrying `.alwaysOriginal` keeps its own color, but
+    /// *only* as the button's entire label. Give it a `Label` with title text
+    /// alongside and the white template pass comes back for both.
+    ///
+    /// Scaling every channel by one factor is exactly a reduction in HSB
+    /// brightness: hue and saturation come through untouched, so the pill still
+    /// reads as the user's accent, just deeper.
+    var legibleUnderWhiteLabel: Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        // Sits under `legibleForeground`'s 0.6 flip point with a little margin,
+        // so the two helpers can never disagree about the same color.
+        let ceiling: CGFloat = 0.55
+        guard luminance > ceiling else { return self }
+        let factor = ceiling / luminance
+        return Color(red: r * factor, green: g * factor, blue: b * factor, opacity: a)
+    }
 }
 
 extension View {

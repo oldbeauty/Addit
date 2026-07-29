@@ -336,7 +336,10 @@ struct NowPlayingView: View {
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
-                                    .background(themeService.accentColor, in: Capsule())
+                                    // Deepened like the other queue chips, or a
+                                    // pale accent swallows the count whole —
+                                    // worst here, where the digit is 10pt.
+                                    .background(themeService.accentColor.legibleUnderWhiteLabel, in: Capsule())
                                     .offset(x: 10, y: -8)
                             }
                         }
