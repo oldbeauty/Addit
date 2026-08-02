@@ -104,13 +104,76 @@ struct LibraryView: View {
         Task { await authService.switchAccount(to: account.email) }
     }
 
-    /// One row of the account switcher: name with the email as a smaller
-    /// subtitle beneath it (the second Text renders as a menu subtitle).
-    /// A checkmark marks each account that is currently *in use* (the live
-    /// account for its provider) — with a Google and a Microsoft account
-    /// both signed in, both show a checkmark even though only one library
-    /// is viewed at a time.
-    private func accountMenu(for account: Account) -> some View {
+    /// One provider's accounts under a header carrying the domain they have in
+    /// common — "**Google Drive**  @gmail.com" — so each row below only has to
+    /// show the half that actually distinguishes it.
+    @ViewBuilder
+    private func accountSection(_ accounts: [Account], provider: AccountProvider) -> some View {
+        let domain = sharedEmailDomain(of: accounts)
+        Section {
+            ForEach(accounts) { account in
+                // Strip only what the header is already showing.
+                accountMenu(
+                    for: account,
+                    subtitle: domain == nil ? account.email : emailLocalPart(account.email)
+                )
+            }
+        } header: {
+            Text(sectionHeader(provider: provider, domain: domain))
+        }
+    }
+
+    /// "**Google Drive**  @gmail.com" — the provider heavier than a plain bold,
+    /// the domain trailing it a size down and in secondary, so it reads as an
+    /// annotation rather than as part of the name.
+    ///
+    /// Built as an `AttributedString` because per-run *size* and *color* need
+    /// real attributes; Markdown's `**` only carries weight. Be aware this is
+    /// best-effort: SwiftUI hands a menu section header to UIKit, whose
+    /// `UIMenu.title` is a plain `String`, so the styling may be dropped even
+    /// though the text itself always survives.
+    private func sectionHeader(provider: AccountProvider, domain: String?) -> AttributedString {
+        var title = AttributedString(provider.displayName)
+        title.font = .footnote.weight(.heavy)
+        guard let domain else { return title }
+
+        var suffix = AttributedString("  @\(domain)")
+        suffix.font = .caption2
+        suffix.foregroundColor = .secondary
+        return title + suffix
+    }
+
+    /// The domain every one of `accounts` shares, or `nil` if they don't all
+    /// share one. Two accounts differing only after the `@` — a personal and a
+    /// work Google account, say — would otherwise both collapse to the same
+    /// row under a header claiming a domain that fits only one of them, so in
+    /// that case the rows keep their full addresses.
+    private func sharedEmailDomain(of accounts: [Account]) -> String? {
+        let domains = accounts.map { emailDomain($0.email) }
+        guard let first = domains.first, let domain = first,
+              domains.allSatisfy({ $0 == domain }) else { return nil }
+        return domain
+    }
+
+    private func emailDomain(_ email: String) -> String? {
+        guard let at = email.lastIndex(of: "@") else { return nil }
+        let domain = email[email.index(after: at)...]
+        return domain.isEmpty ? nil : String(domain)
+    }
+
+    private func emailLocalPart(_ email: String) -> String {
+        guard let at = email.lastIndex(of: "@") else { return email }
+        return String(email[..<at])
+    }
+
+    /// One row of the account switcher: name with `subtitle` as a smaller line
+    /// beneath it (the second Text renders as a menu subtitle) — the local part
+    /// of the address where the section header already carries the domain, the
+    /// whole address where it doesn't. A checkmark marks each account that is
+    /// currently *in use* (the live account for its provider) — with a Google
+    /// and a Microsoft account both signed in, both show a checkmark even
+    /// though only one library is viewed at a time.
+    private func accountMenu(for account: Account, subtitle: String) -> some View {
         Menu {
             // "Switch to" only makes sense for accounts that are NOT in
             // use. In-use accounts (the checkmarked ones) are switched
@@ -133,7 +196,7 @@ struct LibraryView: View {
             // menu bridge recognizes as title/subtitle/icon — wrapping the
             // texts in a Label swallows the subtitle.
             Text(account.name)
-            Text(account.email)
+            Text(subtitle)
             if authService.accountManager.isInUse(account) {
                 Image(systemName: "checkmark")
             }
@@ -488,22 +551,10 @@ struct LibraryView: View {
                         let googleAccounts = accounts.filter { $0.provider == .google }
                         let microsoftAccounts = accounts.filter { $0.provider == .microsoft }
                         if !googleAccounts.isEmpty {
-                            Section {
-                                ForEach(googleAccounts) { account in
-                                    accountMenu(for: account)
-                                }
-                            } header: {
-                                Text("Google Drive").bold()
-                            }
+                            accountSection(googleAccounts, provider: .google)
                         }
                         if !microsoftAccounts.isEmpty {
-                            Section {
-                                ForEach(microsoftAccounts) { account in
-                                    accountMenu(for: account)
-                                }
-                            } header: {
-                                Text("OneDrive").bold()
-                            }
+                            accountSection(microsoftAccounts, provider: .microsoft)
                         }
 
                         Section {
@@ -639,7 +690,7 @@ struct LibraryView: View {
                 // Exactly the bar's height: the grid's 16pt bottom padding then
                 // puts the last row's artist line the same distance above the
                 // bar as it would sit above a cover in the row below.
-                Color.clear.frame(height: NowPlayingBar.overlayHeight)
+                Color.clear.frame(height: NowPlayingPill.overlayHeight)
             }
         }
     }

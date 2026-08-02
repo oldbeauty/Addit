@@ -2,10 +2,41 @@ import SwiftUI
 import UIKit
 import SwiftData
 
+/// The expanded state of `NowPlayingPill` — content only. It is *not* a sheet
+/// and doesn't own a background, a width, or its own dismissal.
+///
+/// This view is **always present**, at both ends of the morph and everywhere
+/// between: the pill lays it out at its full height permanently and clips it,
+/// and `progress` decides what you can see of it. That means:
+///
+/// - Nothing here may size itself from the available height, and nothing may
+///   be added that only makes sense expanded — the collapsed pill is this same
+///   view, faded down to its four travelling components.
+/// - Those four components (artwork, track info, scrubber, play/pause) live in
+///   `MorphSlot`s, which draw them somewhere between the position the layout
+///   below gives them and the position `MiniLayout` defines for the mini bar.
+///   Everything else is `.nowPlayingChrome(progress)` and simply fades.
+/// - The card is narrower than the old sheet (the pill's 12pt insets, then
+///   this view's own), so horizontal budgets are tight — the transport row in
+///   particular is spaced to fit rather than to breathe.
 struct NowPlayingView: View {
-    /// Called when the user taps the album artwork tile. The host is
-    /// expected to push the album onto its navigation stack and dismiss
-    /// this sheet, so the album view appears behind the dismissing player.
+    /// 0 = collapsed to the mini bar, 1 = fully expanded. Drives every
+    /// transform in this file; nothing here animates by resizing.
+    let progress: CGFloat
+
+    /// The card's current size, which is what `MiniLayout`'s frames are
+    /// measured against. Its height changes as the pill opens; its width
+    /// never does.
+    let cardSize: CGSize
+
+    /// Raised for the length of a scrub on either scrubber. It belongs to the
+    /// pill, whose tap-to-expand gesture is the thing that has to ignore the
+    /// touch-up that ends a scrub.
+    @Binding var isScrubbing: Bool
+
+    /// Called when the user taps the album artwork while expanded. The host
+    /// pushes the album and collapses the pill, so the album view is what's
+    /// behind the shrinking card.
     var onOpenAlbum: ((Album) -> Void)? = nil
 
     @Environment(\.modelContext) private var modelContext
@@ -13,9 +44,22 @@ struct NowPlayingView: View {
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(ThemeService.self) private var themeService
     @Environment(AudioAnalyzerService.self) private var analyzer
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
+    /// The current cover's own colour, or `nil` for art with none to take.
+    @State private var coverAccent: Color?
+
+    /// `coverAccent` already pushed to a luminance that reads in the current
+    /// scheme — the finished value the waveform draws with.
+    ///
+    /// Both of these are cached rather than derived in `body`, and for the same
+    /// reason: this body reads `currentTime`, so it re-runs on every playhead
+    /// tick. Deriving the colour there would repeat a pixel scan *and* a
+    /// `UIColor` round-trip dozens of times a second to reach the same answer.
+    /// The two inputs that can change it — the artwork and the colour scheme —
+    /// each recompute it once, in `refreshCoverAccent`.
+    @State private var legibleCoverAccent: Color?
     @State private var showQueueSheet = false
     @State private var showVisualizer = false
     /// Live drag offset for the custom two-page pager that flips between
@@ -23,6 +67,9 @@ struct NowPlayingView: View {
     /// this yields a continuous 0…1 progress used to morph the cover into
     /// the ambient halo mid-swipe.
     @State private var dragOffset: CGFloat = 0
+    /// The halfway point of the morph, and so which set of controls is the
+    /// live one. `MorphSlot` hands hit-testing over at the same threshold.
+    private var isCollapsed: Bool { progress < 0.5 }
 
     private var artworkTaskID: String? {
         guard let album = playerService.currentTrack?.album else { return nil }
@@ -34,43 +81,496 @@ struct NowPlayingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Drag indicator
+            header
+
+            artwork
+
+            pageIndicator
+
+            Spacer()
+                .frame(height: 16)
+
+            trackInfo
+
+            Spacer()
+                .frame(height: 24)
+
+            scrubber
+
+            Spacer(minLength: 16)
+
+            centeredWaveform
+
+            Spacer(minLength: 16)
+
+            transportControls
+
+            Spacer()
+
+            queueButton
+        }
+        // No top padding — the drag indicator brings its own, and the
+        // card's top edge is this view's top edge.
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .sheet(isPresented: $showQueueSheet) {
+            QueueView()
+        }
+        .onChange(of: isCollapsed) { _, collapsed in
+            // Send the pager back to the album page on the way down. The
+            // artwork that travels into the mini slot is this same view, so
+            // leaving it on the EQ page would put a visualiser in the mini
+            // bar's cover tile.
+            if collapsed && showVisualizer {
+                showVisualizer = false
+                dragOffset = 0
+            }
+        }
+        // The pill only removes this view when playback itself goes away, so
+        // this is the last chance to release the analyzer tap.
+        .onDisappear { analyzer.removeConsumer("eq-page") }
+        .task(id: artworkTaskID) {
+            albumImage = await loadedArtwork()
+            coverAccent = albumImage.flatMap(CoverColor.accent(from:))
+            refreshCoverAccent()
+        }
+        // The extracted colour outlives a scheme flip; only the clamp on it
+        // has to be redone.
+        .onChange(of: colorScheme) { _, _ in refreshCoverAccent() }
+    }
+
+    private func refreshCoverAccent() {
+        legibleCoverAccent = coverAccent?.legibleOnAppBackground(colorScheme)
+    }
+
+    private func loadedArtwork() async -> UIImage? {
+        guard let album = playerService.currentTrack?.album else { return nil }
+        if album.isLocal {
+            guard let path = album.resolvedLocalCoverPath else { return nil }
+            return UIImage(contentsOfFile: path)
+        }
+        let resolution = await albumArtService.resolveAlbumArt(for: album)
+        albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
+        return resolution.image
+    }
+
+    /// Ink for the collapsed pill's waveform.
+    ///
+    /// **Parked, not removed.** `legibleCoverAccent` — the cover's own colour,
+    /// pushed to a luminance the current scheme can show — is still extracted
+    /// and kept up to date above; it just isn't drawn with yet. Switching it
+    /// back on is this one line:
+    ///
+    ///     legibleCoverAccent ?? themeService.accentColor
+    private var miniWaveformColor: Color {
+        themeService.accentColor
+    }
+
+    // MARK: - Chrome
+
+    /// Grab indicator + album name. The indicator is now the honest signal it
+    /// always looked like: dragging the card down is what closes it.
+    private var header: some View {
+        VStack(spacing: 0) {
             Capsule()
                 .fill(.secondary.opacity(0.5))
                 .frame(width: 40, height: 5)
                 .padding(.top, 8)
 
-            // Album / folder name — sits between the drag indicator and the cover
             Text(playerService.currentTrack?.album?.name ?? "")
                 .font(.uiSubheadline)
                 .foregroundStyle(.secondary)
                 .fadingTruncation(alignment: .center)
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 16)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 14)
+        }
+        .nowPlayingChrome(progress)
+    }
 
-            // Album art / EQ visualizer — custom two-page pager so we can
-            // track continuous swipe progress and morph the cover into an
-            // ambient "color halo" as the user scrolls toward the EQ page.
-            // A stock `TabView(.page)` would only expose the final commit,
-            // not the live drag fraction we need to drive the blur/corner/
-            // scale interpolation.
-            GeometryReader { geo in
-                let pageWidth = max(0, geo.size.width)
-                // Combine the latched page (`showVisualizer`) with the live
-                // finger offset to get a continuous 0…1 progress: 0 =
-                // album cover, 1 = EQ visualizer.
-                let committedOffset: CGFloat = showVisualizer ? -pageWidth : 0
-                let totalOffset = committedOffset + dragOffset
-                let rawProgress = pageWidth > 0 ? -totalOffset / pageWidth : 0
-                let pageProgress = max(0, min(1, rawProgress))
+    /// Rides with the artwork instead of fading where it stands. The dots
+    /// belong to the cover — they say which page of it you're on — so they
+    /// travel to the cover's collapsed position and fade out there, rather
+    /// than sitting still while everything around them moves.
+    ///
+    /// A slot with no mini form: nothing here exists in the collapsed pill, so
+    /// there's nothing to cross-fade with. The travel comes from the slot, the
+    /// fade from `nowPlayingChrome` on the content inside it.
+    private var pageIndicator: some View {
+        MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.artwork) {
+            HStack(spacing: 12) {
+                // Album icon — small rounded square
+                Image(systemName: "square.fill")
+                    .font(.ui(8))
+                    .foregroundColor(showVisualizer ? .secondary.opacity(0.4) : .primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 1.5))
 
-                // Skip the whole subtree until GeometryReader has handed
-                // us a real width. On the first layout pass `pageWidth` is
-                // 0, and the EQ visualizer's internal `.padding(...)` then
-                // resolves to a negative content frame — which is exactly
-                // what triggers the "Invalid frame dimension" console spam.
-                if pageWidth > 0 {
+                // EQ icon — small bar chart
+                Image(systemName: "chart.bar.fill")
+                    .font(.ui(10))
+                    .foregroundColor(showVisualizer ? .primary : .secondary.opacity(0.4))
+            }
+            .nowPlayingChrome(progress)
+        }
+        // Matched to the artwork's collapsed width so the slot's own scale
+        // factor is 1 — this travels, it doesn't shrink.
+        .frame(width: MiniLayout.artworkSize, height: 14)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+    }
+
+    /// Centered live waveform — shows ±2 s around the playhead, scrolling
+    /// right→left as playback progresses. Also acts as a high-precision
+    /// scrubber: dragging maps ~20 ms per point, versus the full-width
+    /// scrubber above where one point covers a much larger slice of the track.
+    private var centeredWaveform: some View {
+        // Built only once the pill is off the floor. This `Canvas` redraws on
+        // every playhead tick, and it would go on doing that behind an opacity
+        // of 0 for as long as the pill stayed collapsed. The frame stays either
+        // way so the layout above and below it never moves.
+        Group {
+            if progress > 0.01 {
+                CenteredWaveformView(
+                    currentTime: playerService.isSeeking ? seekValue : playerService.currentTime,
+                    duration: playerService.duration,
+                    accentColor: themeService.accentColor,
+                    samples: playerService.waveformSamples,
+                    samplesPerSecond: playerService.waveformSamplesPerSecond,
+                    onScrubStart: {
+                        isScrubbing = true
+                        if !playerService.isSeeking {
+                            seekValue = playerService.currentTime
+                            playerService.beginSeeking()
+                        }
+                    },
+                    onScrubChange: { newValue in
+                        seekValue = newValue
+                        playerService.currentTime = newValue
+                    },
+                    onScrubEnd: { finalValue in
+                        playerService.endSeeking(to: finalValue)
+                        isScrubbing = false
+                    }
+                )
+            }
+        }
+        .frame(width: 200, height: 36)
+        .contrastPanel(.centeredWaveform)
+        .nowPlayingChrome(progress)
+    }
+
+    @ViewBuilder
+    private var queueButton: some View {
+        if !playerService.queue.isEmpty {
+            Button {
+                showQueueSheet = true
+            } label: {
+                Image(systemName: "list.bullet")
+                    .font(.uiTitle3)
+                    .foregroundStyle(.primary.opacity(0.6))
+                    .overlay(alignment: .topTrailing) {
+                        if !playerService.userQueue.isEmpty {
+                            Text("\(playerService.userQueue.count)")
+                                .font(.ui(10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                // Deepened like the other queue chips, or a
+                                // pale accent swallows the count whole —
+                                // worst here, where the digit is 10pt.
+                                .background(themeService.accentColor.legibleUnderWhiteLabel, in: Capsule())
+                                .offset(x: 10, y: -8)
+                        }
+                    }
+            }
+            .padding(.bottom, 16)
+            .nowPlayingChrome(progress)
+        }
+    }
+
+    // MARK: - Travelling components
+
+    /// The cover travels like everything else, but its collapsed form is the
+    /// mini bar's original 44pt tile rather than the expanded cover shrunk.
+    ///
+    /// Scaling was the obvious implementation and the wrong one: a `scaleEffect`
+    /// of ~0.16 hands the compositor a 279pt raster to filter down to 44, and
+    /// what comes back is crunchier than art drawn at 44pt to begin with. It
+    /// also drags the expanded cover's own dressing along — a 20pt corner
+    /// radius arriving as 3, a drop shadow arriving as a dark halo — none of
+    /// which the mini tile ever had. Drawing the real tile at the real size
+    /// settles all of it at once, and the two forms cross-fade mid-flight the
+    /// way the text and scrubbers already do. Being the same square image at
+    /// the same place, that cross-fade is close to invisible.
+    private var artwork: some View {
+        MorphSlot(
+            progress: progress,
+            cardSize: cardSize,
+            miniFrame: MiniLayout.artwork,
+            // The one component that scales: it's an image, so it does so
+            // cleanly, and its two forms must agree in size mid-flight for the
+            // cross-fade between them to go unnoticed.
+            scales: true
+        ) {
+            coverPager
+        } mini: {
+            miniArtworkTile
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: 320)
+        .padding(.horizontal, 24)
+        .onChange(of: showVisualizer) { _, visible in
+            if visible { analyzer.addConsumer("eq-page") } else { analyzer.removeConsumer("eq-page") }
+        }
+    }
+
+    /// The mini bar's artwork tile, unchanged from before the pill existed:
+    /// 6pt corners, an accent-tinted bed for art that hasn't loaded, no shadow.
+    private var miniArtworkTile: some View {
+        RoundedRectangle(cornerRadius: MiniLayout.artworkCornerRadius)
+            .fill(themeService.accentColor.opacity(0.2))
+            .frame(width: MiniLayout.artworkSize, height: MiniLayout.artworkSize)
+            .overlay {
+                Group {
+                    if let albumImage {
+                        Image(uiImage: albumImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: MiniLayout.artworkSize, height: MiniLayout.artworkSize)
+                    } else {
+                        Image(systemName: "music.note")
+                            .foregroundStyle(themeService.accentColor)
+                            .frame(width: MiniLayout.artworkSize, height: MiniLayout.artworkSize)
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: MiniLayout.artworkCornerRadius, style: .continuous))
+    }
+
+    private var trackInfo: some View {
+        MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.trackInfo) {
+            VStack(spacing: 4) {
+                MarqueeText(
+                    text: playerService.currentTrack?.displayName ?? "Not Playing",
+                    alignment: .center
+                )
+                .font(.uiTitle3.bold())
+                subtitle(font: .uiSubheadline, alignment: .center)
+            }
+        } mini: {
+            VStack(alignment: .leading, spacing: 2) {
+                MarqueeText(text: playerService.currentTrack?.displayName ?? "")
+                    .font(.uiSubheadline.bold())
+                subtitle(font: .uiCaption, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Title line + subtitle at the expanded sizes. Fixed, because the slot
+        // is an empty placeholder — it has no content to measure.
+        .frame(height: 52)
+        .contrastPanel(.trackInfo)
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func subtitle(font: Font, alignment: Alignment) -> some View {
+        if let error = playerService.playbackError {
+            Text(error)
+                .font(font)
+                .foregroundStyle(.red)
+                .fadingTruncation(alignment: alignment)
+        } else {
+            Text(nowPlayingSubtitle)
+                .font(font)
+                .foregroundStyle(.secondary)
+                .fadingTruncation(alignment: alignment)
+        }
+    }
+
+    private var scrubber: some View {
+        VStack(spacing: 4) {
+            MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.scrubber) {
+                FullScrubber(
+                    value: playerService.isSeeking ? seekValue : playerService.currentTime,
+                    duration: playerService.duration,
+                    accentColor: themeService.accentColor,
+                    waveformSamples: playerService.waveformSamples,
+                    onChanged: { newValue in beginOrContinueScrub(to: newValue) },
+                    onEnded: { finalValue in endScrub(at: finalValue) }
+                )
+            } mini: {
+                MiniScrubber(
+                    value: playerService.isSeeking ? seekValue : playerService.currentTime,
+                    duration: playerService.duration,
+                    accentColor: miniWaveformColor,
+                    waveformSamples: playerService.waveformSamples,
+                    onChanged: { newValue in beginOrContinueScrub(to: newValue) },
+                    onEnded: { finalValue in endScrub(at: finalValue) }
+                )
+            }
+            .frame(height: FullScrubber.intrinsicHeight)
+
+            HStack {
+                Text(formatTime(playerService.isSeeking ? seekValue : playerService.currentTime))
+                    .font(.uiCaption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer()
+                Text(formatTime(playerService.duration))
+                    .font(.uiCaption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .nowPlayingChrome(progress)
+        }
+        // The waveform and its two timestamps are one visual unit — panelling
+        // the bars alone would leave the smallest, faintest text on the screen
+        // outside the thing meant to be protecting it.
+        .contrastPanel(.scrubber)
+        .padding(.horizontal, 12)
+    }
+
+    /// Both scrubbers seek through the same state, so a scrub that starts
+    /// mid-morph doesn't jump when hit-testing changes hands.
+    private func beginOrContinueScrub(to newValue: TimeInterval) {
+        if !playerService.isSeeking {
+            seekValue = playerService.currentTime
+            playerService.beginSeeking()
+        }
+        isScrubbing = true
+        seekValue = newValue
+        playerService.currentTime = newValue
+    }
+
+    private func endScrub(at finalValue: TimeInterval) {
+        playerService.endSeeking(to: finalValue)
+        isScrubbing = false
+    }
+
+    /// Spacing is sized to the pill, not chosen for looks: five controls
+    /// (32 + ~30 + 60 + ~30 + 32 ≈ 184pt of glyph) have to clear the content
+    /// width, which is the screen less the pill's 12pt insets and this view's
+    /// 12pt padding — ≈327pt on a 375pt phone. 28pt gaps land at ~296; 40 (the
+    /// old sheet's) didn't fit.
+    private var transportControls: some View {
+        HStack(spacing: 28) {
+            Button {
+                playerService.toggleShuffle()
+            } label: {
+                Image(systemName: "shuffle")
+                    .font(.uiCaption.bold())
+                    .foregroundStyle(playerService.isShuffleOn ? .white : .secondary)
+                    .frame(width: 32, height: 32)
+                    .background {
+                        if playerService.isShuffleOn {
+                            Circle()
+                                .fill(themeService.accentColor)
+                        }
+                    }
+            }
+            .nowPlayingChrome(progress)
+
+            Button {
+                playerService.previous()
+            } label: {
+                Image(systemName: "backward.fill")
+                    .font(.uiTitle2)
+            }
+            .nowPlayingChrome(progress)
+
+            MorphSlot(
+                progress: progress,
+                cardSize: cardSize,
+                miniFrame: MiniLayout.playPause,
+                // Right-aligned against the row padding, exactly as the old
+                // mini bar's trailing button was.
+                miniAlignment: .trailing
+            ) {
+                Button {
+                    playerService.togglePlayPause()
+                } label: {
+                    ZStack {
+                        if playerService.isLoading {
+                            LoadingIndicator(size: .large)
+                        } else {
+                            Image(systemName: playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.ui(60))
+                        }
+                    }
+                    .frame(width: 60, height: 60)
+                }
+            } mini: {
+                Group {
+                    if playerService.isLoading {
+                        LoadingIndicator()
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Button {
+                            playerService.togglePlayPause()
+                        } label: {
+                            Image(systemName: playerService.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.uiTitle2)
+                        }
+                    }
+                }
+            }
+            .frame(width: 60, height: 60)
+
+            Button {
+                playerService.next()
+            } label: {
+                Image(systemName: "forward.fill")
+                    .font(.uiTitle2)
+            }
+            .nowPlayingChrome(progress)
+
+            Button {
+                playerService.cycleRepeatMode()
+            } label: {
+                Image(systemName: repeatIcon)
+                    .font(.uiCaption.bold())
+                    .foregroundStyle(playerService.repeatMode != .off ? .white : .secondary)
+                    .frame(width: 32, height: 32)
+                    .background {
+                        if playerService.repeatMode != .off {
+                            Circle()
+                                .fill(themeService.accentColor)
+                        }
+                    }
+            }
+            .nowPlayingChrome(progress)
+        }
+        .contrastPanel(.transport)
+    }
+
+    // MARK: - Album art / EQ pager
+
+    /// Album art / EQ visualizer — custom two-page pager so we can track
+    /// continuous swipe progress and morph the cover into an ambient "color
+    /// halo" as the user scrolls toward the EQ page. A stock
+    /// `TabView(.page)` would only expose the final commit, not the live drag
+    /// fraction we need to drive the blur/corner/scale interpolation.
+    ///
+    /// The slot hands this a constant square — the expanded cover size — no
+    /// matter how far the pill is open, so `pageWidth` never shrinks and the
+    /// `Canvas` inside never redraws just because the card moved.
+    private var coverPager: some View {
+        GeometryReader { geo in
+            let pageWidth = max(0, geo.size.width)
+            // Combine the latched page (`showVisualizer`) with the live
+            // finger offset to get a continuous 0…1 progress: 0 =
+            // album cover, 1 = EQ visualizer.
+            let committedOffset: CGFloat = showVisualizer ? -pageWidth : 0
+            let totalOffset = committedOffset + dragOffset
+            let rawProgress = pageWidth > 0 ? -totalOffset / pageWidth : 0
+            let pageProgress = max(0, min(1, rawProgress))
+
+            // Skip the whole subtree until GeometryReader has handed us a real
+            // width. On the first layout pass `pageWidth` is 0, and the EQ
+            // visualizer's internal `.padding(...)` then resolves to a negative
+            // content frame — which is exactly what triggers the "Invalid frame
+            // dimension" console spam.
+            if pageWidth > 0 {
                 ZStack {
                     // Cover → halo morph. Same image the whole time; as
                     // progress climbs toward 1 we scale it up slightly,
@@ -79,11 +579,14 @@ struct NowPlayingView: View {
                     // Gaussian spread feathers the cover's silhouette
                     // outward — exactly the "halo in the shape of the
                     // album" effect the earlier static background had.
-                    albumHaloMorph(progress: pageProgress, pageWidth: pageWidth)
+                    albumHaloMorph(pageProgress: pageProgress, pageWidth: pageWidth)
                         // Drop shadow fades out as the cover dissolves into
                         // a soft halo — a blurred glow doesn't need a hard
-                        // shadow under it.
-                        .shadow(color: .black.opacity(0.35 * (1 - pageProgress)),
+                        // shadow under it — and again as the pill collapses:
+                        // the mini bar's artwork tile never had one, and at
+                        // 0.16 scale it reads as a dark halo around the tile
+                        // rather than as a shadow under a cover.
+                        .shadow(color: .black.opacity(0.35 * (1 - pageProgress) * progress),
                                 radius: 20, y: 10)
 
                     // EQ visualizer slides in from the right and fades up
@@ -100,11 +603,11 @@ struct NowPlayingView: View {
                 .frame(width: pageWidth, height: pageWidth)
                 // Horizontal-only pan recognizer bridged in from UIKit.
                 // SwiftUI's `DragGesture` — even via `.simultaneousGesture`
-                // — still claims the touch in a way that suppresses the
-                // sheet's swipe-down-to-dismiss recognizer. A UIKit pan
-                // with `gestureRecognizerShouldBegin` rejecting vertical
-                // motion and `shouldRecognizeSimultaneouslyWith` returning
-                // true lets the sheet handle vertical drags normally
+                // — still claims the touch in a way that suppresses a
+                // vertical drag on an ancestor, which is how the pill is
+                // collapsed. A UIKit pan with `gestureRecognizerShouldBegin`
+                // rejecting vertical motion and `shouldRecognizeSimultaneouslyWith`
+                // returning true lets the pill handle vertical drags normally
                 // while we still drive the album→halo morph horizontally.
                 .overlay(
                     HorizontalPagerGesture(
@@ -140,248 +643,42 @@ struct NowPlayingView: View {
                             onOpenAlbum?(album)
                         }
                     )
+                    // Paging is only on the table once the card has stopped
+                    // moving. Below that the cover is in flight and a touch on
+                    // it means "expand" (or nothing) — and while collapsed the
+                    // recognizer would otherwise swallow taps on the mini
+                    // artwork before the card ever saw them.
+                    .allowsHitTesting(progress > 0.99)
                 )
-                } // end: if pageWidth > 0
-            }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: 320)
-            .padding(.horizontal, 40)
-            .onChange(of: showVisualizer) { _, visible in
-                if visible { analyzer.addConsumer("eq-page") } else { analyzer.removeConsumer("eq-page") }
-            }
-
-            // Page indicator icons
-            HStack(spacing: 12) {
-                // Album icon — small rounded square
-                Image(systemName: "square.fill")
-                    .font(.ui(8))
-                    .foregroundColor(showVisualizer ? .secondary.opacity(0.4) : .primary)
-                    .clipShape(RoundedRectangle(cornerRadius: 1.5))
-
-                // EQ icon — small bar chart
-                Image(systemName: "chart.bar.fill")
-                    .font(.ui(10))
-                    .foregroundColor(showVisualizer ? .primary : .secondary.opacity(0.4))
-            }
-            .padding(.top, 12)
-            .padding(.bottom, 4)
-
-            Spacer()
-                .frame(height: 16)
-
-            // Track info
-            VStack(spacing: 4) {
-                MarqueeText(
-                    text: playerService.currentTrack?.displayName ?? "Not Playing",
-                    alignment: .center
-                )
-                .font(.uiTitle3.bold())
-                if let error = playerService.playbackError {
-                    Text(error)
-                        .font(.uiSubheadline)
-                        .foregroundStyle(.red)
-                        .fadingTruncation(alignment: .center)
-                } else {
-                    Text(nowPlayingSubtitle)
-                        .font(.uiSubheadline)
-                        .foregroundStyle(.secondary)
-                        .fadingTruncation(alignment: .center)
-                }
-            }
-            .padding(.horizontal, 24)
-
-            Spacer()
-                .frame(height: 24)
-
-            // Scrubber
-            VStack(spacing: 4) {
-                FullScrubber(
-                    value: playerService.isSeeking ? seekValue : playerService.currentTime,
-                    duration: playerService.duration,
-                    accentColor: themeService.accentColor,
-                    waveformSamples: playerService.waveformSamples,
-                    onChanged: { newValue in
-                        if !playerService.isSeeking {
-                            seekValue = playerService.currentTime
-                            playerService.beginSeeking()
-                        }
-                        seekValue = newValue
-                        playerService.currentTime = newValue
-                    },
-                    onEnded: { finalValue in
-                        playerService.endSeeking(to: finalValue)
-                    }
-                )
-
-                HStack {
-                    Text(formatTime(playerService.isSeeking ? seekValue : playerService.currentTime))
-                        .font(.uiCaption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    Spacer()
-                    Text(formatTime(playerService.duration))
-                        .font(.uiCaption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
-            .padding(.horizontal, 24)
-
-            Spacer(minLength: 16)
-
-            // Centered live waveform — shows ±2 s around the playhead,
-            // scrolling right→left as playback progresses. Also acts as
-            // a high-precision scrubber: dragging maps ~20 ms per point,
-            // versus the full-width scrubber above where one point covers
-            // a much larger slice of the track.
-            CenteredWaveformView(
-                currentTime: playerService.isSeeking ? seekValue : playerService.currentTime,
-                duration: playerService.duration,
-                accentColor: themeService.accentColor,
-                samples: playerService.waveformSamples,
-                samplesPerSecond: playerService.waveformSamplesPerSecond,
-                onScrubStart: {
-                    if !playerService.isSeeking {
-                        seekValue = playerService.currentTime
-                        playerService.beginSeeking()
-                    }
-                },
-                onScrubChange: { newValue in
-                    seekValue = newValue
-                    playerService.currentTime = newValue
-                },
-                onScrubEnd: { finalValue in
-                    playerService.endSeeking(to: finalValue)
-                }
-            )
-            .frame(width: 200, height: 36)
-
-            Spacer(minLength: 16)
-
-            // Playback controls
-            HStack(spacing: 40) {
-                Button {
-                    playerService.toggleShuffle()
-                } label: {
-                    Image(systemName: "shuffle")
-                        .font(.uiCaption.bold())
-                        .foregroundStyle(playerService.isShuffleOn ? .white : .secondary)
-                        .frame(width: 32, height: 32)
-                        .background {
-                            if playerService.isShuffleOn {
-                                Circle()
-                                    .fill(themeService.accentColor)
-                            }
-                        }
-                }
-
-                Button {
-                    playerService.previous()
-                } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.uiTitle2)
-                }
-
-                Button {
-                    playerService.togglePlayPause()
-                } label: {
-                    ZStack {
-                        if playerService.isLoading {
-                            LoadingIndicator(size: .large)
-                        } else {
-                            Image(systemName: playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.ui(60))
-                        }
-                    }
-                    .frame(width: 60, height: 60)
-                }
-
-                Button {
-                    playerService.next()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.uiTitle2)
-                }
-
-                Button {
-                    playerService.cycleRepeatMode()
-                } label: {
-                    Image(systemName: repeatIcon)
-                        .font(.uiCaption.bold())
-                        .foregroundStyle(playerService.repeatMode != .off ? .white : .secondary)
-                        .frame(width: 32, height: 32)
-                        .background {
-                            if playerService.repeatMode != .off {
-                                Circle()
-                                    .fill(themeService.accentColor)
-                            }
-                        }
-                }
-            }
-
-            Spacer()
-
-            // Queue button
-            if !playerService.queue.isEmpty {
-                Button {
-                    showQueueSheet = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.uiTitle3)
-                        .foregroundStyle(.primary.opacity(0.6))
-                        .overlay(alignment: .topTrailing) {
-                            if !playerService.userQueue.isEmpty {
-                                Text("\(playerService.userQueue.count)")
-                                    .font(.ui(10, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    // Deepened like the other queue chips, or a
-                                    // pale accent swallows the count whole —
-                                    // worst here, where the digit is 10pt.
-                                    .background(themeService.accentColor.legibleUnderWhiteLabel, in: Capsule())
-                                    .offset(x: 10, y: -8)
-                            }
-                        }
-                }
-                .padding(.bottom, 16)
-            }
-        }
-        .padding()
-        .sheet(isPresented: $showQueueSheet) {
-            QueueView()
-        }
-        .task(id: artworkTaskID) {
-            guard let album = playerService.currentTrack?.album else {
-                albumImage = nil
-                return
-            }
-            if album.isLocal {
-                if let path = album.resolvedLocalCoverPath {
-                    albumImage = UIImage(contentsOfFile: path)
-                } else {
-                    albumImage = nil
-                }
-            } else {
-                let resolution = await albumArtService.resolveAlbumArt(for: album)
-                albumImage = resolution.image
-                albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
             }
         }
     }
 
-    /// The album cover that morphs into the ambient halo as `progress`
+    /// The album cover that morphs into the ambient halo as `pageProgress`
     /// climbs from 0 (album page) to 1 (EQ page). Kept as a single view so
     /// the transformation stays continuous — there's no crossfade between
     /// two different images, just one image whose blur/corner/scale is
     /// driven by scroll position.
+    ///
+    /// Named for the *pager*, not the pill: this is the horizontal swipe
+    /// between cover and visualiser, nothing to do with `progress`.
     @ViewBuilder
-    private func albumHaloMorph(progress: CGFloat, pageWidth: CGFloat) -> some View {
-        let cornerRadius = 20 + 12 * progress
-        let blurRadius = progress * 28
+    private func albumHaloMorph(pageProgress: CGFloat, pageWidth: CGFloat) -> some View {
+        // Corner radius has to be drawn *pre-scale*. The slot shows this view
+        // at 44/pageWidth (≈0.16) once the pill is collapsed, so a 20pt radius
+        // arrives on screen as ~3pt and the tile looks squarer than the mini
+        // bar's 6pt one ever did. Dividing by the same factor puts the
+        // collapsed corner back exactly where it was.
+        let collapsedRadius = MiniLayout.artworkCornerRadius * pageWidth / MiniLayout.artworkSize
+        let expandedRadius = 20 + 12 * pageProgress
+        let cornerRadius = collapsedRadius + (expandedRadius - collapsedRadius) * progress
+        // Both halo effects are scaled by the pill as well as the pager, so a
+        // collapse that starts on the EQ page doesn't shrink a blurred glow
+        // into the artwork tile.
+        let blurRadius = pageProgress * 28 * progress
         // Grow slightly as we morph so the halo reads as a little wider
         // than the original cover, matching Apple Music/Spotify's feel.
-        let scale = 1 + 0.12 * progress
+        let scale = 1 + 0.12 * pageProgress * progress
 
         Group {
             if let albumImage {
@@ -389,7 +686,9 @@ struct NowPlayingView: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                RoundedRectangle(cornerRadius: 20)
+                // Same radius as the clip below, or the coverless tile keeps
+                // the square corners the clip was widened to hide.
+                RoundedRectangle(cornerRadius: cornerRadius)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -442,6 +741,11 @@ private struct FullScrubber: View {
     let onChanged: (TimeInterval) -> Void
     let onEnded: (TimeInterval) -> Void
 
+    /// Fixed overall height — the two ears plus the gap between them. Exposed
+    /// because the morph slot that carries this scrubber is an empty
+    /// placeholder and has to be told how much room to reserve for it.
+    static let intrinsicHeight: CGFloat = 62
+
     // Top + bottom waveform "ears" sit symmetrically around a center gap
     // containing the progress bar.
     private let earHeight: CGFloat = 26
@@ -469,7 +773,9 @@ private struct FullScrubber: View {
     }
 
     private var totalHeight: CGFloat {
-        earHeight * 2 + centerGap
+        // Asserts the constant above still describes the geometry below it.
+        assert(Self.intrinsicHeight == earHeight * 2 + centerGap)
+        return earHeight * 2 + centerGap
     }
 
     var body: some View {

@@ -62,6 +62,56 @@ extension Color {
         let factor = ceiling / luminance
         return Color(red: r * factor, green: g * factor, blue: b * factor, opacity: a)
     }
+
+    /// This color, moved just far enough to read *against* `Color.appBackground`
+    /// in the given scheme, and returned untouched when it already does.
+    ///
+    /// The two helpers above protect a label drawn **on top of** this color.
+    /// This one is for color used as ink — waveform bars, marks on the window
+    /// background — where the same color has to survive both a near-black
+    /// (`#121212`) and a white backdrop. A cover accent can't be trusted to do
+    /// that on its own: a pale yellow sleeve is invisible in light mode, a deep
+    /// navy one invisible in dark.
+    ///
+    /// The two directions are not the same operation:
+    ///
+    /// - **Darkening** is one scale factor across all three channels, which is
+    ///   exactly a drop in HSB brightness — hue and saturation come through
+    ///   untouched.
+    /// - **Brightening** can't be. Scaling up clips whichever channel is
+    ///   already highest and drags the hue with it, so this blends toward white
+    ///   instead: hue survives, and the light is paid for in saturation. That's
+    ///   the right trade for a color that only has to stay recognisable as the
+    ///   cover's, not stay exact.
+    ///
+    /// Both branches land on their target luminance exactly. Luminance is a
+    /// linear combination of the channels whose weights sum to 1, so scaling
+    /// every channel by `k` scales luminance by `k`, and blending every channel
+    /// toward 1 by `t` moves luminance to `lum + (1 - lum)·t`.
+    func legibleOnAppBackground(_ scheme: ColorScheme) -> Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+
+        if scheme == .dark {
+            let floor: CGFloat = 0.42
+            guard luminance < floor else { return self }
+            let t = (floor - luminance) / max(0.0001, 1 - luminance)
+            return Color(
+                red: r + (1 - r) * t,
+                green: g + (1 - g) * t,
+                blue: b + (1 - b) * t,
+                opacity: a
+            )
+        } else {
+            // Same ceiling as `legibleUnderWhiteLabel`, for the same reason:
+            // one flip point for the whole file.
+            let ceiling: CGFloat = 0.55
+            guard luminance > ceiling else { return self }
+            let factor = ceiling / luminance
+            return Color(red: r * factor, green: g * factor, blue: b * factor, opacity: a)
+        }
+    }
 }
 
 extension View {

@@ -5,7 +5,6 @@ struct ContentView: View {
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(ThemeService.self) private var themeService
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showNowPlaying = false
     @State private var libraryPath: [Album] = []
 
     var body: some View {
@@ -26,23 +25,22 @@ struct ContentView: View {
                     }
 
                     if playerService.currentTrack != nil && !playerService.hideNowPlayingBar {
-                        NowPlayingBar(showFullPlayer: $showNowPlaying)
+                        // Mini and full player are one view: the pill owns
+                        // both states and expands in place, so there's no
+                        // presentation for this level to drive.
+                        NowPlayingPill(onOpenAlbum: { album in
+                            // Push the album onto the library stack *before*
+                            // the pill collapses, so the album view is already
+                            // behind the shrinking card. If the album already
+                            // sits on top of the stack (user was viewing it
+                            // before opening the player), skip the push so
+                            // "tap cover" just returns there instead of
+                            // stacking a duplicate.
+                            if libraryPath.last != album {
+                                libraryPath.append(album)
+                            }
+                        })
                     }
-                }
-                .sheet(isPresented: $showNowPlaying) {
-                    NowPlayingView(onOpenAlbum: { album in
-                        // Push the album onto the library stack *before*
-                        // dismissing the sheet, so when the sheet animates
-                        // away the album view is already behind it. If the
-                        // album already sits on top of the stack (user was
-                        // viewing it before opening the player), skip the
-                        // push so "tap cover" just returns there instead of
-                        // stacking a duplicate.
-                        if libraryPath.last != album {
-                            libraryPath.append(album)
-                        }
-                        showNowPlaying = false
-                    })
                 }
             } else {
                 SignInView()
