@@ -84,10 +84,71 @@ The horizontal swipe between album cover and EQ visualizer uses
 `HorizontalPagerGesture` (a `UIViewRepresentable` wrapping
 `UIPanGestureRecognizer`), NOT SwiftUI `DragGesture`/`TabView`. SwiftUI gestures
 (even via `.simultaneousGesture`) latch the touch in a way that blocks the
-sheet's swipe-down-to-dismiss UIKit recognizer. The UIKit pan's delegate sets
-`gestureRecognizerShouldBegin` to refuse vertical motion, letting the sheet's
-recognizer handle vertical drags unblocked. Do not "simplify" this back to
-SwiftUI gestures.
+vertical drag that closes the player. The UIKit pan's delegate sets
+`gestureRecognizerShouldBegin` to refuse vertical motion, letting that drag
+through unblocked. Do not "simplify" this back to SwiftUI gestures.
+
+The dismiss recognizer this defers to used to be a sheet's; the player is now
+`NowPlayingPill` — one glass card that is both the mini bar and the full player
+— so it's `NowPlayingPill`'s own `DragGesture` instead. Same requirement on the
+pager, different thing on the receiving end.
+
+## Interruptions — stop the node, NOT the engine
+
+`.began` calls `suspendPlayback(stopEngine: false)`. Both halves matter, and
+they were each learned from a failed call test.
+
+**Stop the node.** iOS does not reliably stop playback for you: through a call
+the node goes on rendering into a dead session. Leave it and the sample clock
+advances for the whole call, so the position jumps by the call's length when the
+display link returns — and `play()` afterwards is a no-op on a node that was
+never stopped, so the resume is silent while `isPlaying` is true, the button
+shows "pause" over silence, the next tap pauses for real, and only the one after
+that plays.
+
+**Leave the engine running.** Stopping it as well costs the `.ended`
+notification outright — it arrived while the engine kept running and stopped
+arriving the moment we stopped it, so playback never resumed on its own again.
+(iOS handing the session back, or suspending an app with no audio to render;
+same remedy either way.) A running engine with a stopped node just renders
+silence, so it costs nothing.
+
+That combination is why `play()` keys off **`needsRescheduleOnPlay`** and not
+`!engine.isRunning`. With the engine still up there is nothing in its state that
+says the node was emptied. Every site that schedules the current segment
+(`seek`, `replaceCurrentScheduling`, `loadAndPlay`, and `play()` itself) must
+clear that flag — leave it set and the segment is queued twice, which plays the
+track through and then plays it again from the top.
+
+`pause()` is `suspendPlayback(stopEngine: true)` plus voiding the resume debt.
+Only a *real* pause voids it; an interruption must not, because a call raises
+`.began` twice (ring, then connect) and the second arrives with `isPlaying`
+already false.
+
+`.ended` goes through `resumeAfterInterruption()`, which retries (immediately,
++400 ms, +1200 ms) rather than trying once. The call is still tearing its session
+down when the notification lands and the route is still settling, so
+`engine.start()` throws on the first attempt — that's "it didn't come back on
+its own, but pressing play worked", since a human takes longer than the hardware
+to settle. Two deliberate choices in there: `.shouldResume` is **not** required
+(it's an unreliable hint, and `setActive(true)` failing is the real gate on
+whether we're allowed the session), and retrying is safe for the same reason.
+
+`.AVAudioEngineConfigurationChange` is the second half of the same bug.
+`setupEngine` connects with `format: nil`, so a call moving the route to the
+receiver and back invalidates the connection; `engine.start()` then succeeds and
+renders nothing. `handleEngineConfigurationChange` reconnects, and is written to
+be correct in either delivery order relative to `.ended`.
+
+**Nothing may activate the session while `isInterrupted` is set.** That flag
+runs `.began` → `.ended`, and the reason it exists is that a configuration
+change fires when the *call* takes the route — at the **start** of an
+interruption, not only at the end. Resuming on it put music into a live call at
+ducked volume, and cost us the `.ended` notification entirely: `setActive(true)`
+mid-call tells the system the interruption is over, so there is nothing left for
+it to end, and playback then never resumes on its own afterwards. A call also
+raises `.began` more than once (ring, then connect), so the second one must find
+the resume debt still standing rather than clearing it.
 
 ## PixelSortCoverView — design intent
 

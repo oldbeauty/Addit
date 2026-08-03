@@ -127,8 +127,39 @@ final class AudioPlayerService {
 
     /// Tracks whether we were playing when an audio-session interruption
     /// began, so we only auto-resume on `.ended` if the user hadn't paused
-    /// manually before the interruption.
+    /// manually before the interruption. Read it as "we owe a resume":
+    /// `pause()` voids the debt, `.began` records it.
     @ObservationIgnored private var wasPlayingBeforeInterruption = false
+
+    /// The in-flight retry of an interruption resume. Cancellable-Task pattern,
+    /// as required of anything async in here: cancelled by `pause()`, and by the
+    /// next interruption before a new one starts.
+    @ObservationIgnored private var interruptionResumeTask: Task<Void, Never>?
+
+    /// Set when the player node was stopped and nothing has been scheduled on
+    /// it since, so `play()` knows it must re-schedule the current segment
+    /// before starting.
+    ///
+    /// This used to be inferred from `!engine.isRunning`, which forced the
+    /// engine to be stopped for the inference to hold — and stopping the engine
+    /// is what costs us `.ended`. The two facts are simply different: an
+    /// interruption stops the *node* while leaving the engine up, and there is
+    /// no reading of `engine.isRunning` that describes it. Cleared by every
+    /// site that schedules the current segment; get that wrong in the other
+    /// direction and the segment is queued twice, which plays the track through
+    /// and then plays it again from the top.
+    @ObservationIgnored private var needsRescheduleOnPlay = false
+
+    /// True from `.began` until `.ended`. While it's set, **nothing** here may
+    /// activate the audio session.
+    ///
+    /// A phone call raises more than one interruption (the ring, then
+    /// connecting) and fires an engine configuration change at the *start* of
+    /// each, when the route moves to the call. Treating that as a cue to resume
+    /// put music into a live call at ducked volume — and appears to cost the
+    /// `.ended` notification altogether, since `setActive(true)` mid-call tells
+    /// the system the interruption is over and there's nothing left to end.
+    @ObservationIgnored private var isInterrupted = false
 
     init() {
         configureAudioSession()
@@ -175,20 +206,32 @@ final class AudioPlayerService {
         if isShuffleOn {
             applyShuffle()
         }
+        // The only transport entry point that wasn't logged, which made a
+        // tapped track indistinguishable from a track that started itself when
+        // reading a `[Q]` trace back.
+        #if DEBUG
+        print("[Q] playTrack picked track=\"\(track.name)\" newIndex=\(currentIndex) queueLen=\(queue.count) shuffled=\(isShuffleOn)")
+        #endif
         Task { await loadAndPlay() }
     }
 
-    func play() {
+    /// Returns whether audio is actually going now. Callers that can do
+    /// something about a failure — the interruption resume, which retries —
+    /// need to know; the ones driven by a user tap can ignore it, since a
+    /// failed tap leaves the button showing "play" and the user simply taps
+    /// again.
+    @discardableResult
+    func play() -> Bool {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            let engineWasStopped = !engine.isRunning
-            if engineWasStopped {
+            if !engine.isRunning {
                 try engine.start()
             }
 
-            // If the engine was stopped (e.g. from pause() or an interruption),
-            // all previously-scheduled audio on the playerNode was invalidated.
-            if engineWasStopped, let snapshot = anchor {
+            // Whatever was scheduled on the node was discarded when it was
+            // stopped — by pause(), by an interruption, or by a graph rebuild.
+            if needsRescheduleOnPlay, let snapshot = anchor {
+                needsRescheduleOnPlay = false
                 let trackDuration = snapshot.duration
                 if currentTime >= trackDuration - 1.0 {
                     // We're within 1 s of the end (or past it).  Replaying those
@@ -197,7 +240,7 @@ final class AudioPlayerService {
                     // was finishing and invalidated the pending completionFired
                     // dispatch.  Advance to the next track instead.
                     handleTrackEnd()
-                    return
+                    return true
                 } else {
                     rescheduleFromCurrentTime()
                 }
@@ -207,14 +250,32 @@ final class AudioPlayerService {
             isPlaying = true
             startTimeTracking()
             updateNowPlayingPlaybackInfo()
+            return true
         } catch {
             #if DEBUG
-            print("Engine start error: \(error.localizedDescription)")
+            print("[Q] play() failed: \(error.localizedDescription)")
             #endif
+            return false
         }
     }
 
     func pause() {
+        suspendPlayback(stopEngine: true)
+
+        // Whatever the reason we're stopping, an outstanding promise to resume
+        // from an earlier interruption is void — most importantly when the
+        // reason is the user pressing pause during the retry window.
+        interruptionResumeTask?.cancel()
+        wasPlayingBeforeInterruption = false
+    }
+
+    /// Stop producing audio and freeze the position, optionally leaving the
+    /// engine itself running.
+    ///
+    /// `stopEngine: false` exists for one caller — an audio-session
+    /// interruption. See `handleInterruption(_:)` for why the engine has to
+    /// stay up there.
+    private func suspendPlayback(stopEngine: Bool) {
         // Snapshot position before we tear anything down
         updateCurrentTime()
 
@@ -228,15 +289,17 @@ final class AudioPlayerService {
         clearGaplessState()
 
         playerNode.stop()
-        engine.stop()
+        if stopEngine { engine.stop() }
+        needsRescheduleOnPlay = true
 
         isPlaying = false
         // Deliberately DON'T stop the display link here.  updateCurrentTime()
-        // early-returns as soon as lastRenderTime becomes nil (engine stopped),
-        // so currentTime stays frozen at the paused position.  Keeping the
-        // display link alive means that on resume, the centered waveform
-        // starts scrolling the instant lastRenderTime becomes valid again —
-        // instead of waiting for the next CADisplayLink creation + first tick.
+        // early-returns as soon as `playerTime(forNodeTime:)` goes nil, which
+        // it does the moment the node stops — engine still running or not — so
+        // currentTime stays frozen at the paused position.  Keeping the display
+        // link alive means that on resume, the centered waveform starts
+        // scrolling the instant the node is playing again, instead of waiting
+        // for the next CADisplayLink creation + first tick.
         updateNowPlayingPlaybackInfo()
     }
 
@@ -342,6 +405,9 @@ final class AudioPlayerService {
         playerNode.scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: remainingFrames, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             self?.completionFired(generation: gen)
         }
+        // The node has the current segment again; a later `play()` must not
+        // schedule a second copy of it.
+        needsRescheduleOnPlay = false
 
         if wasPlaying {
             playerNode.play()
@@ -556,6 +622,7 @@ final class AudioPlayerService {
         ) { [weak self] _ in
             self?.completionFired(generation: gen)
         }
+        needsRescheduleOnPlay = false
 
         if wasPlaying {
             playerNode.play()
@@ -646,14 +713,14 @@ final class AudioPlayerService {
             playerNode.scheduleSegment(audioFile, startingFrame: 0, frameCount: AVAudioFrameCount(audioFile.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.completionFired(generation: gen)
             }
+            // The node is loaded, so the `play()` below must not re-schedule.
+            // Miss this and it bumps the generation and schedules Track A a
+            // SECOND time — audio plays Track A, then plays it again from the
+            // start before finally advancing. (Classic "audio replays after
+            // full playthrough" bug; this flag is what guards against it now
+            // that starting the engine first no longer implies anything.)
+            needsRescheduleOnPlay = false
 
-            // Start the engine BEFORE calling play() so play() sees
-            // engineWasStopped=false and doesn't re-schedule the segment
-            // we just scheduled.  Without this, play() bumps the
-            // generation and schedules Track A a SECOND time on the
-            // node — audio plays Track A, then plays it again from the
-            // start before finally advancing.  (Classic "audio replays
-            // after full playthrough" bug.)
             if !engine.isRunning {
                 try AVAudioSession.sharedInstance().setActive(true)
                 try engine.start()
@@ -1380,6 +1447,14 @@ final class AudioPlayerService {
         ) { [weak self] note in
             self?.handleRouteChange(note)
         }
+
+        nc.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleEngineConfigurationChange()
+        }
     }
 
     private func handleInterruption(_ notification: Notification) {
@@ -1389,26 +1464,61 @@ final class AudioPlayerService {
 
         switch type {
         case .began:
-            // iOS has already paused/stopped the engine for us.
-            // Snapshot the position and sync our state.
-            wasPlayingBeforeInterruption = isPlaying
-            // Invalidate completions — engine stop fires them immediately
-            scheduleGeneration &+= 1
-            clearGaplessState()
+            let owesResume = isPlaying
+            #if DEBUG
+            print("[Q] interruption began wasPlaying=\(owesResume)")
+            #endif
             if isPlaying {
-                updateCurrentTime()   // capture position while node data is still valid
-                isPlaying = false
-                stopTimeTracking()
-                updateNowPlayingPlaybackInfo()
+                // Stop the node, and *leave the engine running*.
+                //
+                // Stopping the node is what fixes the two original bugs: iOS
+                // does not reliably stop playback for us here — through a call
+                // the node goes on rendering into a dead session — so without
+                // this, the sample clock advances for the whole call and the
+                // position jumps by its length, and `play()` afterwards is a
+                // no-op on a node that was never stopped, leaving a pause icon
+                // over silence.
+                //
+                // Stopping the *engine* as well, though, costs us the `.ended`
+                // notification entirely — verified across three call tests: it
+                // arrived while the engine kept running and stopped arriving
+                // the moment we stopped it, so playback never resumed on its
+                // own afterwards. Whether that's iOS handing our session back
+                // or suspending the app once it has no audio to render, the
+                // remedy is the same, and the engine costs nothing while it's
+                // up with a stopped node: it renders silence.
+                //
+                // This is why `play()` tracks `needsRescheduleOnPlay` rather
+                // than reading `engine.isRunning` — with the engine still up,
+                // there is nothing in its state that says the node was emptied.
+                suspendPlayback(stopEngine: false)
+            } else {
+                // Nothing to stop, but anything pre-scheduled for a gapless
+                // hand-off is invalid regardless.
+                scheduleGeneration &+= 1
+                clearGaplessState()
             }
+            stopTimeTracking()
+            // A call raises `.began` more than once — ring, then connect — and
+            // the second one finds us already paused, so the debt has to carry
+            // forward rather than be recomputed from `isPlaying`. Only `pause()`
+            // (a real pause, by the user or by a route going away) voids it.
+            wasPlayingBeforeInterruption = owesResume || wasPlayingBeforeInterruption
+            isInterrupted = true
         case .ended:
-            guard let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
-            if options.contains(.shouldResume), wasPlayingBeforeInterruption {
-                // play() handles engine restart + re-scheduling from currentTime
-                play()
-            }
-            wasPlayingBeforeInterruption = false
+            let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions ?? 0)
+            #if DEBUG
+            print("[Q] interruption ended shouldResume=\(options.contains(.shouldResume)) owesResume=\(wasPlayingBeforeInterruption)")
+            #endif
+            isInterrupted = false
+            guard wasPlayingBeforeInterruption else { return }
+            // `.shouldResume` is deliberately not required. It's a hint, it's
+            // absent often enough to be unreliable, and the real gate is one
+            // step further down anyway: if something else legitimately owns
+            // audio now, `setActive(true)` fails and we stay paused. Gating on
+            // the hint only adds a way to stay silent when we could have played.
+            resumeAfterInterruption()
         @unknown default:
             break
         }
@@ -1423,6 +1533,100 @@ final class AudioPlayerService {
         // Apple's convention is to pause rather than switch to the speaker.
         if reason == .oldDeviceUnavailable, isPlaying {
             pause()
+        }
+    }
+
+    /// Resume after an interruption, retrying across the next second or so.
+    ///
+    /// One attempt at the moment `.ended` lands is not enough. The call is
+    /// still tearing its own session down right then, and the route is still
+    /// settling, so `setActive(true)` or — more often, now that `.began` really
+    /// does stop the engine — `try engine.start()` throws. `play()` reports
+    /// that as a failure and we'd otherwise just stay paused, which is exactly
+    /// "it didn't come back on its own, but pressing play worked": by the time
+    /// a human reaches the button, the hardware has settled.
+    ///
+    /// Retrying can't resume against a session we're not entitled to. Activation
+    /// failing *is* the gate — if the call is somehow still up, or another app
+    /// has taken over, every attempt fails and we stay paused.
+    private func resumeAfterInterruption() {
+        interruptionResumeTask?.cancel()
+        interruptionResumeTask = Task { [weak self] in
+            // Immediately, then twice more while the route settles.
+            for wait: Duration in [.zero, .milliseconds(400), .milliseconds(1200)] {
+                if wait > .zero {
+                    do { try await Task.sleep(for: wait) } catch { return }
+                }
+                guard !Task.isCancelled, let self else { return }
+                // The debt is void, or someone beat us to it.
+                guard self.wasPlayingBeforeInterruption else { return }
+                // A fresh interruption landed mid-retry — a call ringing, then
+                // connecting, does exactly this. Activating the session now
+                // would play into it.
+                guard !self.isInterrupted else { return }
+                if self.isPlaying {
+                    self.wasPlayingBeforeInterruption = false
+                    return
+                }
+                if self.play() {
+                    self.wasPlayingBeforeInterruption = false
+                    #if DEBUG
+                    print("[Q] interruption resume succeeded")
+                    #endif
+                    return
+                }
+            }
+            guard let self else { return }
+            #if DEBUG
+            print("[Q] interruption resume gave up; left paused at \(currentTime)")
+            #endif
+            self.wasPlayingBeforeInterruption = false
+            // Nothing is going to resume now, so stop idling the engine we
+            // deliberately left running through the interruption. `play()` will
+            // restart it, and `needsRescheduleOnPlay` is still set, so a manual
+            // resume from here behaves exactly like one from a normal pause.
+            self.engine.stop()
+        }
+    }
+
+    /// Rebuild the graph after the engine's hardware format changes underneath
+    /// it.
+    ///
+    /// `setupEngine` connects with `format: nil` — "whatever the output is
+    /// running at". A call is the textbook way for that to stop being true: the
+    /// route moves to the receiver at one sample rate and comes back at
+    /// another, and the engine drops the connection when it happens. Without
+    /// remaking it, `engine.start()` afterwards can succeed and still render
+    /// nothing, which looks identical to the interruption bug above and is a
+    /// second, independent cause of it.
+    ///
+    /// The order this arrives in relative to the interruption notification
+    /// isn't guaranteed, so it has to be right either way: first, and we
+    /// reconnect while already paused and `.ended` resumes into a good graph;
+    /// second, and we stop the silent playback, reconnect, and resume it here.
+    private func handleEngineConfigurationChange() {
+        let wasPlaying = isPlaying
+        if wasPlaying { pause() }
+        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        engine.prepare()
+        #if DEBUG
+        print("[Q] engine configuration changed; graph reconnected wasPlaying=\(wasPlaying) owesResume=\(wasPlayingBeforeInterruption) interrupted=\(isInterrupted)")
+        #endif
+        if wasPlaying {
+            // `play()` re-schedules from `currentTime` because the engine is
+            // stopped, so this picks up where it left off rather than
+            // restarting the track.
+            play()
+        } else if wasPlayingBeforeInterruption, !isInterrupted {
+            // A resume we still owe, where a stale graph is why `.ended`
+            // couldn't honour it — that ordering would otherwise leave the
+            // track paused for good.
+            //
+            // The `isInterrupted` half is not belt-and-braces. This
+            // notification fires when the *call* takes the route, at the start
+            // of an interruption, not only at the end of one; without the
+            // guard this is the line that plays music into a live call.
+            resumeAfterInterruption()
         }
     }
 
