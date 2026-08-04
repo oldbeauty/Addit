@@ -157,9 +157,13 @@ final class AccountManager {
     }
 }
 
-enum AccountProvider: String, Codable {
+enum AccountProvider: String, Codable, Identifiable, CaseIterable {
     case google
     case microsoft
+
+    /// Lets a chosen provider drive a `sheet(item:)` — "duplicate to this
+    /// cloud" is a presentation whose identity *is* the provider.
+    var id: String { rawValue }
 
     /// The storage source albums created under this account use.
     var storageSource: StorageSource {

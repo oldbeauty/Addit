@@ -130,6 +130,27 @@ final class OneDriveService: CloudDriveService {
         return all.first { $0.name == fileName }
     }
 
+    func storageQuota() async throws -> StorageQuota {
+        // `/me/drive` is the signed-in account's own drive. Deliberately not a
+        // `driveId` from one of the composite item IDs — those can point at a
+        // *shared* drive, whose quota belongs to whoever owns it, not to us.
+        let (data, _) = try await authorizedRequest(urlString: "\(baseURL)/me/drive?$select=quota")
+
+        struct DriveQuota: Decodable {
+            struct Quota: Decodable {
+                let total: Int64?
+                let used: Int64?
+            }
+            let quota: Quota?
+        }
+
+        let quota = try JSONDecoder().decode(DriveQuota.self, from: data).quota
+        return StorageQuota(
+            usedBytes: quota?.used ?? 0,
+            limitBytes: quota?.total
+        )
+    }
+
     func getFileMetadata(fileId: String) async throws -> DriveItem {
         let (data, _) = try await authorizedRequest(urlString: itemURL(fileId))
         let item = try JSONDecoder().decode(GraphItem.self, from: data)

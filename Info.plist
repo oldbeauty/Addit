@@ -24,6 +24,13 @@
 		<string>Geist-Medium.otf</string>
 		<string>Geist-SemiBold.otf</string>
 		<string>Geist-Bold.otf</string>
+		<string>SpaceGrotesk-Regular.otf</string>
+		<string>SpaceGrotesk-Medium.otf</string>
+		<string>SpaceGrotesk-Bold.otf</string>
+		<string>BDOGrotesk-Regular.otf</string>
+		<string>BDOGrotesk-Medium.otf</string>
+		<string>BDOGrotesk-DemiBold.otf</string>
+		<string>BDOGrotesk-Bold.otf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

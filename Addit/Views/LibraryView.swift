@@ -23,6 +23,16 @@ struct LibraryView: View {
     /// reappears. Replaces the old AlbumMetadataEditorSheet presentation.
     @State private var pendingEditAlbumId: String?
 
+    /// Storage usage per account email, for the account switcher.
+    ///
+    /// Only ever holds the **in-use** account of each provider, and that's a
+    /// limit of the providers rather than a shortcut: a drive service reports
+    /// the quota of whoever it is signed in as, and `GoogleAuthService`
+    /// deliberately refuses to vend a token when its current user isn't the
+    /// in-use Google account. Reading a second Google account's quota would
+    /// mean switching to it. Rows with no entry here simply show no bar.
+    @State private var storageQuotas: [String: StorageQuota] = [:]
+
     /// Push the album with inline edit mode armed — used by the context
     /// menus' Edit and by flows that create an album and immediately hand
     /// it to the user for filling in (create album, import).
@@ -112,10 +122,11 @@ struct LibraryView: View {
         let domain = sharedEmailDomain(of: accounts)
         Section {
             ForEach(accounts) { account in
-                // Strip only what the header is already showing.
                 accountMenu(
                     for: account,
-                    subtitle: domain == nil ? account.email : emailLocalPart(account.email)
+                    // Strips only what the header is already showing, and adds
+                    // the storage line where we're able to read one.
+                    subtitle: accountSubtitle(for: account, hidingDomain: domain)
                 )
             }
         } header: {
@@ -164,6 +175,95 @@ struct LibraryView: View {
     private func emailLocalPart(_ email: String) -> String {
         guard let at = email.lastIndex(of: "@") else { return email }
         return String(email[..<at])
+    }
+
+    // MARK: - Account storage
+
+    /// Identity of the currently in-use accounts, used as the fetch's task id
+    /// so switching accounts re-reads quotas and nothing else does.
+    private var inUseAccountKey: String {
+        let manager = authService.accountManager
+        return [manager.activeEmail(for: .google), manager.activeEmail(for: .microsoft)]
+            .map { $0 ?? "-" }
+            .joined(separator: "|")
+    }
+
+    private func refreshStorageQuotas() async {
+        let manager = authService.accountManager
+        var fetched: [String: StorageQuota] = [:]
+        // Errors are swallowed on purpose: a quota is decoration on a menu, and
+        // an expired token or an offline launch must not surface as an error in
+        // the library. The row just renders without a bar.
+        if let email = manager.activeEmail(for: .google) {
+            fetched[email] = try? await cloudRouter.google.storageQuota()
+        }
+        if let email = manager.activeEmail(for: .microsoft) {
+            fetched[email] = try? await cloudRouter.oneDrive.storageQuota()
+        }
+        storageQuotas = fetched
+    }
+
+    /// The account row's second line: who the account is, and — for the in-use
+    /// account of each provider — how full it is.
+    ///
+    /// The newline is a best-effort second line. iOS renders a menu row's
+    /// subtitle as a wrapping label, so it should break; if it doesn't, the
+    /// string still reads correctly run together, which is why the bar is
+    /// self-describing rather than a bare row of blocks.
+    private func accountSubtitle(for account: Account, hidingDomain domain: String?) -> String {
+        let identity = domain == nil ? account.email : emailLocalPart(account.email)
+        guard let quota = storageQuotas[account.email] else { return identity }
+        return "\(identity)\n\(storageSummary(quota))"
+    }
+
+    /// A bar drawn in block characters, because a menu row can't host a real
+    /// one — its content is a title, a subtitle and an icon, and nothing else.
+    private func storageSummary(_ quota: StorageQuota) -> String {
+        guard let fraction = quota.fraction, let limit = quota.limitBytes else {
+            // Unlimited or unreported: there's no proportion to draw, so don't
+            // draw an empty bar and imply the account is empty.
+            return "\(usedGigabytes(quota.usedBytes)) GB used"
+        }
+
+        let segments = 10
+        var filled = Int((fraction * Double(segments)).rounded())
+        // Any usage at all lights one cell — a nearly-empty account reading as
+        // completely empty is the one rounding error worth correcting.
+        if fraction > 0 { filled = max(1, filled) }
+        filled = min(segments, max(0, filled))
+
+        let bar = String(repeating: "█", count: filled)
+            + String(repeating: "░", count: segments - filled)
+        // "3.2 of 15 GB" — the unit belongs to the pair, so it's said once.
+        return "\(bar)  \(usedGigabytes(quota.usedBytes)) of \(limitGigabytes(limit)) GB"
+    }
+
+    /// Bytes per gigabyte, in the **binary** sense both providers use.
+    ///
+    /// Google reports a "15 GB" account as 16,106,127,360 bytes — that is
+    /// 15 × 2³⁰, gibibytes labelled GB — and OneDrive does the same with its
+    /// 5 GB (5,368,709,120). Dividing by 10⁹, which is what
+    /// `.byteCount(style: .file)` does, is arithmetically correct and reads as
+    /// 16.11 and 5.37: right numbers, matching neither provider's own UI nor
+    /// the figure the user is trying to reconcile it against. Dividing by 2³⁰
+    /// reproduces exactly what Drive and OneDrive show.
+    private static let bytesPerGigabyte = 1024.0 * 1024.0 * 1024.0
+
+    /// Usage to a tenth of a GB. Anything that would round away to "0.0" reads
+    /// "<.1" instead — a few dozen megabytes is *some* storage, and showing it
+    /// as zero is the one case where rounding states something false.
+    private func usedGigabytes(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "0" }
+        let gb = Double(bytes) / Self.bytesPerGigabyte
+        guard gb >= 0.05 else { return "<.1" }
+        return gb.formatted(.number.precision(.fractionLength(1)))
+    }
+
+    /// The limit, whole. Plan sizes are round numbers — "15", not "15.0".
+    private func limitGigabytes(_ bytes: Int64) -> String {
+        (Double(bytes) / Self.bytesPerGigabyte)
+            .rounded()
+            .formatted(.number.precision(.fractionLength(0)))
     }
 
     /// One row of the account switcher: name with `subtitle` as a smaller line
@@ -294,7 +394,16 @@ struct LibraryView: View {
                 }
             } else if isArranging {
                 List {
-                    ForEach(albums) { album in
+                    // Scoped to the library you're standing in, like the grid.
+                    // This used the raw query, so arranging showed every album
+                    // across all three storages and both accounts at once —
+                    // it predates the libraries being separate at all.
+                    //
+                    // `sourceAlbums`, not `filteredAlbums`: a search filter must
+                    // not narrow this. `onMove` renumbers by position, so
+                    // reordering a filtered subset would assign those indices
+                    // over albums that were hidden from view.
+                    ForEach(sourceAlbums) { album in
                         HStack(spacing: 12) {
                             AlbumArtworkThumbnail(album: album, size: 48)
 
@@ -310,7 +419,12 @@ struct LibraryView: View {
                         }
                     }
                     .onMove { source, destination in
-                        var ordered = albums.map { $0 }
+                        // Renumbering within this library only. `displayOrder`
+                        // is compared solely among albums shown together, so
+                        // two libraries both running 0…n is fine — what matters
+                        // is that a move here can't renumber albums the user
+                        // isn't looking at.
+                        var ordered = sourceAlbums
                         ordered.move(fromOffsets: source, toOffset: destination)
                         for (index, album) in ordered.enumerated() {
                             album.displayOrder = index
@@ -381,7 +495,11 @@ struct LibraryView: View {
                                             Label("Arrange", systemImage: "arrow.up.arrow.down")
                                         }
                                         Button("Remove from Library", role: .destructive) {
-                                            modelContext.delete(album)
+                                            // Was a bare `modelContext.delete`,
+                                            // which stranded every file the
+                                            // album owned — an orphan the size
+                                            // of the album, every time.
+                                            removeAlbum(album)
                                         }
                                     }
                                 }
@@ -685,6 +803,13 @@ struct LibraryView: View {
         .task {
             initializeDisplayOrder()
         }
+        // Keyed on the in-use accounts, so switching accounts re-reads and
+        // nothing else does. Quotas move slowly; once per appearance and per
+        // switch is plenty, and it keeps the network off the path of simply
+        // opening the menu.
+        .task(id: inUseAccountKey) {
+            await refreshStorageQuotas()
+        }
         .safeAreaInset(edge: .bottom) {
             if playerService.currentTrack != nil {
                 // Exactly the bar's height: the grid's 16pt bottom padding then
@@ -696,16 +821,14 @@ struct LibraryView: View {
     }
 
     private func clearLocalStorage() {
-        // Stop playback if current track is local
-        if playerService.currentTrack?.isLocal == true {
-            playerService.pause()
-            playerService.queue.removeAll()
-            playerService.userQueue.removeAll()
-            playerService.currentIndex = 0
-        }
-
         // Delete all local albums from SwiftData
         let localAlbums = albums.filter { $0.isLocal }
+
+        // Evict every local track, not just the playing one: a local track
+        // sitting in the user queue behind a Drive track was left dangling by
+        // the old "pause if the current track is local" check.
+        playerService.forget(trackIds: Set(localAlbums.flatMap { $0.tracks }.map(\.googleFileId)))
+
         for album in localAlbums {
             modelContext.delete(album)
         }
@@ -718,15 +841,13 @@ struct LibraryView: View {
     }
 
     private func removeAlbum(_ album: Album) {
-        // Clean up local files if it's a local album
-        if album.isLocal {
-            let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
-            let localBase = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("LocalAlbums", isDirectory: true)
-                .appendingPathComponent(albumId, isDirectory: true)
-            try? FileManager.default.removeItem(at: localBase)
-        }
-        // Cascade delete rule on Album.tracks handles track cleanup
+        // Both of these read the records, so both run *before* the delete.
+        // The player holds Track model objects; left in its queue they'd be
+        // detached models it would trap on at the next gapless preload.
+        playerService.forget(trackIds: Set(album.tracks.map(\.googleFileId)))
+        // Files second, while the record can still say which ones. The cascade
+        // rule on `Album.tracks` deletes rows, not bytes.
+        LibraryCleanup.purge(album, cache: cacheService, art: albumArtService)
         modelContext.delete(album)
         do {
             try modelContext.save()
@@ -1110,13 +1231,18 @@ struct LibraryView: View {
         let isCurrentAccount = targetEmail == authService.userEmail
         let accountId = AccountManager.storageIdentifier(for: targetEmail)
 
-        if isCurrentAccount {
-            // Stop playback if signing out the active account
-            playerService.pause()
-            playerService.queue.removeAll()
-            playerService.userQueue.removeAll()
-            playerService.currentIndex = 0
-        }
+        // Evict this account's tracks from the player before its store goes.
+        // Gated on `isCurrentAccount` before, which left the same dangling
+        // models behind when the signed-out account merely had something in
+        // the queue — the libraries are parallel, so a Google track can be
+        // playing while you sign a Microsoft account out.
+        playerService.forget(
+            trackIds: Set(
+                albums.filter { $0.accountId == accountId }
+                    .flatMap { $0.tracks }
+                    .map(\.googleFileId)
+            )
+        )
 
         // Clear this account's caches
         try? cacheService.clearCache(for: accountId)

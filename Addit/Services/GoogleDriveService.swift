@@ -96,6 +96,37 @@ final class GoogleDriveService: CloudDriveService {
         return try JSONDecoder().decode(DriveItem.self, from: data)
     }
 
+    func storageQuota() async throws -> StorageQuota {
+        let token = try await getToken()
+        var components = URLComponents(string: "\(baseURL)/about")!
+        components.queryItems = [URLQueryItem(name: "fields", value: "storageQuota")]
+
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response)
+
+        /// Drive reports these as **strings**, not numbers — they're int64s
+        /// that would lose precision in JSON's double, so decoding them as
+        /// `Int64` directly fails.
+        struct About: Decodable {
+            struct Quota: Decodable {
+                let limit: String?
+                let usage: String?
+            }
+            let storageQuota: Quota
+        }
+
+        let quota = try JSONDecoder().decode(About.self, from: data).storageQuota
+        return StorageQuota(
+            usedBytes: quota.usage.flatMap(Int64.init) ?? 0,
+            // Absent for unlimited plans, which is a state the UI has to show
+            // rather than treat as zero.
+            limitBytes: quota.limit.flatMap(Int64.init)
+        )
+    }
+
     func listAllFilesInFolder(_ folderId: String) async throws -> DriveFileListResponse {
         let query = "'\(folderId)' in parents and trashed=false"
         return try await listFiles(query: query, pageSize: 1000, orderBy: "name")

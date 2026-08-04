@@ -91,9 +91,26 @@ final class AudioCacheService {
         }
     }
 
+    /// Delete **every** cached file belonging to `track`, not just the one path
+    /// `cacheFilePath` would compute for it now.
+    ///
+    /// A track whose format `AVAudioFile` can't open gets a transcoded sibling
+    /// written next to it — `<fileId>.converted.m4a`, by
+    /// `AudioPlayerService.convertToCompatibleFormat` — and the extension
+    /// recorded on the track can differ from what was actually written. Naming
+    /// one file and deleting only that left the sibling behind: unreachable
+    /// forever, and reported as an orphan by the cache inspector, which knows
+    /// to strip `.converted` and so correctly blamed a track that was gone.
+    /// Matching on the id prefix catches every variant.
     func removeTrack(_ track: Track) {
-        let url = cacheFilePath(for: track)
-        try? fileManager.removeItem(at: url)
+        let prefix = "\(track.googleFileId)."
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        for url in contents where url.lastPathComponent.hasPrefix(prefix) {
+            try? fileManager.removeItem(at: url)
+        }
         NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
     }
 

@@ -19,7 +19,7 @@ struct TrackRow: View {
     var body: some View {
         HStack(spacing: 12) {
             if isCurrentTrack {
-                MiniEQGrid(isPlaying: isPlaying)
+                PixelEQGrid(isPlaying: isPlaying)
                     .frame(width: 24)
             } else {
                 // Display layer (Phosphor): track numbers are readouts.
@@ -197,20 +197,29 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-/// Sheet that lets the user pick a destination folder in the active
-/// account's cloud, reusing the same browser used by CreateAlbumView.
+/// Sheet that lets the user pick a destination folder in a cloud account,
+/// reusing the same browser used by CreateAlbumView.
 struct ChooseDriveFolderSheet: View {
+    /// Whose cloud to browse; `nil` for the active account.
+    var provider: AccountProvider? = nil
     let onSelectParent: (_ parentId: String, _ markStarred: Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
 
+    private var driveService: any CloudDriveService {
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
+                    // Capability-driven: OneDrive has no "Starred", so the tab
+                    // set follows the provider being browsed, not the active one.
+                    ForEach(FolderSource.availableCases(for: driveService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -224,6 +233,7 @@ struct ChooseDriveFolderSheet: View {
                     source: selectedSource,
                     buttonLabel: "Save Here",
                     buttonIcon: "icloud.and.arrow.up",
+                    provider: provider,
                     onSelectParent: { parentId, markStarred in
                         onSelectParent(parentId, markStarred)
                     }
@@ -238,6 +248,7 @@ struct ChooseDriveFolderSheet: View {
                     source: selectedSource,
                     buttonLabel: "Save Here",
                     buttonIcon: "icloud.and.arrow.up",
+                    provider: provider,
                     onSelectParent: { parentId, markStarred in
                         onSelectParent(parentId, markStarred)
                     }

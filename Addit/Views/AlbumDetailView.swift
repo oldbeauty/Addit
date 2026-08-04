@@ -33,7 +33,6 @@ struct AlbumDetailView: View {
     @State var albumImage: UIImage?
     @State private var queuedTrackId: String?
     @State var displayItems: [TracklistItem] = []
-    @State var showToolbarActions = false
     @State private var toolbarActionGeneration = 0
     @State var shareFileURL: URL?
     @State var isExportingAlbum = false
@@ -45,7 +44,9 @@ struct AlbumDetailView: View {
     @State private var trackDurations: [String: Double] = [:]
     @State var isSavingToLocal = false
     @State var saveProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
-    @State private var showDriveFolderPicker = false
+    /// Destination provider for "Duplicate to…", which is also what presents
+    /// the folder picker — the presentation's identity *is* the chosen cloud.
+    @State private var duplicateTarget: AccountProvider?
     @State var isSavingToDrive = false
     @State var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State var saveToDriveError: String?
@@ -461,128 +462,92 @@ struct AlbumDetailView: View {
         }
     }
 
-    /// Ellipsis dropdown panel, extracted from the body's overlay for the
-    /// same type-checker-budget reason as `trackRowCell` / `initialLoad`.
-    private var toolbarActionsPanel: some View {
-        VStack(alignment: .trailing, spacing: 0) {
-            if !album.isLocal {
-                Button {
-                    showSharingSheet = true
-                    withAnimation { showToolbarActions = false }
-                } label: {
-                    Label("Sharing", systemImage: "person.2")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-
-                // Chat rides on the Drive comments API, which OneDrive
-                // has no equivalent for — hidden for OneDrive albums.
-                if driveService.supportsComments {
-                    Divider()
-
-                    Button {
-                        navigateToChat = true
-                        withAnimation { showToolbarActions = false }
-                    } label: {
-                        Label("Chat", systemImage: "bubble.left")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
-
-                Divider()
-            }
-
+    /// Contents of the ellipsis menu. Same items, same order as the panel that
+    /// preceded it — the system draws the container now, so there's no frame,
+    /// padding, divider or dismissal here to draw or manage.
+    ///
+    /// Still a separate property rather than inline in the `ToolbarItem` for
+    /// the same type-checker-budget reason as `trackRowCell` / `initialLoad`.
+    @ViewBuilder
+    private var albumActions: some View {
+        if !album.isLocal {
             Button {
-                enterEditMode()
+                showSharingSheet = true
             } label: {
-                Label("Edit", systemImage: "pencil")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Label("Sharing", systemImage: "person.2")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
 
-            if !album.isLocal {
-                Divider()
-
+            // Chat rides on the Drive comments API, which OneDrive
+            // has no equivalent for — hidden for OneDrive albums.
+            if driveService.supportsComments {
                 Button {
-                    toggleAllCache()
-                    withAnimation { showToolbarActions = false }
+                    navigateToChat = true
                 } label: {
-                    Label(
-                        allTracksCached ? "Remove Offline Access" : "Make Available Offline",
-                        systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Label("Chat", systemImage: "bubble.left")
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-
-            if hasHiddenTracks {
-                Divider()
-
-                Button {
-                    withAnimation { album.showHiddenTracks.toggle() }
-                    try? modelContext.save()
-                    withAnimation { showToolbarActions = false }
-                } label: {
-                    Label(album.showHiddenTracks ? "Hide Hidden Tracks" : "Show Hidden Tracks",
-                          systemImage: album.showHiddenTracks ? "eye.slash" : "eye")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-
-            Divider()
-
-            Button {
-                withAnimation { showToolbarActions = false }
-                Task { await exportAlbum() }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            if !album.isLocal {
-                Divider()
-
-                Button {
-                    withAnimation { showToolbarActions = false }
-                    Task { await saveToLocalLibrary() }
-                } label: {
-                    Label("Save to Local Library", systemImage: "square.and.arrow.down")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-
-            if album.isLocal {
-                Divider()
-
-                Button {
-                    withAnimation { showToolbarActions = false }
-                    showDriveFolderPicker = true
-                } label: {
-                    Label("Save to \(authService.activeProvider.displayName) Library",
-                          systemImage: "icloud.and.arrow.up")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
             }
         }
-        .frame(width: 230)
-        .glassPane(cornerRadius: 14)
-        .padding(.trailing, 16)
-        .padding(.top, 4)
-        .transition(.opacity.combined(with: .scale(scale: 0.5, anchor: .topTrailing)))
+
+        Button {
+            enterEditMode()
+        } label: {
+            Label("Edit", systemImage: "pencil")
+        }
+
+        if !album.isLocal {
+            Button {
+                toggleAllCache()
+            } label: {
+                Label(
+                    allTracksCached ? "Remove Offline Access" : "Make Available Offline",
+                    systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
+                )
+            }
+        }
+
+        if hasHiddenTracks {
+            Button {
+                withAnimation { album.showHiddenTracks.toggle() }
+                try? modelContext.save()
+            } label: {
+                Label(album.showHiddenTracks ? "Hide Hidden Tracks" : "Show Hidden Tracks",
+                      systemImage: album.showHiddenTracks ? "eye.slash" : "eye")
+            }
+        }
+
+        Button {
+            Task { await exportAlbum() }
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+
+        Menu {
+            // Only providers with a signed-in account — there's nowhere to
+            // copy to otherwise, and the destination needn't be the account
+            // currently being viewed.
+            ForEach(AccountProvider.allCases) { provider in
+                if authService.accountManager.activeEmail(for: provider) != nil {
+                    Button {
+                        duplicateTarget = provider
+                    } label: {
+                        Label(provider.displayName, systemImage: "icloud.and.arrow.up")
+                    }
+                }
+            }
+
+            // Absent for an album that's already local: a second copy in the
+            // same library has nothing to distinguish it — no folder to pick,
+            // same name, same files.
+            if !album.isLocal {
+                Button {
+                    Task { await saveToLocalLibrary() }
+                } label: {
+                    Label("Local Library", systemImage: "iphone")
+                }
+            }
+        } label: {
+            Label("Duplicate to…", systemImage: "plus.square.on.square")
+        }
     }
 
     /// Track row + its full modifier chain, extracted from the List body.
@@ -898,10 +863,8 @@ struct AlbumDetailView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            showToolbarActions.toggle()
-                        }
+                    Menu {
+                        albumActions
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
@@ -910,25 +873,6 @@ struct AlbumDetailView: View {
         }
         .animation(.easeInOut(duration: 0.25),
                    value: cacheService.albumCacheProgress[album.googleFolderId] != nil)
-        .simultaneousGesture(
-            showToolbarActions
-                ? TapGesture().onEnded {
-                    withAnimation(.easeIn(duration: 0.2)) { showToolbarActions = false }
-                }
-                : nil
-        )
-        .simultaneousGesture(
-            showToolbarActions
-                ? DragGesture(minimumDistance: 5).onChanged { _ in
-                    withAnimation(.easeIn(duration: 0.2)) { showToolbarActions = false }
-                }
-                : nil
-        )
-        .overlay(alignment: .topTrailing) {
-            if showToolbarActions {
-                toolbarActionsPanel
-            }
-        }
         .overlay {
             if isSavingToLocal {
                 progressCardOverlay(
@@ -966,10 +910,10 @@ struct AlbumDetailView: View {
         .sheet(isPresented: $showSharingSheet) {
             SharingSheet(album: album)
         }
-        .sheet(isPresented: $showDriveFolderPicker) {
-            ChooseDriveFolderSheet { parentId, markStarred in
-                showDriveFolderPicker = false
-                Task { await saveToGoogleDrive(parentId: parentId, markStarred: markStarred) }
+        .sheet(item: $duplicateTarget) { provider in
+            ChooseDriveFolderSheet(provider: provider) { parentId, markStarred in
+                duplicateTarget = nil
+                Task { await duplicateAlbum(to: provider, parentId: parentId, markStarred: markStarred) }
             }
             .environment(cloudRouter)
             .environment(authService)
@@ -1221,8 +1165,15 @@ struct AlbumDetailView: View {
             let driveIds = Set(driveFiles.map(\.id))
             let localIds = Set(album.tracks.map(\.googleFileId))
 
-            // Remove tracks that no longer exist on Drive
-            for track in album.tracks where !driveIds.contains(track.googleFileId) {
+            // Remove tracks that no longer exist on Drive. Their offline copies
+            // go with them — the file they mirror is gone upstream, so the
+            // cache entry could never be reached or refreshed again — and so
+            // does any reference the player still holds, which would otherwise
+            // be a detached model it traps on.
+            let vanished = album.tracks.filter { !driveIds.contains($0.googleFileId) }
+            playerService.forget(trackIds: Set(vanished.map(\.googleFileId)))
+            for track in vanished {
+                LibraryCleanup.purge(track, cache: cacheService)
                 modelContext.delete(track)
             }
 

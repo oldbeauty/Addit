@@ -43,7 +43,6 @@ struct NowPlayingView: View {
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(ThemeService.self) private var themeService
-    @Environment(AudioAnalyzerService.self) private var analyzer
     @Environment(\.colorScheme) private var colorScheme
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
@@ -126,9 +125,6 @@ struct NowPlayingView: View {
                 dragOffset = 0
             }
         }
-        // The pill only removes this view when playback itself goes away, so
-        // this is the last chance to release the analyzer tap.
-        .onDisappear { analyzer.removeConsumer("eq-page") }
         .task(id: artworkTaskID) {
             albumImage = await loadedArtwork()
             coverAccent = albumImage.flatMap(CoverColor.accent(from:))
@@ -319,9 +315,6 @@ struct NowPlayingView: View {
         .aspectRatio(1, contentMode: .fit)
         .frame(maxWidth: 320)
         .padding(.horizontal, 24)
-        .onChange(of: showVisualizer) { _, visible in
-            if visible { analyzer.addConsumer("eq-page") } else { analyzer.removeConsumer("eq-page") }
-        }
     }
 
     /// The mini bar's artwork tile, unchanged from before the pill existed:
@@ -590,15 +583,28 @@ struct NowPlayingView: View {
                                 radius: 20, y: 10)
 
                     // EQ visualizer slides in from the right and fades up
-                    // as the halo forms behind it.
-                    EQVisualizerView()
-                        .padding(.top, 20)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
+                    // as the halo forms behind it. Uniform padding, unlike the
+                    // axis-labelled chart this replaced: the grid has to stay
+                    // square, so it can't be given more room in one direction.
+                    // Built only once the page is at least partly on screen.
+                    // The grid registers its own analyzer consumer while it
+                    // exists, so its lifetime *is* the FFT tap's lifetime —
+                    // leave it built behind the cover and the tap runs the
+                    // whole time the player is open, for a grid nobody sees.
+                    if pageProgress > 0 {
+                        PixelEQGrid(
+                            isPlaying: playerService.isPlaying,
+                            // Fills the page rather than taking a fixed size.
+                            size: nil,
+                            // One column per analyzer band.
+                            side: 16
+                        )
+                        .padding(16)
                         .frame(width: pageWidth, height: pageWidth)
                         .opacity(pageProgress)
                         .offset(x: (1 - pageProgress) * pageWidth * 0.35)
                         .allowsHitTesting(pageProgress > 0.5)
+                    }
                 }
                 .frame(width: pageWidth, height: pageWidth)
                 // Horizontal-only pan recognizer bridged in from UIKit.

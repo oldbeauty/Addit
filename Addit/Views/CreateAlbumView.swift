@@ -168,6 +168,10 @@ struct ParentFolderBrowserView: View {
     let source: FolderSource
     var buttonLabel: String = "Create Here"
     var buttonIcon: String = "plus"
+    /// Whose cloud to browse. `nil` means the active account, which is what
+    /// every flow wants except "Duplicate to…", where the destination provider
+    /// is chosen explicitly and may not be the active one.
+    var provider: AccountProvider? = nil
     /// Callback receives the destination parent id and whether the new folder
     /// should be marked as starred (true when the user is at the root of the
     /// Starred tab — since "Starred" is a flag, not a real parent folder).
@@ -175,7 +179,8 @@ struct ParentFolderBrowserView: View {
 
     @Environment(CloudServiceRouter.self) private var cloudRouter
     private var driveService: any CloudDriveService {
-        cloudRouter.activeService
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
     }
     @State private var subfolders: [DriveItem] = []
     @State private var isLoading = true

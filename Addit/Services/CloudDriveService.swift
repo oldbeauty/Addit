@@ -60,6 +60,30 @@ protocol CloudDriveService {
     // has no comments API, and per-album chat is a Google-only feature —
     // ChatView talks to the concrete GoogleDriveService directly, and the
     // chat UI is hidden for OneDrive albums via `supportsComments`.
+
+    // Account
+    /// Storage used and available for the account this service is signed in
+    /// as. Whole-account figures, not per-album: both providers report the
+    /// drive's totals, which is what "how full is this account" means.
+    func storageQuota() async throws -> StorageQuota
+}
+
+/// An account's storage usage.
+///
+/// `limitBytes` is optional because "unlimited" is a real answer from both
+/// providers — Google omits the limit for pooled/unlimited Workspace plans,
+/// Graph can report a drive with no quota — and a progress bar has nothing to
+/// show in that case. Callers must handle `fraction == nil` rather than
+/// substituting a zero.
+struct StorageQuota: Equatable {
+    let usedBytes: Int64
+    let limitBytes: Int64?
+
+    /// 0…1 for a quota'd account, `nil` when the account has no limit.
+    var fraction: Double? {
+        guard let limitBytes, limitBytes > 0 else { return nil }
+        return min(1, max(0, Double(usedBytes) / Double(limitBytes)))
+    }
 }
 
 enum CloudDriveError: LocalizedError {

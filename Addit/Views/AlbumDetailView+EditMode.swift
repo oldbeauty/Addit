@@ -341,7 +341,6 @@ extension AlbumDetailView {
         editAdditDataFileId = album.additDataFileId
         editAdditDataOwnedByMe = true
         withAnimation {
-            showToolbarActions = false
             isEditing = true
         }
         if !album.isLocal {
@@ -580,23 +579,24 @@ extension AlbumDetailView {
     }
 
     private func deleteEditTrack(_ track: Track) async {
-        if track.isLocal {
-            if let url = track.localFileURL {
-                try? FileManager.default.removeItem(at: url)
-            }
-        } else {
+        if !track.isLocal {
             do {
                 try await driveService.deleteFile(fileId: track.googleFileId)
-                // Drop the offline copy too — a deleted track's cache
-                // entry would never be reachable again.
-                cacheService.removeTrack(track)
-                cachedTrackIds.remove(track.googleFileId)
             } catch {
+                // Upstream delete failed — leave everything, local copy
+                // included, so the track is still playable and retryable.
                 editErrorMessage = "Failed to delete: \(error.localizedDescription)"
                 editTrackToDelete = nil
                 return
             }
         }
+        // Out of the player before it's out of the store — a queued reference
+        // to a deleted model is a crash at the next gapless preload.
+        playerService.forget(trackIds: [track.googleFileId])
+        // Local file or offline copy, whichever this track has. Shared with
+        // every other deletion path so none of them can drift apart.
+        LibraryCleanup.purge(track, cache: cacheService)
+        cachedTrackIds.remove(track.googleFileId)
         let targetId = track.googleFileId
         withAnimation {
             editItems.removeAll { $0.id == targetId }
@@ -1045,24 +1045,52 @@ extension AlbumDetailView {
         }
         var downloadedTracks: [DownloadedTrack] = []
 
+        // The listing above comes from Drive, not from our `Track` records —
+        // deliberately, so files added outside the app are picked up. The
+        // offline cache is keyed by `Track` though, so map back by file id to
+        // find out whether we already hold these bytes.
+        let tracksByFileId = Dictionary(
+            album.tracks.map { ($0.googleFileId, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         for (index, file) in allAudioFiles.enumerated() {
             do {
                 await MainActor.run {
                     saveProgress = (current: index + 1, total: allAudioFiles.count, trackName: file.name)
                 }
-                let data = try await driveService.downloadFileData(fileId: file.id)
-                guard !data.isEmpty else {
+                let destURL = albumDir.appendingPathComponent(file.name)
+                let byteCount: Int64
+
+                if let track = tracksByFileId[file.id],
+                   let cachedURL = cacheService.cachedFileURL(for: track),
+                   fm.fileExists(atPath: cachedURL.path) {
+                    // Already on the device: copy it. Re-downloading an album
+                    // that's been made available offline is pure waste, and a
+                    // file copy never loads the whole track into memory the
+                    // way the download path has to.
+                    try? fm.removeItem(at: destURL)
+                    try fm.copyItem(at: cachedURL, to: destURL)
+                    let attrs = try? fm.attributesOfItem(atPath: destURL.path)
+                    byteCount = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                } else {
+                    let data = try await driveService.downloadFileData(fileId: file.id)
+                    try data.write(to: destURL)
+                    byteCount = Int64(data.count)
+                }
+
+                guard byteCount > 0 else {
                     #if DEBUG
                     print("[SaveToLocal] Empty data for \(file.name), skipping")
                     #endif
+                    try? fm.removeItem(at: destURL)
                     continue
                 }
-                let destURL = albumDir.appendingPathComponent(file.name)
-                try data.write(to: destURL)
+
                 downloadedTracks.append(DownloadedTrack(
                     name: file.name,
                     mimeType: file.mimeType,
-                    fileSize: Int64(data.count),
+                    fileSize: byteCount,
                     relativePath: "LocalAlbums/\(localAlbumId)/\(file.name)"
                 ))
             } catch {
@@ -1169,17 +1197,28 @@ extension AlbumDetailView {
         }
     }
 
-    func saveToGoogleDrive(parentId: String, markStarred: Bool) async {
-        guard !isSavingToDrive, album.isLocal else { return }
+    /// Copy this album into `provider`'s cloud, whatever it's stored on now.
+    ///
+    /// Was `saveToGoogleDrive`, which only ever went local → active account.
+    /// Two things generalise it and nothing else changed: the destination is
+    /// the *chosen* provider rather than the active one, and each file's bytes
+    /// come from `fileData(for:)`, which knows where this album actually keeps
+    /// them. That covers all six directions — local→either cloud, either
+    /// cloud→the other, and either cloud→itself (a copy into another folder).
+    func duplicateAlbum(to provider: AccountProvider, parentId: String, markStarred: Bool) async {
+        guard !isSavingToDrive else { return }
         await MainActor.run {
             isSavingToDrive = true
             uploadProgress = (0, 0, "")
         }
 
-        // This album is LOCAL, so the album-routed `driveService` property
-        // would fall back to Google. Uploading targets the ACTIVE
-        // account's provider — shadow the property for this function.
-        let driveService = cloudRouter.activeService
+        // The destination. Deliberately not the album-routed `driveService`
+        // property (that's the *source*) and not `activeService` (the
+        // destination needn't be the account you're currently looking at).
+        let driveService = cloudRouter.service(for: provider.storageSource)
+        // The source, for albums whose bytes live in a cloud rather than on
+        // disk. `nil` for local albums, which read straight off the filesystem.
+        let sourceService: (any CloudDriveService)? = album.isLocal ? nil : cloudRouter.service(for: album)
 
         let fm = FileManager.default
         let localTracks = sortedTracks
@@ -1216,11 +1255,16 @@ extension AlbumDetailView {
                 data: additData
             )
 
-            // 3. Upload cover.jpg if present
+            // 3. Upload cover.jpg if present — from disk for a local album,
+            // otherwise pulled from the source cloud.
             var uploadedCoverItem: DriveItem?
-            if let coverPath = album.resolvedLocalCoverPath,
-               fm.fileExists(atPath: coverPath),
-               let coverData = try? Data(contentsOf: URL(fileURLWithPath: coverPath)) {
+            var coverData: Data?
+            if let coverPath = album.resolvedLocalCoverPath, fm.fileExists(atPath: coverPath) {
+                coverData = try? Data(contentsOf: URL(fileURLWithPath: coverPath))
+            } else if let sourceService, let coverFileId = album.coverFileId {
+                coverData = try? await sourceService.downloadFileData(fileId: coverFileId)
+            }
+            if let coverData {
                 await MainActor.run {
                     uploadProgress = (current: 2, total: totalSteps, trackName: "cover.jpg")
                 }
@@ -1242,17 +1286,25 @@ extension AlbumDetailView {
             var uploadedTracks: [UploadedTrack] = []
 
             for (index, track) in localTracks.enumerated() {
-                guard let url = track.localFileURL,
-                      fm.fileExists(atPath: url.path) else {
-                    #if DEBUG
-                    print("[SaveToDrive] Skipping missing file: \(track.name)")
-                    #endif
-                    continue
-                }
                 await MainActor.run {
                     uploadProgress = (current: 2 + index + 1, total: totalSteps, trackName: track.name)
                 }
-                let data = try Data(contentsOf: url)
+                // On-device copy first (the album's own file, or an offline
+                // cache of a cloud track), and only download when there isn't
+                // one — duplicating an album you've already made available
+                // offline shouldn't re-fetch every track.
+                let data: Data
+                if let url = track.localFileURL ?? cacheService.cachedFileURL(for: track),
+                   fm.fileExists(atPath: url.path) {
+                    data = try Data(contentsOf: url)
+                } else if let sourceService {
+                    data = try await sourceService.downloadFileData(fileId: track.googleFileId)
+                } else {
+                    #if DEBUG
+                    print("[Duplicate] Skipping missing file: \(track.name)")
+                    #endif
+                    continue
+                }
                 let mime = track.mimeType.isEmpty ? "audio/mpeg" : track.mimeType
                 let driveItem = try await driveService.createFile(
                     name: track.name,
@@ -1269,7 +1321,7 @@ extension AlbumDetailView {
             }
 
             #if DEBUG
-            print("[SaveToDrive] Uploaded \(uploadedTracks.count)/\(localTracks.count) tracks")
+            print("[Duplicate] Uploaded \(uploadedTracks.count)/\(localTracks.count) tracks")
             #endif
 
             // 5. Create the new Drive Album record in shared store
@@ -1285,7 +1337,7 @@ extension AlbumDetailView {
                 canEdit: true,
                 isFolderOwner: true,
                 displayOrder: nextOrder,
-                storageSource: authService.activeProvider.storageSource
+                storageSource: provider.storageSource
             )
             newAlbum.additDataFileId = additDataItem.id
             newAlbum.cachedTracklist = tracklist
@@ -1295,7 +1347,10 @@ extension AlbumDetailView {
                 newAlbum.coverModifiedTime = coverItem.modifiedTime
                 newAlbum.coverUpdatedAt = .now
             }
-            if let email = authService.userEmail {
+            // The *destination* account, which isn't necessarily the active
+            // one — stamping the active email here would file the copy under
+            // an account that doesn't hold it.
+            if let email = authService.accountManager.activeEmail(for: provider) {
                 newAlbum.accountId = AccountManager.storageIdentifier(for: email)
             }
             modelContext.insert(newAlbum)
@@ -1315,19 +1370,21 @@ extension AlbumDetailView {
 
             try? modelContext.save()
             #if DEBUG
-            print("[SaveToDrive] Created Drive album '\(album.name)' with \(uploadedTracks.count) tracks")
+            print("[Duplicate] Created Drive album '\(album.name)' with \(uploadedTracks.count) tracks")
             #endif
 
             await MainActor.run {
                 isSavingToDrive = false
                 uploadProgress = (0, 0, "")
-                // Switch to Google Drive Library and navigate back
-                storageSource = StorageSource.googleDrive.rawValue
+                // Switch to the library the copy landed in and navigate back.
+                // This was hardcoded to Google Drive, which sent you to the
+                // wrong library whenever the upload went to OneDrive.
+                storageSource = provider.storageSource.rawValue
                 dismiss()
             }
         } catch {
             #if DEBUG
-            print("[SaveToDrive] Failed: \(error)")
+            print("[Duplicate] Failed: \(error)")
             #endif
             await MainActor.run {
                 isSavingToDrive = false

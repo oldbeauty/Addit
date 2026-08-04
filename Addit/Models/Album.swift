@@ -72,6 +72,23 @@ final class Album {
     var isLocal: Bool { storageSource == .localStorage }
     var isOneDrive: Bool { storageSource == .oneDrive }
 
+    /// Where a local album's files live: `Documents/LocalAlbums/<id>`, holding
+    /// its audio and its `cover.jpg`. `nil` for cloud albums.
+    ///
+    /// The `<id>` is `googleFolderId` minus the `local_` prefix every creation
+    /// path stamps on. Deletion used to derive this inline, which is precisely
+    /// the kind of duplicated mapping that goes stale and leaves a directory
+    /// behind — it lives here now, next to the paths it has to agree with.
+    var localDirectoryURL: URL? {
+        guard isLocal else { return nil }
+        let directoryName = googleFolderId.hasPrefix("local_")
+            ? String(googleFolderId.dropFirst("local_".count))
+            : googleFolderId
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalAlbums", isDirectory: true)
+            .appendingPathComponent(directoryName, isDirectory: true)
+    }
+
     /// Resolves localCoverPath to an absolute path, handling both legacy absolute and relative paths
     var resolvedLocalCoverPath: String? {
         guard let localCoverPath else { return nil }

@@ -40,6 +40,15 @@ extension Font {
     /// one string to a bundled font's PostScript family name (+ adding the
     /// file to the target and `UIAppFonts`). `nil` = system SF.
     /// Readout type (`Font.readout`) is separate and stays bitmap.
+    ///
+    /// Currently bundled, so each is a one-word swap here:
+    /// - `"Space Grotesk"` — proportional cut of Space Mono. Regular/Medium/
+    ///   Bold only: the family has **no SemiBold** in any official build
+    ///   (Google Fonts ships only the variable), so `uiHeadline`'s `.semibold`
+    ///   resolves to the nearest cut rather than a drawn one.
+    /// - `"BDO Grotesk"` — neo-grotesque. Regular/Medium/DemiBold/Bold, so it
+    ///   does have a real semibold-weight cut.
+    /// - `"Geist"` — the previous default. Regular/Medium/SemiBold/Bold.
     static let appFamily: String? = "Geist"
 
     /// Fixed-size UI font in the app family.

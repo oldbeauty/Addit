@@ -307,6 +307,62 @@ final class AudioPlayerService {
         if isPlaying { pause() } else { play() }
     }
 
+    /// Drop every reference to `trackIds` from the player's queues.
+    ///
+    /// **Call this before deleting the records, while they are still valid.**
+    /// The player holds `Track` *model objects*, so the moment SwiftData
+    /// deletes them — a cascade from deleting their album, say — every one of
+    /// those references is detached from its context, and reading a faulted
+    /// attribute off a detached model traps the process outright. The player's
+    /// own machinery does precisely that within a tick: the gapless preloader
+    /// reaches for `waveformData` on the next track and the app dies.
+    ///
+    /// If the track under the playhead is among them, playback stops and the
+    /// queue empties. There's nothing to continue into, and an emptied queue is
+    /// what takes the mini player off screen — rather than leaving it offering
+    /// Play for a record that no longer exists.
+    func forget(trackIds: Set<String>) {
+        guard !trackIds.isEmpty else { return }
+        let isDoomed = { (track: Track) in trackIds.contains(track.googleFileId) }
+        guard queue.contains(where: isDoomed)
+                || userQueue.contains(where: isDoomed)
+                || originalQueue.contains(where: isDoomed)
+        else { return }
+
+        // Whatever is staged or armed for a gapless hand-off may be one of the
+        // doomed tracks, and `stop()` fires queued completions — so invalidate
+        // them before anything else moves.
+        scheduleGeneration &+= 1
+        clearGaplessState()
+
+        let playingTrackId = currentTrack?.googleFileId
+        queue.removeAll(where: isDoomed)
+        userQueue.removeAll(where: isDoomed)
+        originalQueue.removeAll(where: isDoomed)
+
+        if let playingTrackId, trackIds.contains(playingTrackId) {
+            pause()
+            queue.removeAll()
+            userQueue.removeAll()
+            originalQueue.removeAll()
+            currentIndex = 0
+            anchor = nil
+            currentTime = 0
+            duration = 0
+            waveformSamples = []
+            waveformSamplesPerSecond = 0
+            // Or the lock screen keeps offering transport controls for a track
+            // that isn't there any more.
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        } else if let playingTrackId,
+                  let movedTo = queue.firstIndex(where: { $0.googleFileId == playingTrackId }) {
+            // Removals shifted the playing track; keep the index on it, and
+            // re-stage a gapless follower since the old one was just voided.
+            currentIndex = movedTo
+            scheduleNextTrackGapless(afterGeneration: scheduleGeneration)
+        }
+    }
+
     func next() {
         guard !queue.isEmpty else { return }
         #if DEBUG
