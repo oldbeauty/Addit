@@ -17,6 +17,19 @@ struct AdditApp: App {
     @State private var analyzerService = AudioAnalyzerService()
 
     init() {
+        // Let a button inside a scroll view show its press state on touch-down.
+        //
+        // UIKit holds that state back ~0.15s by default so a scroll doesn't
+        // light up every cell it passes through. A tap is usually shorter than
+        // that, so `ButtonStyle`'s `isPressed` never engages for one — a *hold*
+        // shows the press fine, a tap shows nothing, which is exactly the
+        // asymmetry that made the library cards' imprint look broken.
+        //
+        // Turning the delay off doesn't cost the scroll anything: UIKit still
+        // cancels the touch the moment a drag is recognised, so a scroll that
+        // begins on a card releases it rather than pressing it.
+        UIScrollView.appearance().delaysContentTouches = false
+
         // Constructed here (not as property initializers) because the
         // coordinator and router hold references to their sibling services.
         let google = GoogleAuthService()

@@ -122,6 +122,46 @@ extension View {
     }
 }
 
+// MARK: - Press feedback
+
+/// CHASSIS layer: the card sinks under a finger and comes back as it lifts.
+///
+/// Uses `ButtonStyle`'s own press state deliberately. It's the one mechanism
+/// that already knows the difference between a press and the start of a
+/// scroll, so it stays out of the way of a scrolling grid — hand-rolled press
+/// tracking with a `DragGesture` per cell claims touches the scroll view
+/// needs, and the grid stops scrolling properly.
+///
+/// **Attach to a `Button`, not a `NavigationLink`** — a link doesn't surface
+/// press state to a custom style, so the effect silently never renders.
+///
+/// Timings are short on both sides: the point is to feel like the card
+/// answered the finger, not to play an animation at the user before their tap
+/// is allowed through. Nothing here gates the action.
+struct ImprintButtonStyle: ButtonStyle {
+    /// How far it sinks. Shallow on purpose — at a full grid of covers, a deep
+    /// press reads as the whole page flinching.
+    var pressedScale: CGFloat = 0.93
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // Resolve the label's geometry as one unit, or a child that
+            // re-renders mid-press resolves independently and skips the
+            // animation. A library card is exactly that case: its artwork
+            // carries `GlassRim`, whose specular angle follows `MotionShine`,
+            // so the cover's branch invalidates as the device tilts while the
+            // title's never does. That's why the title would sink and the
+            // cover — sometimes, depending on whether a gyro update landed
+            // inside the ~80ms press — would not.
+            .geometryGroup()
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .animation(
+                .easeOut(duration: configuration.isPressed ? 0.08 : 0.16),
+                value: configuration.isPressed
+            )
+    }
+}
+
 // MARK: - Glass rim (gyro-reactive hairline)
 
 /// Shared device-attitude source for gyro-reactive UI. One `CMMotionManager`

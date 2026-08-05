@@ -479,10 +479,17 @@ struct LibraryView: View {
                             if isSearchExpanded { searchBar }
                             LazyVGrid(columns: layout.columns, spacing: 16) {
                                 ForEach(filteredAlbums) { album in
-                                    NavigationLink(value: album) {
+                                    // A `Button`, not a `NavigationLink`: the
+                                    // link swallows the press state, so a
+                                    // custom `ButtonStyle` renders nothing on
+                                    // it. Pushing the path by hand is what the
+                                    // context menu's Edit already does.
+                                    Button {
+                                        libraryPath.append(album)
+                                    } label: {
                                         AlbumCard(album: album, coverSize: layout.coverSize)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(ImprintButtonStyle())
                                     .contextMenu {
                                         Button {
                                             openForEditing(album)
