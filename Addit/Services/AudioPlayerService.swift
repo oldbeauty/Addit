@@ -174,26 +174,41 @@ final class AudioPlayerService {
 
     // MARK: - Playback Controls
 
-    func playAlbum(_ album: Album, startingAt index: Int = 0, shuffled: Bool = false) {
+    /// - Parameter index: which track to begin on. `nil` means "no particular
+    ///   one" — ordered playback starts at the top, and a shuffled start is
+    ///   drawn at random like every other position.
+    ///
+    ///   Passing an index alongside `shuffled: true` means "shuffle the album
+    ///   but begin *here*", which is why that track is lifted out and pinned
+    ///   to the front. That used to be unconditional against a default of `0`,
+    ///   so hitting shuffle on a stopped album always opened with track one
+    ///   and only randomised from the second track on.
+    func playAlbum(_ album: Album, startingAt index: Int? = nil, shuffled: Bool = false) {
         userQueue.removeAll()
         let sorted = album.tracks.sorted { $0.trackNumber < $1.trackNumber }.filter { !$0.isHidden }
         originalQueue = sorted
+        let startIndex = index.flatMap { sorted.indices.contains($0) ? $0 : nil }
 
         if shuffled {
-            var shuffledTracks = sorted
-            if !shuffledTracks.isEmpty && index < shuffledTracks.count {
-                let startTrack = shuffledTracks.remove(at: index)
-                shuffledTracks.shuffle()
-                shuffledTracks.insert(startTrack, at: 0)
+            if let startIndex {
+                var rest = sorted
+                let startTrack = rest.remove(at: startIndex)
+                rest.shuffle()
+                queue = [startTrack] + rest
+            } else {
+                queue = sorted.shuffled()
             }
-            queue = shuffledTracks
             currentIndex = 0
             isShuffleOn = true
         } else {
             queue = sorted
-            currentIndex = index
+            currentIndex = startIndex ?? 0
             isShuffleOn = false
         }
+
+        #if DEBUG
+        print("[Q] playAlbum \"\(album.name)\" shuffled=\(shuffled) start=\(startIndex.map(String.init) ?? "random") first=\"\(queue.first?.name ?? "nil")\" queueLen=\(queue.count)")
+        #endif
 
         Task { await loadAndPlay() }
     }
@@ -545,6 +560,48 @@ final class AudioPlayerService {
 
     func moveUserQueueTrack(from source: IndexSet, to destination: Int) {
         userQueue.move(fromOffsets: source, toOffset: destination)
+        rebuildGaplessIfNeeded()
+    }
+
+    /// The not-yet-played tail of `queue` — what the queue screen lists under
+    /// "Next from …". Empty once the last track is playing.
+    var upcomingQueue: [Track] {
+        let start = currentIndex + 1
+        guard start < queue.count else { return [] }
+        return Array(queue[start...])
+    }
+
+    /// Reorder that tail. Offsets are relative to `upcomingQueue`, not to
+    /// `queue`, because that is what the list rendered.
+    ///
+    /// Only the tail is ever rewritten. `currentIndex` has to keep naming the
+    /// playing track — `handleTrackEnd`'s user-queue splice, `currentTrack`,
+    /// and every gapless decision are indexed off it, so shifting the played
+    /// portion would desync all of them at once. Splicing in place leaves the
+    /// index untouched by construction.
+    func moveUpcomingQueueTrack(from source: IndexSet, to destination: Int) {
+        let start = currentIndex + 1
+        guard start < queue.count else { return }
+        var upcoming = Array(queue[start...])
+        upcoming.move(fromOffsets: source, toOffset: destination)
+        queue.replaceSubrange(start..., with: upcoming)
+        #if DEBUG
+        print("[Q] moveUpcomingQueueTrack → next=\"\(upcoming.first?.name ?? "nil")\" queueLen=\(queue.count) currentIndex=\(currentIndex)")
+        #endif
+        // The moved-to-front track may now differ from what's pre-loaded or
+        // already armed; this picks the right branch for either phase.
+        rebuildGaplessIfNeeded()
+    }
+
+    func removeUpcomingQueueTrack(at offsets: IndexSet) {
+        let start = currentIndex + 1
+        guard start < queue.count else { return }
+        var upcoming = Array(queue[start...])
+        upcoming.remove(atOffsets: offsets)
+        queue.replaceSubrange(start..., with: upcoming)
+        #if DEBUG
+        print("[Q] removeUpcomingQueueTrack → queueLen=\(queue.count) currentIndex=\(currentIndex)")
+        #endif
         rebuildGaplessIfNeeded()
     }
 

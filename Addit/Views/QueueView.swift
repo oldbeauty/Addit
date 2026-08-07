@@ -33,12 +33,22 @@ struct QueueView: View {
                     }
                 }
 
-                // Remaining album queue
-                let albumRemaining = remainingAlbumTracks
+                // Remaining album queue (reorderable, same as "Playing Next")
+                let albumRemaining = playerService.upcomingQueue
                 if !albumRemaining.isEmpty {
                     Section(albumQueueHeader) {
-                        ForEach(albumRemaining, id: \.googleFileId) { track in
+                        // Keyed by offset rather than by track ID: a user-queued
+                        // track gets spliced into `queue` when it starts, so the
+                        // same track can legitimately appear twice here, and
+                        // duplicate ForEach IDs break the list outright.
+                        ForEach(Array(albumRemaining.enumerated()), id: \.offset) { _, track in
                             QueueTrackRow(track: track, isPlaying: false)
+                        }
+                        .onDelete { offsets in
+                            playerService.removeUpcomingQueueTrack(at: offsets)
+                        }
+                        .onMove { source, destination in
+                            playerService.moveUpcomingQueueTrack(from: source, to: destination)
                         }
                     }
                 }
@@ -47,7 +57,9 @@ struct QueueView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if !playerService.userQueue.isEmpty {
+                    // Both sections are arrangeable now, so the button has to
+                    // appear when either one has something in it.
+                    if !playerService.userQueue.isEmpty || !playerService.upcomingQueue.isEmpty {
                         EditButton()
                     }
                 }
@@ -56,12 +68,6 @@ struct QueueView: View {
                 }
             }
         }
-    }
-
-    private var remainingAlbumTracks: [Track] {
-        let idx = playerService.currentIndex + 1
-        guard idx < playerService.queue.count else { return [] }
-        return Array(playerService.queue[idx...])
     }
 
     private var albumQueueHeader: String {
