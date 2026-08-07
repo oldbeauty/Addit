@@ -375,12 +375,20 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            // One search field, above the branching — never inside it.
+            //
+            // It used to be repeated in three of the branches below, so typing
+            // a character that matched nothing flipped the body to the
+            // no-results branch, destroyed that `TextField` and built a
+            // different one: focus died with it and the keyboard dropped
+            // mid-word. Deleting the text flipped back and destroyed it again.
+            // A single instance outside the `if` chain survives every state
+            // the content goes through.
+            if isSearchExpanded { searchBar }
+
             if !searchText.isEmpty && filteredAlbums.isEmpty {
-                VStack(spacing: 0) {
-                    if isSearchExpanded { searchBar }
-                    ContentUnavailableView.search(text: searchText)
-                }
+                ContentUnavailableView.search(text: searchText)
             } else if sourceAlbums.isEmpty {
                 ScrollView {
                     ContentUnavailableView(
@@ -468,15 +476,11 @@ struct LibraryView: View {
                     }
                 }
                 .listStyle(.plain)
-                .safeAreaInset(edge: .top) {
-                    if isSearchExpanded { searchBar }
-                }
             } else {
                 GeometryReader { geo in
                     let layout = gridLayout(for: geo.size.width)
                     ScrollView {
                         VStack(spacing: 0) {
-                            if isSearchExpanded { searchBar }
                             LazyVGrid(columns: layout.columns, spacing: 16) {
                                 ForEach(filteredAlbums) { album in
                                     // A `Button`, not a `NavigationLink`: the

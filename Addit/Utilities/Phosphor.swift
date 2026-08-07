@@ -143,22 +143,73 @@ struct ImprintButtonStyle: ButtonStyle {
     /// press reads as the whole page flinching.
     var pressedScale: CGFloat = 0.93
 
+    /// Shortest time the imprint stays on screen, measured from touch-down.
+    ///
+    /// Without a floor, the imprint is only as long as the touch: flick a
+    /// finger at a card for 40ms and the sink animation gets a third of the
+    /// way down before reversing, which reads as nothing happening. A press
+    /// held longer than this releases the moment the finger lifts — the floor
+    /// only ever extends a tap that was too brief to see.
+    var minimumDwell: TimeInterval = 0.13
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // Resolve the label's geometry as one unit, or a child that
-            // re-renders mid-press resolves independently and skips the
-            // animation. A library card is exactly that case: its artwork
-            // carries `GlassRim`, whose specular angle follows `MotionShine`,
-            // so the cover's branch invalidates as the device tilts while the
-            // title's never does. That's why the title would sink and the
-            // cover — sometimes, depending on whether a gyro update landed
-            // inside the ~80ms press — would not.
-            .geometryGroup()
-            .scaleEffect(configuration.isPressed ? pressedScale : 1)
-            .animation(
-                .easeOut(duration: configuration.isPressed ? 0.08 : 0.16),
-                value: configuration.isPressed
-            )
+        Imprint(
+            configuration: configuration,
+            pressedScale: pressedScale,
+            minimumDwell: minimumDwell
+        )
+    }
+
+    /// A `View`, not inline in `makeBody`, because holding the sink past the
+    /// end of the touch needs state of its own — `configuration.isPressed`
+    /// reports the finger, and what's wanted is the finger *plus* a floor.
+    private struct Imprint: View {
+        let configuration: Configuration
+        let pressedScale: CGFloat
+        let minimumDwell: TimeInterval
+
+        @State private var isSunk = false
+        @State private var pressedAt: Date?
+        @State private var release: Task<Void, Never>?
+
+        var body: some View {
+            configuration.label
+                // Resolve the label's geometry as one unit, or a child that
+                // re-renders mid-press resolves independently and skips the
+                // animation. A library card is exactly that case: its artwork
+                // carries `GlassRim`, whose specular angle follows
+                // `MotionShine`, so the cover's branch invalidates as the
+                // device tilts while the title's never does. That's why the
+                // title would sink and the cover — sometimes, depending on
+                // whether a gyro update landed inside the press — would not.
+                .geometryGroup()
+                .scaleEffect(isSunk ? pressedScale : 1)
+                .animation(.easeOut(duration: isSunk ? 0.08 : 0.16), value: isSunk)
+                .onChange(of: configuration.isPressed) { _, isPressed in
+                    release?.cancel()
+
+                    guard !isPressed else {
+                        pressedAt = .now
+                        isSunk = true
+                        return
+                    }
+
+                    // Only the *remainder* of the floor — a press that already
+                    // outlasted it lifts immediately, so holding never feels
+                    // like it sticks.
+                    let held = pressedAt.map { Date().timeIntervalSince($0) } ?? minimumDwell
+                    let remaining = minimumDwell - held
+                    guard remaining > 0 else {
+                        isSunk = false
+                        return
+                    }
+                    release = Task {
+                        try? await Task.sleep(for: .seconds(remaining))
+                        guard !Task.isCancelled else { return }
+                        isSunk = false
+                    }
+                }
+        }
     }
 }
 
