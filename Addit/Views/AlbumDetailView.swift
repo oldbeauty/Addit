@@ -632,9 +632,12 @@ struct AlbumDetailView: View {
         return { trackToSplit = track }
     }
 
-    /// Rebuild the display list for a LOCAL album from its cached
-    /// tracklist (or from scratch when none exists).
-    private func rebuildLocalDisplayItems() {
+    /// Build the display list from state that is already on the device: the
+    /// album's cached `.addit-data` tracklist, or plain track numbers when
+    /// there is none. No network, no file I/O — a fetch and a name match —
+    /// so this is cheap enough to run from `onAppear` and land in the first
+    /// frame, which is the whole point of caching the tracklist.
+    private func seedDisplayItems() {
         let allTracks = fetchAllTracks()
         if !album.cachedTracklist.isEmpty {
             buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist), tracks: allTracks)
@@ -650,10 +653,13 @@ struct AlbumDetailView: View {
     private func initialLoad() async {
         if album.isLocal {
             isSyncing = false
-            rebuildLocalDisplayItems()
+            seedDisplayItems()
         } else {
             await syncFromDrive()
         }
+        // Re-run rather than first-run: `onAppear` already seeded this from
+        // disk before the first frame. Tracks that arrived or vanished in
+        // the sync above are the only thing this catches.
         refreshCachedState()
         // Library flows land here with edit mode pre-armed — enter it only
         // after the tracklist is loaded so `enterEditMode` seeds from
@@ -667,11 +673,7 @@ struct AlbumDetailView: View {
     /// or edits applied immediately (deletes/adds) before a Cancel.
     func refreshTracklist() {
         if album.isLocal {
-            if !album.cachedTracklist.isEmpty {
-                buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
-            } else {
-                buildDisplayItems(from: nil)
-            }
+            seedDisplayItems()
         } else {
             Task { await syncFromDrive() }
         }
@@ -987,6 +989,33 @@ struct AlbumDetailView: View {
                 await syncFromDrive()
             }
         }
+        .onAppear {
+            // Everything this page can know without the network, resolved
+            // before the first frame is drawn: the cover, the running order,
+            // and which tracks are already on disk. All three used to be
+            // produced inside `.task`, which doesn't start until after that
+            // frame — so the page slid in blank, then popped its cover in,
+            // then filled and reordered its rows, then grew offline badges,
+            // all while you watched. Nothing here needs a round trip; it is
+            // all sitting in the store or the caches directory.
+            //
+            // `onAppear` runs when the transition adds the view, so state set
+            // here is picked up by the same update — it is genuinely frame
+            // zero, not "one frame later."
+            if albumImage == nil {
+                if album.isLocal {
+                    if let coverPath = album.resolvedLocalCoverPath {
+                        albumImage = UIImage(contentsOfFile: coverPath)
+                    }
+                } else if let coverFileId = album.coverFileId {
+                    albumImage = albumArtService.cachedImage(for: coverFileId)
+                }
+            }
+            if displayItems.isEmpty {
+                seedDisplayItems()
+            }
+            refreshCachedState()
+        }
         .task {
             await initialLoad()
         }
@@ -995,7 +1024,7 @@ struct AlbumDetailView: View {
         }
         .onChange(of: album.tracks.count) {
             if album.isLocal {
-                rebuildLocalDisplayItems()
+                seedDisplayItems()
             }
         }
         .onChange(of: playerService.currentTrack?.googleFileId) {
@@ -1016,7 +1045,17 @@ struct AlbumDetailView: View {
                 }
             } else {
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
-                albumImage = resolution.image
+                // Don't blank a cover we already showed from cache — but only
+                // when the resolve never actually reached the provider.
+                // `shouldPersistMetadata` is exactly that signal: false means
+                // offline or no client, and `image` is a local fallback worth
+                // less than what's on screen. True means the provider answered,
+                // and an answer of "there is no cover here" has to be allowed
+                // through, or artwork someone deleted upstream would linger
+                // until the view was torn down and rebuilt.
+                if resolution.image != nil || resolution.shouldPersistMetadata || albumImage == nil {
+                    albumImage = resolution.image
+                }
                 albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
             }
         }
@@ -1131,11 +1170,7 @@ struct AlbumDetailView: View {
         // Safety: never sync local albums against Drive
         guard !album.isLocal, !album.googleFolderId.hasPrefix("local_") else {
             isSyncing = false
-            if !album.cachedTracklist.isEmpty {
-                buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
-            } else {
-                buildDisplayItems(from: nil)
-            }
+            seedDisplayItems()
             return
         }
 
@@ -1143,13 +1178,10 @@ struct AlbumDetailView: View {
         syncError = nil
         defer { isSyncing = false }
 
-        // Show existing tracks (with cached disc markers) immediately while syncing
+        // Backstop for the `onAppear` seed — covers pull-to-refresh on an
+        // album whose tracks arrived after the first frame. Normally a no-op.
         if displayItems.isEmpty && !album.tracks.isEmpty {
-            if !album.cachedTracklist.isEmpty {
-                buildDisplayItems(from: AdditMetadata(tracklist: album.cachedTracklist))
-            } else {
-                displayItems = sortedTracks.map { .track($0) }
-            }
+            seedDisplayItems()
         }
 
         do {
@@ -1202,6 +1234,12 @@ struct AlbumDetailView: View {
                 }
             }
 
+            // Commit the inserts and deletes above before anything reads the
+            // track set back. `syncAdditMetadata` renumbers and rebuilds off a
+            // fetch, and a fetch that has to merge pending deletes is how a
+            // just-removed Track can still surface.
+            try? modelContext.save()
+
             // Sync addit metadata (tracklist ordering + artist name)
             await syncAdditMetadata(driveFiles: driveFiles)
 
@@ -1215,25 +1253,43 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func syncAdditMetadata(driveFiles: [DriveItem]) async {
-        var metadata: AdditMetadata?
+    /// What a read of the album's ordering metadata actually told us.
+    ///
+    /// `absent` and `unavailable` look identical at the call site — both give
+    /// you no metadata — but they mean opposite things, and collapsing them
+    /// is a data-loss bug: `absent` means the folder genuinely has no
+    /// ordering and alphabetical is correct, while `unavailable` means we
+    /// never found out. Acting on `unavailable` as if it were `absent`
+    /// renumbers the album alphabetically and clears `cachedTracklist`.
+    private enum AdditMetadataFetch {
+        case found(AdditMetadata)
+        case absent
+        case unavailable
+    }
 
+    private func fetchAdditMetadata() async -> AdditMetadataFetch {
         // Try .addit-data (JSON) first
         do {
             if let item = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId) {
                 album.additDataFileId = item.id
                 let data = try await driveService.downloadFileData(fileId: item.id)
-                metadata = try? JSONDecoder().decode(AdditMetadata.self, from: data)
+                guard let decoded = try? JSONDecoder().decode(AdditMetadata.self, from: data) else {
+                    // The file is there but didn't parse — a truncated
+                    // download, or a collaborator's write caught mid-flight.
+                    // Whatever it is, it is not "this album has no order."
+                    return .unavailable
+                }
+                return .found(decoded)
             }
         } catch {
-            // Fall through to legacy
+            return .unavailable
         }
 
         // Legacy fallback: read .addit-tracklist and .addit-artist separately
-        if metadata == nil {
+        do {
             var legacy = AdditMetadata()
 
-            if let item = try? await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId),
+            if let item = try await driveService.findFile(named: ".addit-tracklist", inFolder: album.googleFolderId),
                let data = try? await driveService.downloadFileData(fileId: item.id),
                let content = String(data: data, encoding: .utf8) {
                 legacy.tracklist = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
@@ -1247,8 +1303,36 @@ struct AlbumDetailView: View {
             }
 
             if legacy.tracklist != nil || legacy.artist != nil {
-                metadata = legacy
+                return .found(legacy)
             }
+            return .absent
+        } catch {
+            return .unavailable
+        }
+    }
+
+    private func syncAdditMetadata(driveFiles: [DriveItem]) async {
+        let metadata: AdditMetadata?
+
+        switch await fetchAdditMetadata() {
+        case .found(let fetched):
+            metadata = fetched
+        case .absent:
+            metadata = nil
+        case .unavailable:
+            // We couldn't read the ordering, so we have no business changing
+            // it. Falling through to the `else` branch below would renumber
+            // the album alphabetically and then write `cachedTracklist = []`,
+            // destroying a hand-ordered tracklist because a single request
+            // blipped — and the next successful sync would put it back. That
+            // round trip is exactly the "rearranges sometimes, seemingly
+            // arbitrarily" behaviour.
+            //
+            // Reseeding from the tracklist we already trust still folds in
+            // any tracks this sync added or removed; they land at the end,
+            // where an unlisted track belongs until the order is next saved.
+            seedDisplayItems()
+            return
         }
 
         // Apply artist name
@@ -1258,20 +1342,25 @@ struct AlbumDetailView: View {
             }
         }
 
+        // Fetched, not `album.tracks`: this runs with inserts and deletes
+        // still pending on the context, and the relationship can serve either
+        // a stale array or one that still contains just-deleted models.
+        let allTracks = fetchAllTracks()
+
         // Apply track ordering (skip disc markers)
         if let orderedNames = metadata?.tracklist, !orderedNames.isEmpty {
             var trackNumber = 1
 
             for name in orderedNames {
                 if name.hasPrefix(AdditMetadata.discMarkerPrefix) { continue }
-                if let track = album.tracks.first(where: { $0.name == name }) {
+                if let track = allTracks.first(where: { $0.name == name }) {
                     track.trackNumber = trackNumber
                     trackNumber += 1
                 }
             }
 
             let listedNames = Set(orderedNames.filter { !$0.hasPrefix(AdditMetadata.discMarkerPrefix) })
-            let unlistedTracks = album.tracks
+            let unlistedTracks = allTracks
                 .filter { !listedNames.contains($0.name) }
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
@@ -1282,46 +1371,66 @@ struct AlbumDetailView: View {
         } else {
             // Default: order from Drive API response
             for (index, file) in driveFiles.enumerated() {
-                if let track = album.tracks.first(where: { $0.googleFileId == file.id }) {
+                if let track = allTracks.first(where: { $0.googleFileId == file.id }) {
                     track.trackNumber = index + 1
                 }
             }
         }
 
-        // Build display items with disc markers interleaved
-        buildDisplayItems(from: metadata)
+        // Build display items with disc markers interleaved. Re-sorted rather
+        // than reusing `allTracks`, whose order predates the renumbering above.
+        buildDisplayItems(
+            from: metadata,
+            tracks: allTracks.sorted { $0.trackNumber < $1.trackNumber }
+        )
 
         // Cache tracklist for instant display on next visit
         album.cachedTracklist = metadata?.tracklist ?? []
     }
 
-    private func buildDisplayItems(from metadata: AdditMetadata?, tracks: [Track]? = nil) {
-        let allTracks = tracks ?? album.tracks.sorted { $0.trackNumber < $1.trackNumber }
-        guard let orderedNames = metadata?.tracklist, !orderedNames.isEmpty else {
-            displayItems = allTracks.map { .track($0) }
-            return
-        }
-
+    /// `tracks` is required, and always comes from `fetchAllTracks()`. It used
+    /// to default to `album.tracks`, which is a SwiftData to-many relationship
+    /// — unordered, sometimes stale, and capable of still holding models this
+    /// same sync just deleted. Two callers reading two different track sets is
+    /// how the seed and the post-sync rebuild could disagree about an album
+    /// nothing had changed.
+    private func buildDisplayItems(from metadata: AdditMetadata?, tracks allTracks: [Track]) {
         var items: [TracklistItem] = []
-        var matchedIds = Set<String>()
 
-        for name in orderedNames {
-            if name.hasPrefix(AdditMetadata.discMarkerPrefix) {
-                let label = String(name.dropFirst(AdditMetadata.discMarkerPrefix.count))
-                items.append(.discMarker(id: UUID(), label: label))
-            } else if let track = allTracks.first(where: { $0.name == name && !matchedIds.contains($0.googleFileId) }) {
-                items.append(.track(track))
-                matchedIds.insert(track.googleFileId)
+        if let orderedNames = metadata?.tracklist, !orderedNames.isEmpty {
+            var matchedIds = Set<String>()
+
+            for name in orderedNames {
+                if name.hasPrefix(AdditMetadata.discMarkerPrefix) {
+                    let label = String(name.dropFirst(AdditMetadata.discMarkerPrefix.count))
+                    items.append(.discMarker(id: UUID(), label: label))
+                } else if let track = allTracks.first(where: { $0.name == name && !matchedIds.contains($0.googleFileId) }) {
+                    items.append(.track(track))
+                    matchedIds.insert(track.googleFileId)
+                }
             }
+
+            // Append any tracks not in the tracklist
+            let unmatched = allTracks
+                .filter { !matchedIds.contains($0.googleFileId) }
+            for track in unmatched {
+                items.append(.track(track))
+            }
+        } else {
+            items = allTracks.map { .track($0) }
         }
 
-        // Append any tracks not in the tracklist
-        let unmatched = allTracks
-            .filter { !matchedIds.contains($0.googleFileId) }
-        for track in unmatched {
-            items.append(.track(track))
-        }
-
+        // Rebuilding an unchanged tracklist has to be invisible. It isn't for
+        // free: every build mints new `UUID`s for the disc markers, so the
+        // `ForEach` sees each one as a delete plus an insert and animates the
+        // rows around it. The post-sync rebuild almost always produces exactly
+        // what is already on screen — that churn *was* the reorder you saw a
+        // beat after opening an album. Compare by content and leave it alone.
+        //
+        // Renames are safe to skip: the key is the file ID and `TrackRow`
+        // reads the name off the (observable) model, which sync updated in
+        // place.
+        guard items.map(\.contentKey) != displayItems.map(\.contentKey) else { return }
         displayItems = items
     }
 
