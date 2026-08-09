@@ -35,3 +35,7 @@ Secrets.swift
 *AGENTS.md
 
 
+
+# Python bytecode
+__pycache__/
+*.pyc

@@ -17,7 +17,7 @@ import simd
 enum AdditStructure {
 
     /// One circular bulge in the surface.
-    struct Dome {
+    struct Dome: Equatable {
         /// Centre in model coordinates. Far enough from the frame edge that
         /// the rim — the circle where the dome meets the plane — stays visible
         /// the whole way round; push it past the corner and the falloff runs
@@ -32,7 +32,7 @@ enum AdditStructure {
     }
 
     /// Everything that defines one instance of the surface.
-    struct Parameters {
+    struct Parameters: Equatable {
         /// Spacing of the undisplaced lattice, in model units.
         var step: Double = 0.088
         /// Half-width of the generated plane. Deliberately larger than
@@ -123,10 +123,32 @@ enum AdditStructure {
         h >= 0 ? 1 + p.swell * h : 1 / (1 + p.swell * -h)
     }
 
+    /// Memo of the last build.
+    ///
+    /// `StructureView` asks for the surface from inside its `Canvas` closure,
+    /// so a rotating instance rebuilt ~1700 points — a `cos` per dome each —
+    /// on every frame, for a lattice that depends on nothing but `Parameters`.
+    /// Rotation changes the projection, never the surface. One entry covers it:
+    /// in practice every caller wants `iconParameters`.
+    ///
+    /// Safe as mutable static because the module builds with
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so this and `surface` are
+    /// already main-actor isolated. Do not add an explicit `@MainActor` — it is
+    /// redundant, and it makes `surface`'s default argument evaluate in a
+    /// nonisolated context that can't reach `iconParameters`.
+    private static var cached: (key: Parameters, points: [SIMD3<Float>], side: Int)?
+
     /// The lattice as points, row-major over a `side` × `side` grid so a
     /// point's neighbours are `±1` and `±side` away — `StructureView` needs
     /// that adjacency to size each dot.
     static func surface(_ p: Parameters = iconParameters) -> (points: [SIMD3<Float>], side: Int) {
+        if let cached, cached.key == p { return (cached.points, cached.side) }
+        let built = buildSurface(p)
+        cached = (p, built.points, built.side)
+        return built
+    }
+
+    private static func buildSurface(_ p: Parameters) -> (points: [SIMD3<Float>], side: Int) {
         let side = Int((2 * p.extent / p.step).rounded()) + 1
         var points: [SIMD3<Float>] = []
         points.reserveCapacity(side * side)
