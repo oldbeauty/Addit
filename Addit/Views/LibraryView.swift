@@ -212,34 +212,26 @@ struct LibraryView: View {
     ///
     /// The newline is a best-effort second line. iOS renders a menu row's
     /// subtitle as a wrapping label, so it should break; if it doesn't, the
-    /// string still reads correctly run together, which is why the bar is
-    /// self-describing rather than a bare row of blocks.
+    /// string still reads correctly run together.
     private func accountSubtitle(for account: Account, hidingDomain domain: String?) -> String {
         let identity = domain == nil ? account.email : emailLocalPart(account.email)
         guard let quota = storageQuotas[account.email] else { return identity }
         return "\(identity)\n\(storageSummary(quota))"
     }
 
-    /// A bar drawn in block characters, because a menu row can't host a real
-    /// one — its content is a title, a subtitle and an icon, and nothing else.
+    /// How full the account is, in words.
+    ///
+    /// There used to be a ten-cell bar in block characters ahead of this — a
+    /// menu row can't host a real progress view, so it was drawn in text. The
+    /// numbers say the same thing more precisely, and the blocks read as an
+    /// artefact at subtitle size.
     private func storageSummary(_ quota: StorageQuota) -> String {
-        guard let fraction = quota.fraction, let limit = quota.limitBytes else {
-            // Unlimited or unreported: there's no proportion to draw, so don't
-            // draw an empty bar and imply the account is empty.
+        guard let limit = quota.limitBytes else {
+            // Unlimited or unreported: there is no total to be a fraction of.
             return "\(usedGigabytes(quota.usedBytes)) GB used"
         }
-
-        let segments = 10
-        var filled = Int((fraction * Double(segments)).rounded())
-        // Any usage at all lights one cell — a nearly-empty account reading as
-        // completely empty is the one rounding error worth correcting.
-        if fraction > 0 { filled = max(1, filled) }
-        filled = min(segments, max(0, filled))
-
-        let bar = String(repeating: "█", count: filled)
-            + String(repeating: "░", count: segments - filled)
         // "3.2 of 15 GB" — the unit belongs to the pair, so it's said once.
-        return "\(bar)  \(usedGigabytes(quota.usedBytes)) of \(limitGigabytes(limit)) GB"
+        return "\(usedGigabytes(quota.usedBytes)) of \(limitGigabytes(limit)) GB"
     }
 
     /// Bytes per gigabyte, in the **binary** sense both providers use.

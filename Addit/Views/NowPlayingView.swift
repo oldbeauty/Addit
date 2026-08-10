@@ -59,7 +59,13 @@ struct NowPlayingView: View {
     /// The two inputs that can change it — the artwork and the colour scheme —
     /// each recompute it once, in `refreshCoverAccent`.
     @State private var legibleCoverAccent: Color?
-    @State private var showQueueSheet = false
+    /// Queue mode: the expanded player rearranged into its own up-next list,
+    /// rather than a sheet over the top of it.
+    @State private var isShowingQueue = false
+    /// How much of each end of the queue list is currently feathered. Derived
+    /// from its scroll position, so an edge you have actually reached shows its
+    /// row whole instead of half-faded.
+    @State private var queueEdges = ScrollEdgeFade()
     @State private var showVisualizer = false
     /// Live drag offset for the custom two-page pager that flips between
     /// the album cover and the EQ visualizer. Combined with `showVisualizer`
@@ -79,26 +85,168 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
+        // Second interpolated progress, for the same reason the pill needs one:
+        // `queue` gates `if`s and feeds transforms, so it has to arrive as a
+        // real per-frame value rather than jumping to its destination.
+        MorphProgress(progress: isShowingQueue ? 1 : 0) { queue in
+            layout(queue: queue)
+        }
+        .onChange(of: isCollapsed) { _, collapsed in
+            guard collapsed else { return }
+            // Send the pager back to the album page on the way down. The
+            // artwork that travels into the mini slot is this same view, so
+            // leaving it on the EQ page would put a visualiser in the mini
+            // bar's cover tile.
+            if showVisualizer {
+                showVisualizer = false
+                dragOffset = 0
+            }
+            // Same argument for queue mode: the mini bar has no queue form, so
+            // coming back up into one is a state nobody asked for.
+            isShowingQueue = false
+        }
+        .task(id: artworkTaskID) {
+            albumImage = await loadedArtwork()
+            coverAccent = albumImage.flatMap(CoverColor.accent(from:))
+            refreshCoverAccent()
+        }
+        // The extracted colour outlives a scheme flip; only the clamp on it
+        // has to be redone.
+        .onChange(of: colorScheme) { _, _ in refreshCoverAccent() }
+    }
+
+    /// Side of the expanded cover. Derived rather than measured: the card is
+    /// inset 12 by this view and the artwork another 24 a side, capped at 320 —
+    /// exactly what the `frame(maxWidth:)`/`aspectRatio` pair used to resolve
+    /// to. Having it as a number is what lets queue mode balance its own layout
+    /// without a `GeometryReader`.
+    private var coverSide: CGFloat {
+        max(0, min(320, cardSize.width - 72))
+    }
+
+    /// Side the cover shrinks to in queue mode. Fixed rather than a fraction of
+    /// `coverSide`, so it lands the same size on every device — but sized to
+    /// what a proportional 0.38 gave on a 320pt cover, which is where this
+    /// wanted to be all along.
+    private static let queueCoverSide: CGFloat = 120
+    /// Gap between that cover and the title beside it.
+    private static let queueCoverGap: CGFloat = 14
+    /// Gutter the delete control sits in, at the row's leading edge. The glyph
+    /// is centred in it, so it lands halfway between the border and the text.
+    private static let queueDeleteGutter: CGFloat = 34
+    /// Heights the other rows give up whole. Constants rather than
+    /// measurements, and they have to track the frames below: the page
+    /// indicator is 14 plus 12/4 of padding, `trackInfo` is a flat 52, the
+    /// centered waveform a flat 36.
+    private static let pageIndicatorHeight: CGFloat = 30
+    private static let trackInfoHeight: CGFloat = 52
+    private static let centeredWaveformHeight: CGFloat = 36
+
+    /// Cover scale at a given point in the morph.
+    private func coverScale(_ queue: CGFloat) -> CGFloat {
+        guard coverSide > 0 else { return 1 }
+        return 1 + (Self.queueCoverSide / coverSide - 1) * queue
+    }
+
+    /// Extra height the list takes beyond what the rows above vacate, which
+    /// pushes the scrubber down and so closes the gap between it and the
+    /// transport row. Done from this end rather than by shrinking the two
+    /// spacers below the scrubber: those are flexible and share the card's
+    /// slack with the one under the transport, so shortening them just hands
+    /// the slack back and nothing moves.
+    private static let queueGapTighten: CGFloat = 34
+
+    /// Room the queue list gets, which is the room every row above it vacates
+    /// plus that tightening. Balancing it by construction is what keeps the
+    /// morph from having to measure anything.
+    private func queueListHeight(_ queue: CGFloat) -> CGFloat {
+        let coverFreed = coverSide * (1 - coverScale(queue))
+        let rowsFreed = (Self.pageIndicatorHeight + Self.trackInfoHeight
+                         + Self.centeredWaveformHeight + Self.queueGapTighten) * queue
+        return max(0, coverFreed + rowsFreed)
+    }
+
+    /// The whole expanded player, as a function of how far into queue mode it is.
+    ///
+    /// Queue mode is a light switch, not a page: nothing is pushed or presented,
+    /// the same components rearrange. The cover shrinks upward, the centered
+    /// waveform goes, the scrubber sheds its ears down to the bare capsule, and
+    /// the list grows into the gap that leaves — which lands the scrubber just
+    /// above the transport row, since the only thing left between them is the
+    /// two 16pt spacers.
+    @ViewBuilder
+    private func layout(queue rawQueue: CGFloat) -> some View {
+        // Clamped, and not as defensive tidiness — this is load-bearing.
+        //
+        // The toggle animates with an underdamped spring, so the interpolated
+        // value overshoots past 1 on the way in and dips below 0 on the way
+        // back. Several frames below are `height * (1 - queue)`, and a negative
+        // height is exactly the "Invalid frame dimension (negative or
+        // non-finite)" that floods the console — once per affected view per
+        // frame, for every frame of every transition.
+        //
+        // The pill clamps its own `progress` at the source for the same reason.
+        // Only the overshoot is discarded; the spring's timing is untouched.
+        let queue = min(1, max(0, rawQueue))
+
         VStack(spacing: 0) {
             header
 
-            artwork
+            artwork(queue: queue)
+                // Constant, always. The scale happens inside the slot; this
+                // frame must never move or the slot's card-space maths shifts
+                // under it.
+                .frame(width: coverSide, height: coverSide)
+                // Reserve only what the shrunken cover actually occupies.
+                // Negative padding rather than a smaller `frame`, because a
+                // frame would resize the slot itself — this leaves the slot at
+                // `coverSide` and simply lets it overhang the space below.
+                .padding(.bottom, -(coverSide - Self.queueCoverSide) * queue)
+                // The title moves in beside it, in the space the shrinking
+                // cover leaves inside this same box — which is why it is an
+                // overlay here rather than its own row: no measuring, and it is
+                // pinned to the cover it belongs to.
+                .overlay(alignment: .topLeading) {
+                    queueHeader
+                        .frame(height: Self.queueCoverSide)
+                        .padding(.leading, Self.queueCoverSide + Self.queueCoverGap)
+                        .opacity(Double(min(1, max(0, (queue - 0.4) / 0.5))))
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                // The box is centred with 24pt to spare either side; queue mode
+                // wants its left edge on the mini bar's 16pt margin instead.
+                .offset(x: -(24 - MiniLayout.sidePadding + 12) * queue)
 
             pageIndicator
+                .opacity(Double(1 - queue))
+                .frame(height: Self.pageIndicatorHeight * (1 - queue))
 
             Spacer()
                 .frame(height: 16)
 
-            trackInfo
+            trackInfo(queue: queue)
+                .opacity(Double(1 - queue))
+                .frame(height: Self.trackInfoHeight * (1 - queue))
 
             Spacer()
-                .frame(height: 24)
+                .frame(height: 24 - 10 * queue)
 
-            scrubber
+            queueList(queue: queue)
+                .frame(height: queueListHeight(queue))
+
+            scrubber(queue: queue)
+                // Cancels the `queueGapTighten` the list above just added, so
+                // the scrubber moves down but the total content height doesn't
+                // change. Without this the extra height eats the card's slack,
+                // and since the spacer *below* the transport shares that slack,
+                // the buttons come down with it.
+                .padding(.bottom, -Self.queueGapTighten * queue)
 
             Spacer(minLength: 16)
 
             centeredWaveform
+                .opacity(Double(1 - queue))
+                .frame(height: Self.centeredWaveformHeight * (1 - queue))
 
             Spacer(minLength: 16)
 
@@ -112,27 +260,155 @@ struct NowPlayingView: View {
         // card's top edge is this view's top edge.
         .padding(.horizontal, 12)
         .padding(.bottom, 12)
-        .sheet(isPresented: $showQueueSheet) {
-            QueueView()
+    }
+
+    /// The cover's companion in queue mode: the same title/artist pair the mini
+    /// bar shows, at the same sizes, so the header row reads as the mini player
+    /// rather than as a third styling of the same two strings.
+    private var queueHeader: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            MarqueeText(text: playerService.currentTrack?.displayName ?? "")
+                .font(.uiSubheadline.weight(.medium))
+            subtitle(font: .uiCaption, alignment: .leading)
         }
-        .onChange(of: isCollapsed) { _, collapsed in
-            // Send the pager back to the album page on the way down. The
-            // artwork that travels into the mini slot is this same view, so
-            // leaving it on the EQ page would put a visualiser in the mini
-            // bar's cover tile.
-            if collapsed && showVisualizer {
-                showVisualizer = false
-                dragOffset = 0
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Up-next, shown inside the player rather than over it.
+    ///
+    /// A `List` in permanent edit mode, not a `LazyVStack`: that is what puts a
+    /// delete control on the leading edge and a drag grip on the trailing one,
+    /// and it brings real reordering with it. Hand-rolling either in a stack is
+    /// a lot of gesture code to arrive back at what the system already draws.
+    ///
+    /// Two sections, because the two halves of the queue are different things
+    /// and their mutations go to different places: `userQueue` is what was
+    /// tapped in, `upcomingQueue` is the tail of the album. Merging them into
+    /// one list would make every move ambiguous at the boundary.
+    @ViewBuilder
+    private func queueList(queue: CGFloat) -> some View {
+        List {
+            // Unheadered, like the album tail below it. The split into two
+            // sections is still load-bearing — a move or a delete has to go to
+            // `userQueue` or to `queue`, and merging them makes every mutation
+            // at the boundary ambiguous — but that is a routing concern, not
+            // something the list has to announce.
+            if !playerService.userQueue.isEmpty {
+                Section {
+                    ForEach(Array(playerService.userQueue.enumerated()), id: \.offset) { index, track in
+                        queueRow(track) { playerService.removeFromUserQueue(at: index) }
+                    }
+                    .onMove { playerService.moveUserQueueTrack(from: $0, to: $1) }
+                }
+            }
+
+            let upcoming = playerService.upcomingQueue
+            if !upcoming.isEmpty {
+                // No header. The album's own tail is the default contents of
+                // the queue, so naming it says nothing the list doesn't.
+                Section {
+                    // Keyed by offset: a user-queued track is spliced into
+                    // `queue` when it starts, so the same track can legitimately
+                    // appear twice and duplicate IDs would break the list.
+                    ForEach(Array(upcoming.enumerated()), id: \.offset) { index, track in
+                        queueRow(track) {
+                            playerService.removeUpcomingQueueTrack(at: IndexSet(integer: index))
+                        }
+                    }
+                    .onMove { playerService.moveUpcomingQueueTrack(from: $0, to: $1) }
+                }
             }
         }
-        .task(id: artworkTaskID) {
-            albumImage = await loadedArtwork()
-            coverAccent = albumImage.flatMap(CoverColor.accent(from:))
-            refreshCoverAccent()
+        .listStyle(.plain)
+        // The pill is already a glass surface; a List drawing its own
+        // background would put an opaque slab inside it.
+        .scrollContentBackground(.hidden)
+        .environment(\.editMode, .constant(.active))
+        .scrollIndicators(.hidden)
+        .onScrollGeometryChange(for: ScrollEdgeFade.self) { geometry in
+            ScrollEdgeFade(geometry: geometry, ramp: Self.queueFadeRamp)
+        } action: { _, new in
+            queueEdges = new
         }
-        // The extracted colour outlives a scheme flip; only the clamp on it
-        // has to be redone.
-        .onChange(of: colorScheme) { _, _ in refreshCoverAccent() }
+        .opacity(Double(min(1, max(0, (queue - 0.35) / 0.5))))
+        // Feathered against the scrubber rather than cut off at it — a hard
+        // clip reads as the list ending, a fade as it continuing past the edge.
+        //
+        // Each end's feather is tied to whether there is anything past it, so
+        // the last row is fully legible once you have actually scrolled to it
+        // rather than permanently half-erased. It rides the scroll offset
+        // directly, which is already continuous, so no animation is needed.
+        //
+        // Stops are fractional because the list's height moves with the morph;
+        // a fade measured in points would be the whole list early on.
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(1 - queueEdges.top), location: 0),
+                    .init(color: .black, location: 0.16),
+                    .init(color: .black, location: 0.84),
+                    .init(color: .black.opacity(1 - queueEdges.bottom), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .allowsHitTesting(queue > 0.9)
+    }
+
+    /// Points of scrolling either end fades in over.
+    private static let queueFadeRamp: CGFloat = 28
+
+    private func queueRowArtist(_ track: Track) -> String {
+        let name = track.album?.artistName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "Unknown Artist" : name
+    }
+
+    private func queueRow(_ track: Track, delete: @escaping () -> Void) -> some View {
+        HStack(spacing: 0) {
+            // Our own control rather than edit mode's. The system one is a
+            // filled red disc, and there is no styling hook for it — the only
+            // way to a bare minus is `deleteDisabled` plus this. The trailing
+            // drag grip is still the system's, which is why edit mode stays on.
+            Button(action: delete) {
+                Image(systemName: "minus")
+                    .font(.uiBody.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: Self.queueDeleteGutter, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(track.displayName)
+                    .font(.uiSubheadline.weight(.medium))
+                    .lineLimit(1)
+                // Artist, which lives on the album rather than the track —
+                // there is no per-track artist in the model.
+                Text(queueRowArtist(track))
+                    .font(.uiCaption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        // Swallows the long press that `List` otherwise uses to start a
+        // reorder from anywhere on the row, leaving the trailing grip as the
+        // only way to drag. The grip is drawn by `List` outside this content,
+        // so it is unaffected. There is no SwiftUI switch for "handle only" —
+        // claiming the gesture first is the available lever.
+        .onLongPressGesture(minimumDuration: 0.2) { }
+        // Taller than a default row: with a delete control and a grip flanking
+        // it, a compact row leaves the two controls crowding the text.
+        .frame(height: 52)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(.primary.opacity(0.12))
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        // Suppresses edit mode's own delete affordance — both the red disc and
+        // the swipe — leaving the move grip. Without this there would be two
+        // ways to delete a row, one of them the disc we are replacing.
+        .deleteDisabled(true)
     }
 
     private func refreshCoverAccent() {
@@ -259,9 +535,11 @@ struct NowPlayingView: View {
     private var queueButton: some View {
         if !playerService.queue.isEmpty {
             Button {
-                showQueueSheet = true
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    isShowingQueue.toggle()
+                }
             } label: {
-                Image(systemName: "list.bullet")
+                Image(systemName: isShowingQueue ? "chevron.down" : "list.bullet")
                     .font(.uiTitle3)
                     .foregroundStyle(.primary.opacity(0.6))
                     .overlay(alignment: .topTrailing) {
@@ -298,7 +576,7 @@ struct NowPlayingView: View {
     /// settles all of it at once, and the two forms cross-fade mid-flight the
     /// way the text and scrubbers already do. Being the same square image at
     /// the same place, that cross-fade is close to invisible.
-    private var artwork: some View {
+    private func artwork(queue: CGFloat) -> some View {
         MorphSlot(
             progress: progress,
             cardSize: cardSize,
@@ -308,13 +586,30 @@ struct NowPlayingView: View {
             // cross-fade between them to go unnoticed.
             scales: true
         ) {
+            // The queue shrink lives *inside* the slot, on the pager itself.
+            //
+            // Applying it outside — the obvious place — silently breaks the
+            // slot. `MorphSlot` reads its own frame in card space to work out
+            // where the expanded form sits, and an ancestor `scaleEffect` is a
+            // geometry transform that conversion goes through: the slot reports
+            // an already-shrunk width, lays the pager out at *that* size, and
+            // then the same scale applies again on the way to the screen. The
+            // cover ends up a fraction of the box it is supposed to fill, which
+            // is why the title looked stranded far to its right.
+            //
+            // An `offset` outside is fine, by contrast — it moves `minX` and
+            // `midX` together, and the slot's positioning only uses their
+            // difference.
             coverPager
+                .scaleEffect(coverScale(queue), anchor: .topLeading)
         } mini: {
             miniArtworkTile
         }
-        .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 320)
-        .padding(.horizontal, 24)
+        // No padding and no aspect ratio here: `layout(queue:)` pins this to an
+        // exact square instead, so the box the cover draws in *is* the cover.
+        // The 24pt margins the padding used to add come from centring that
+        // square in the content width, which is 48pt wider by the definition of
+        // `coverSide` — so the full player is unchanged.
     }
 
     /// The mini bar's artwork tile, unchanged from before the pill existed:
@@ -340,7 +635,7 @@ struct NowPlayingView: View {
             .clipShape(RoundedRectangle(cornerRadius: MiniLayout.artworkCornerRadius, style: .continuous))
     }
 
-    private var trackInfo: some View {
+    private func trackInfo(queue: CGFloat) -> some View {
         MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.trackInfo) {
             VStack(spacing: 4) {
                 MarqueeText(
@@ -363,7 +658,11 @@ struct NowPlayingView: View {
         // Title line + subtitle at the expanded sizes. Fixed, because the slot
         // is an empty placeholder — it has no content to measure.
         .frame(height: 52)
-        .contrastPanel(.trackInfo)
+        // Goes with the row it backs. Queue mode collapses this to nothing and
+        // moves the title up beside the cover, and a panel left at the anchor
+        // of a zero-height row is a rectangle floating in the middle of the
+        // card with nothing in it.
+        .contrastPanel(.trackInfo, opacity: Double(1 - queue))
         .padding(.horizontal, 16)
     }
 
@@ -382,7 +681,7 @@ struct NowPlayingView: View {
         }
     }
 
-    private var scrubber: some View {
+    private func scrubber(queue: CGFloat) -> some View {
         VStack(spacing: 4) {
             MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.scrubber) {
                 FullScrubber(
@@ -391,7 +690,8 @@ struct NowPlayingView: View {
                     accentColor: themeService.accentColor,
                     waveformSamples: playerService.waveformSamples,
                     onChanged: { newValue in beginOrContinueScrub(to: newValue) },
-                    onEnded: { finalValue in endScrub(at: finalValue) }
+                    onEnded: { finalValue in endScrub(at: finalValue) },
+                    waveformFade: 1 - queue
                 )
             } mini: {
                 MiniScrubber(
@@ -458,8 +758,12 @@ struct NowPlayingView: View {
                     .frame(width: 32, height: 32)
                     .background {
                         if playerService.isShuffleOn {
+                            // Deepened, like the queue chip and the swipe pill:
+                            // the glyph on top is white, and a pale accent
+                            // swallows it whole. Worst in dark mode, where the
+                            // accent is at its lightest.
                             Circle()
-                                .fill(themeService.accentColor)
+                                .fill(themeService.accentColor.legibleUnderWhiteLabel)
                         }
                     }
             }
@@ -528,8 +832,9 @@ struct NowPlayingView: View {
                     .frame(width: 32, height: 32)
                     .background {
                         if playerService.repeatMode != .off {
+                            // Same deepening as shuffle, for the same reason.
                             Circle()
-                                .fill(themeService.accentColor)
+                                .fill(themeService.accentColor.legibleUnderWhiteLabel)
                         }
                     }
             }
@@ -741,6 +1046,32 @@ struct NowPlayingView: View {
     }
 }
 
+/// How strongly each end of a scroll view should be feathered, given how much
+/// content lies past it.
+///
+/// Both default to 0, which is the right answer for content shorter than its
+/// container: there is nothing off-screen in either direction, so nothing to
+/// suggest by fading.
+private struct ScrollEdgeFade: Equatable {
+    var top: Double = 0
+    var bottom: Double = 0
+
+    init() {}
+
+    init(geometry: ScrollGeometry, ramp: CGFloat) {
+        let insets = geometry.contentInsets
+        let offset = geometry.contentOffset.y + insets.top
+        // Total scrollable distance. Clamped at zero so a short list reports no
+        // travel rather than a negative one, which would light both fades up.
+        let travel = max(
+            0,
+            geometry.contentSize.height + insets.top + insets.bottom - geometry.containerSize.height
+        )
+        top = Double(min(1, max(0, offset / ramp)))
+        bottom = Double(min(1, max(0, (travel - offset) / ramp)))
+    }
+}
+
 private struct FullScrubber: View {
     let value: TimeInterval
     let duration: TimeInterval
@@ -748,6 +1079,9 @@ private struct FullScrubber: View {
     let waveformSamples: [Float]
     let onChanged: (TimeInterval) -> Void
     let onEnded: (TimeInterval) -> Void
+    /// How much of the waveform is showing: 1 is the full stereo ears, 0 leaves
+    /// only the progress capsule. Queue mode sheds the ears and keeps the bar.
+    var waveformFade: CGFloat = 1
 
     /// Fixed overall height — the two ears plus the gap between them. Exposed
     /// because the morph slot that carries this scrubber is an empty
@@ -866,6 +1200,10 @@ private struct FullScrubber: View {
                         drawBar(botRect)
                     }
                 }
+                // Faded, not rebuilt. The ears and the capsule share this
+                // Canvas's geometry, and dropping the Canvas at `waveformFade
+                // == 0` would also drop the playhead it is drawing against.
+                .opacity(Double(waveformFade))
 
                 // Thin progress capsule sitting in the central gap — no thumb.
                 VStack(spacing: 0) {

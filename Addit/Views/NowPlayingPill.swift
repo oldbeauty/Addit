@@ -171,13 +171,13 @@ struct NowPlayingPill: View {
     /// chase anything during a drag; the panels only fade.
     @ViewBuilder
     private func contrastPanels(
-        _ anchors: [ContrastPanel: Anchor<CGRect>],
+        _ placements: [ContrastPanel: ContrastPanelPlacement],
         progress: CGFloat
     ) -> some View {
         GeometryReader { proxy in
-            ForEach(Array(anchors.keys), id: \.self) { panel in
-                if let anchor = anchors[panel] {
-                    let bounds = proxy[anchor]
+            ForEach(Array(placements.keys), id: \.self) { panel in
+                if let placement = placements[panel] {
+                    let bounds = proxy[placement.anchor]
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.appBackground.opacity(0.55))
                         .frame(
@@ -185,6 +185,10 @@ struct NowPlayingPill: View {
                             height: bounds.height + Self.panelInset
                         )
                         .position(x: bounds.midX, y: bounds.midY)
+                        // The component's own say, on top of the shared fade
+                        // below — a panel whose component has gone has to go
+                        // with it, not linger at its last known frame.
+                        .opacity(placement.opacity)
                 }
             }
         }
@@ -286,7 +290,10 @@ struct PillShape: Shape {
 /// without it a spring would jump the value to its destination immediately and
 /// animate only the individual modifiers underneath, which snaps every `if` in
 /// the tree — the collapsed forms would vanish on contact instead of fading.
-private struct MorphProgress<Content: View>: View, Animatable {
+/// Not private: the queue morph inside `NowPlayingView` needs the same
+/// treatment for the same reason, and re-deriving it there would be two copies
+/// of a subtlety that is easy to get wrong once.
+struct MorphProgress<Content: View>: View, Animatable {
     var progress: CGFloat
     var content: (CGFloat) -> Content
 
@@ -506,14 +513,26 @@ enum ContrastPanel: Hashable {
     case transport
 }
 
+/// Where a panelled component ended up, and how much of its panel it currently
+/// wants.
+///
+/// The opacity is carried here rather than applied by the pill because only the
+/// component knows when it has stopped being on screen for reasons of its own —
+/// queue mode collapses the track info, and a panel left behind at the anchor
+/// of a zero-height row is a rectangle sitting in the middle of nothing.
+struct ContrastPanelPlacement {
+    var anchor: Anchor<CGRect>
+    var opacity: Double
+}
+
 /// Collects where each panelled component ended up, so the pill can draw
 /// behind them without duplicating the expanded layout.
 struct ContrastPanelAnchors: PreferenceKey {
-    static let defaultValue: [ContrastPanel: Anchor<CGRect>] = [:]
+    static let defaultValue: [ContrastPanel: ContrastPanelPlacement] = [:]
 
     static func reduce(
-        value: inout [ContrastPanel: Anchor<CGRect>],
-        nextValue: () -> [ContrastPanel: Anchor<CGRect>]
+        value: inout [ContrastPanel: ContrastPanelPlacement],
+        nextValue: () -> [ContrastPanel: ContrastPanelPlacement]
     ) {
         value.merge(nextValue()) { _, new in new }
     }
@@ -523,8 +542,10 @@ extension View {
     /// Marks this component as wanting a contrast panel behind it. The panel is
     /// drawn by `NowPlayingPill`, not here — see `NowPlayingPill.contrastPanels`
     /// for why it can't be a plain `.background`.
-    func contrastPanel(_ panel: ContrastPanel) -> some View {
-        anchorPreference(key: ContrastPanelAnchors.self, value: .bounds) { [panel: $0] }
+    func contrastPanel(_ panel: ContrastPanel, opacity: Double = 1) -> some View {
+        anchorPreference(key: ContrastPanelAnchors.self, value: .bounds) {
+            [panel: ContrastPanelPlacement(anchor: $0, opacity: opacity)]
+        }
     }
 }
 
