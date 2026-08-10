@@ -353,7 +353,9 @@ struct NowPlayingView: View {
         } mini: {
             VStack(alignment: .leading, spacing: 2) {
                 MarqueeText(text: playerService.currentTrack?.displayName ?? "")
-                    .font(.uiSubheadline.bold())
+                    // Same size and weight as a library album title, which is
+                    // the other place a track/album name is set at this scale.
+                    .font(.uiSubheadline.weight(.medium))
                 subtitle(font: .uiCaption, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

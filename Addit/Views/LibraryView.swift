@@ -48,6 +48,10 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var isSearchExpanded = false
     @FocusState private var isSearchFocused: Bool
+    /// Live content offset of whichever list or grid is on screen, feeding the
+    /// toolbar orb's spin. Not clamped or reset between the two layouts: the
+    /// orb has no home position, so a jump just spins it.
+    @State private var scrollOffset: CGFloat = 0
     @AppStorage("storageSource") private var storageSource: String = StorageSource.googleDrive.rawValue
     @State private var showLocalImporter = false
     @State private var isImportingLocal = false
@@ -417,7 +421,7 @@ struct LibraryView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(album.name)
-                                    .font(.uiBody.weight(.semibold))
+                                    .font(.uiBody.weight(.medium))
                                     .fadingTruncation()
                                 Text(album.artistName ?? "Unknown Artist")
                                     .font(.uiCaption)
@@ -448,7 +452,7 @@ struct LibraryView: View {
                                 AlbumArtworkThumbnail(album: album, size: 48)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(album.name)
-                                        .font(.uiBody.bold())
+                                        .font(.uiBody.weight(.medium))
                                         .fadingTruncation()
                                     Text(album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? album.artistName! : "Unknown Artist")
                                         .font(.uiCaption)
@@ -476,6 +480,7 @@ struct LibraryView: View {
                     }
                 }
                 .listStyle(.plain)
+                .tracksScrollOffset(into: $scrollOffset)
             } else {
                 GeometryReader { geo in
                     let layout = gridLayout(for: geo.size.width)
@@ -519,6 +524,7 @@ struct LibraryView: View {
                             .padding(.vertical, 16)
                         }
                     }
+                    .tracksScrollOffset(into: $scrollOffset)
                 }
             }
         }
@@ -572,7 +578,7 @@ struct LibraryView: View {
                         }
                     } label: {
                         HStack(spacing: 6) {
-                            StorageSourceLogo(source: currentSource)
+                            StorageSourceLogo(source: currentSource, scrollOffset: scrollOffset)
                             Image(systemName: "chevron.down")
                                 .font(.uiCaption.weight(.semibold))
                         }
@@ -718,7 +724,9 @@ struct LibraryView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "person.crop.circle")
+                        // The orb *is* the account button — same menu, same
+                        // placement, glass instead of the SF glyph.
+                        PlasmaOrb(scrollOffset: scrollOffset)
                     }
                 }
             }
@@ -1300,7 +1308,10 @@ struct AlbumCard: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(album.name)
-                    .font(.uiSubheadline.weight(.semibold))
+                    // Medium, matching the list and arrange rows. Geist ships a
+                    // drawn Medium cut, so this is a real weight rather than a
+                    // synthesised one.
+                    .font(.uiSubheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .fadingTruncation()
 
