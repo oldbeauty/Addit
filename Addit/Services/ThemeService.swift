@@ -46,9 +46,21 @@ final class ThemeService {
     private let lightHexKey = "selectedAccentHexLight"
     private let darkHexKey = "selectedAccentHexDark"
     private let appearanceModeKey = "appearanceMode"
-    /// Static so the migration helper inside `init` can read it before
-    /// the instance's stored properties are fully initialized.
-    private static let fallbackHex = "4D7298"
+    /// What a fresh install starts on, per scheme: charcoal reads as ink on
+    /// the light background, white as light on the dark one — so the accent
+    /// carries the most contrast it can either way, instead of one hue trying
+    /// to serve both. Both are members of `paletteHexes`, so anyone who
+    /// wanders off can pick their way back.
+    ///
+    /// Only ever consulted when nothing is stored, so existing users keep
+    /// whatever they chose. Static so the migration helper inside `init` can
+    /// read them before the instance's stored properties are initialized.
+    private static let defaultLightHex = "36413E"
+    private static let defaultDarkHex = "FFFFFF"
+
+    private static func defaultHex(for scheme: ColorScheme) -> String {
+        scheme == .dark ? defaultDarkHex : defaultLightHex
+    }
 
     /// Accent color the user picked while light mode is the effective
     /// appearance. Persists to UserDefaults on every change.
@@ -92,7 +104,7 @@ final class ThemeService {
     }
 
     var accentColor: Color {
-        Color(hex: selectedHex) ?? Color(hex: Self.fallbackHex) ?? .blue
+        Color(hex: selectedHex) ?? Color(hex: Self.defaultHex(for: currentScheme)) ?? .blue
     }
 
     init() {
@@ -105,18 +117,18 @@ final class ThemeService {
         // key is harmless — we never read it again.
         let legacy = UserDefaults.standard.string(forKey: legacyHexKey)?.uppercased()
 
-        func resolve(_ value: String?) -> String {
+        func resolve(_ value: String?, or fallback: String) -> String {
             if let value, Self.paletteHexes.contains(value) { return value }
-            return Self.fallbackHex
+            return fallback
         }
 
-        if storedLight == nil && storedDark == nil, let legacy {
-            let migrated = resolve(legacy)
-            lightHex = migrated
-            darkHex = migrated
+        if storedLight == nil, storedDark == nil,
+           let legacy, Self.paletteHexes.contains(legacy) {
+            lightHex = legacy
+            darkHex = legacy
         } else {
-            lightHex = resolve(storedLight)
-            darkHex = resolve(storedDark)
+            lightHex = resolve(storedLight, or: Self.defaultLightHex)
+            darkHex = resolve(storedDark, or: Self.defaultDarkHex)
         }
 
         if let modeRaw = UserDefaults.standard.string(forKey: appearanceModeKey),
@@ -150,7 +162,7 @@ final class ThemeService {
     /// per-row swatches in Settings so the user sees both colors at a
     /// glance regardless of which mode is currently active.
     func accentColor(for scheme: ColorScheme) -> Color {
-        Color(hex: selectedHex(for: scheme)) ?? Color(hex: Self.fallbackHex) ?? .blue
+        Color(hex: selectedHex(for: scheme)) ?? Color(hex: Self.defaultHex(for: scheme)) ?? .blue
     }
 }
 
