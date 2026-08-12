@@ -24,6 +24,9 @@ final class MicrosoftAuthService: NSObject {
     var isSignedIn = false
     var userName: String?
     var userEmail: String?
+    /// Last interactive sign-in failure, for the sign-in screen to show. `nil`
+    /// after a success or a user cancel. Mirrors `GoogleAuthService`.
+    var signInError: String?
 
     /// Shared account registry — assigned at app wiring time so Google and
     /// Microsoft accounts live in the same switcher list.
@@ -41,6 +44,7 @@ final class MicrosoftAuthService: NSObject {
     /// quietly.
     @discardableResult
     func signIn(promptSelectAccount: Bool = false) async -> String? {
+        signInError = nil
         do {
             let verifier = Self.randomURLSafeString(bytes: 64)
             let challenge = Self.codeChallenge(for: verifier)
@@ -72,6 +76,7 @@ final class MicrosoftAuthService: NSObject {
                 #if DEBUG
                 print("[MSAuth] Callback missing authorization code: \(callbackURL)")
                 #endif
+                signInError = "Microsoft didn't return an authorization code."
                 return nil
             }
 
@@ -102,8 +107,9 @@ final class MicrosoftAuthService: NSObject {
             return profile.email
         } catch {
             #if DEBUG
-            print("[MSAuth] Sign-in error: \(error.localizedDescription)")
+            print("[MSAuth] Sign-in error: \(error)")
             #endif
+            signInError = error.localizedDescription
             return nil
         }
     }

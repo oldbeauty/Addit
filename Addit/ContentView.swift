@@ -10,13 +10,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if authService.isRestoringSession || authService.isSwitchingAccount {
-                VStack(spacing: 16) {
-                    LoadingIndicator(size: .large)
-                    Text("addit")
-                        .font(.uiTitle2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingSplashView()
             } else if authService.isSignedIn {
                 ZStack(alignment: .bottom) {
                     NavigationStack(path: $libraryPath) {

@@ -20,17 +20,25 @@ private class AudioSelection {
 struct DriveAudioPickerView: View {
     let targetFolderId: String
     let onFilesAdded: ([DriveItem]) -> Void
+    /// The cloud being picked *from*, chosen before this sheet opens. `nil`
+    /// falls back to the active account.
+    var provider: AccountProvider? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
     @State private var selection = AudioSelection()
 
+    private var driveService: any CloudDriveService {
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: driveService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -48,7 +56,8 @@ struct DriveAudioPickerView: View {
                     onAdd: {
                         onFilesAdded(selection.files)
                         dismiss()
-                    }
+                    },
+                    provider: provider
                 )
                 .id(selectedSource)
             }
@@ -64,7 +73,8 @@ struct DriveAudioPickerView: View {
                     onAdd: {
                         onFilesAdded(selection.files)
                         dismiss()
-                    }
+                    },
+                    provider: provider
                 )
             }
         }
@@ -104,10 +114,13 @@ private struct AudioFileBrowserView: View {
     let excludeFolderId: String
     let onCancel: () -> Void
     let onAdd: () -> Void
+    /// Which cloud to browse. `nil` means the active account.
+    var provider: AccountProvider? = nil
 
     @Environment(CloudServiceRouter.self) private var cloudRouter
     private var driveService: any CloudDriveService {
-        cloudRouter.activeService
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
     }
     @State private var subfolders: [DriveItem] = []
     @State private var audioFiles: [DriveItem] = []

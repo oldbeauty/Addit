@@ -16,6 +16,7 @@ struct LibraryView: View {
     @Environment(AudioCacheService.self) private var cacheService
     @Query(sort: \Album.displayOrder) private var albums: [Album]
     @State private var showAddAlbum = false
+    @State private var showFeedback = false
     @State private var showCreateAlbum = false
     @State private var showSettings = false
     /// Set just before pushing an album so the navigation destination
@@ -56,8 +57,13 @@ struct LibraryView: View {
     @State private var showLocalImporter = false
     @State private var isImportingLocal = false
     @State private var importProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
-    @State private var showLocalDriveAudioPicker = false
-    @State private var showCopyFromDrive = false
+    /// Which cloud "Add from…" is browsing for loose audio files. Non-nil
+    /// presents the picker.
+    @State private var addFromProvider: AccountProvider?
+    /// Which cloud "Copy from…" is browsing. Non-nil presents the sheet — the
+    /// presentation's identity *is* the chosen provider, so the sheet can't
+    /// open without knowing which cloud it's reading.
+    @State private var copyFromProvider: AccountProvider?
 
     /// The library being viewed. The stored selection IS the truth —
     /// deliberately not derived from the active account. Google Drive,
@@ -73,10 +79,12 @@ struct LibraryView: View {
         currentSource == .oneDrive ? "OneDrive" : "Google Drive"
     }
 
-    /// Display name of the ACTIVE provider — used by the Local library's
-    /// "Add/Copy from …" import labels, which browse `cloudRouter.activeService`.
-    private var cloudLabel: String {
-        authService.activeProvider.displayName
+    /// Providers the user actually holds an account for, in a stable order.
+    /// The Local library's "Add from…" and "Copy from…" offer these rather
+    /// than naming whichever account happened to be active.
+    private var connectedProviders: [AccountProvider] {
+        let owned = Set(authService.accountManager.accounts.map(\.provider))
+        return AccountProvider.allCases.filter(owned.contains)
     }
 
     private var libraryIsLocal: Bool { currentSource == .localStorage }
@@ -616,11 +624,6 @@ struct LibraryView: View {
                         } label: {
                             Image(systemName: isSearchExpanded ? "xmark" : "magnifyingglass")
                         }
-                        Button {
-                            withAnimation { isListMode.toggle() }
-                        } label: {
-                            Image(systemName: isListMode ? "square.grid.2x2" : "list.bullet")
-                        }
                         if currentSource.isCloud {
                             Menu {
                                 Button {
@@ -645,23 +648,42 @@ struct LibraryView: View {
                                     } label: {
                                         Label("Create Empty", systemImage: "rectangle.badge.plus")
                                     }
-                                    Button {
-                                        showLocalImporter = true
+                                    // Every source in one submenu, for the same
+                                    // reason as "Copy from…": the cloud entry
+                                    // used to be whichever account was active,
+                                    // leaving the other one unreachable.
+                                    Menu {
+                                        ForEach(connectedProviders) { provider in
+                                            Button {
+                                                addFromProvider = provider
+                                            } label: {
+                                                Text(provider.displayName)
+                                            }
+                                        }
+                                        Button {
+                                            showLocalImporter = true
+                                        } label: {
+                                            Text("iPhone")
+                                        }
                                     } label: {
-                                        Label("Add from iPhone", systemImage: "iphone")
-                                    }
-                                    Button {
-                                        showLocalDriveAudioPicker = true
-                                    } label: {
-                                        Label("Add from \(cloudLabel)", systemImage: "cloud")
+                                        Label("Add Songs from…", systemImage: "square.and.arrow.down")
                                     }
                                 } label: {
                                     Label("Create New", systemImage: "plus.rectangle.on.folder")
                                 }
-                                Button {
-                                    showCopyFromDrive = true
+                                // A submenu, not a button: this used to copy
+                                // from whichever cloud you happened to be in
+                                // last, with no way to reach the other one.
+                                Menu {
+                                    ForEach(connectedProviders) { provider in
+                                        Button {
+                                            copyFromProvider = provider
+                                        } label: {
+                                            Text(provider.displayName)
+                                        }
+                                    }
                                 } label: {
-                                    Label("Copy from \(cloudLabel)", systemImage: "folder.badge.plus")
+                                    Label("Copy Albums from…", systemImage: "folder.badge.plus")
                                 }
                             } label: {
                                 Image(systemName: "plus")
@@ -704,6 +726,11 @@ struct LibraryView: View {
                             } label: {
                                 Label("Settings", systemImage: "gearshape")
                             }
+                            Button {
+                                showFeedback = true
+                            } label: {
+                                Label("Pls report bugs", systemImage: "ladybug")
+                            }
                         }
 
                         if currentSource == .localStorage {
@@ -731,18 +758,32 @@ struct LibraryView: View {
                 openForEditing(newAlbum)
             }
         }
-        .sheet(isPresented: $showLocalDriveAudioPicker) {
-            DriveAudioPickerView(targetFolderId: "") { files in
-                Task { await createLocalAlbumFromDriveFiles(files) }
-            }
+        .sheet(item: $addFromProvider) { provider in
+            DriveAudioPickerView(
+                targetFolderId: "",
+                onFilesAdded: { files in
+                    Task { await createLocalAlbumFromDriveFiles(files, from: provider) }
+                },
+                provider: provider
+            )
         }
-        .sheet(isPresented: $showCopyFromDrive) {
-            CopyAlbumFromDriveView { folder, audioFiles in
-                Task { await copyDriveAlbumToLocal(folder: folder, audioFiles: audioFiles) }
-            }
+        .sheet(item: $copyFromProvider) { provider in
+            CopyAlbumFromDriveView(
+                onCopy: { folder, audioFiles in
+                    Task {
+                        await copyDriveAlbumToLocal(
+                            folder: folder, audioFiles: audioFiles, from: provider
+                        )
+                    }
+                },
+                provider: provider
+            )
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+        }
+        .sheet(isPresented: $showFeedback) {
+            FeedbackSheet()
         }
         .fileImporter(
             isPresented: $showLocalImporter,
@@ -1009,9 +1050,16 @@ struct LibraryView: View {
         openForEditing(album)
     }
 
-    private func createLocalAlbumFromDriveFiles(_ files: [DriveItem]) async {
+    private func createLocalAlbumFromDriveFiles(
+        _ files: [DriveItem], from provider: AccountProvider
+    ) async {
         guard !files.isEmpty else { return }
         await MainActor.run { isImportingLocal = true }
+
+        // The picked files belong to the cloud chosen in "Add from…", which
+        // needn't be the active account — downloading through `driveService`
+        // would hit the wrong drive.
+        let driveService = cloudRouter.service(for: provider.storageSource)
 
         let fm = FileManager.default
         let existingCount = albums.filter { $0.isLocal }.count
@@ -1063,8 +1111,15 @@ struct LibraryView: View {
         await MainActor.run { isImportingLocal = false; importProgress = (0, 0, "") }
     }
 
-    private func copyDriveAlbumToLocal(folder: DriveItem, audioFiles: [DriveItem]) async {
+    private func copyDriveAlbumToLocal(
+        folder: DriveItem, audioFiles: [DriveItem], from provider: AccountProvider
+    ) async {
         await MainActor.run { isImportingLocal = true }
+
+        // The source cloud is whichever one the user picked in "Copy from…",
+        // which needn't be the active account — reading through `driveService`
+        // here would list and download from the wrong drive entirely.
+        let driveService = cloudRouter.service(for: provider.storageSource)
 
         let fm = FileManager.default
         let albumId = UUID().uuidString

@@ -30,6 +30,18 @@ final class CloudAuthCoordinator {
 
     var accountManager: AccountManager { google.accountManager }
 
+    /// Last interactive sign-in failure from either provider, for `SignInView`
+    /// to report. Both services used to swallow these, which left a failed
+    /// attempt indistinguishable from a cancel — you just landed back on the
+    /// buttons with nothing said.
+    var signInError: String? {
+        get { google.signInError ?? microsoft.signInError }
+        set {
+            google.signInError = newValue
+            microsoft.signInError = newValue
+        }
+    }
+
     var activeAccount: Account? { accountManager.activeAccount }
 
     var activeProvider: AccountProvider { activeAccount?.provider ?? .google }

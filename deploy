@@ -11,13 +11,22 @@
 set -e
 COREDEVICE_ID=12D8CD35-0DBF-5411-ACCB-30845543443A
 UDID=00008140-000A3CCE3AE1801C
-BUNDLE_ID=clint.Lang.Addit
 
 cd "$(dirname "$0")"
 
+# The bundle ID lives in gitignored Addit/Local.xcconfig — read it from there
+# rather than duplicating it here, so the two can't drift apart.
+BUNDLE_ID=$(awk -F' = ' '/^PRODUCT_BUNDLE_IDENTIFIER/{print $2}' Addit/Local.xcconfig)
+[[ -n "$BUNDLE_ID" ]] ||
+  { echo "✗ PRODUCT_BUNDLE_IDENTIFIER not set in Addit/Local.xcconfig" >&2; exit 1; }
+
 echo "▸ Building…"
+# -allowProvisioningUpdates lets xcodebuild register the device and mint or
+# renew a provisioning profile on its own. Without it, an expired profile fails
+# the build with a message telling you to open Xcode — and free-team profiles
+# expire every 7 days, so that lands often.
 xcodebuild -project Addit.xcodeproj -scheme Addit \
-  -destination "platform=iOS,id=$UDID" build -quiet
+  -destination "platform=iOS,id=$UDID" -allowProvisioningUpdates build -quiet
 
 # Resolve the built .app inside DerivedData (shared with Xcode's own
 # builds, so incremental state is reused in both directions).

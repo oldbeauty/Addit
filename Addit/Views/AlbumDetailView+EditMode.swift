@@ -1284,45 +1284,78 @@ extension AlbumDetailView {
                 let trackNumber: Int
             }
             var uploadedTracks: [UploadedTrack] = []
+            var failedTrackNames: [String] = []
+            var firstUploadError: Error?
 
             for (index, track) in localTracks.enumerated() {
                 await MainActor.run {
                     uploadProgress = (current: 2 + index + 1, total: totalSteps, trackName: track.name)
                 }
-                // On-device copy first (the album's own file, or an offline
-                // cache of a cloud track), and only download when there isn't
-                // one — duplicating an album you've already made available
-                // offline shouldn't re-fetch every track.
-                let data: Data
-                if let url = track.localFileURL ?? cacheService.cachedFileURL(for: track),
-                   fm.fileExists(atPath: url.path) {
-                    data = try Data(contentsOf: url)
-                } else if let sourceService {
-                    data = try await sourceService.downloadFileData(fileId: track.googleFileId)
-                } else {
+                // One bad track used to abandon the whole duplicate, discarding
+                // everything already uploaded and leaving a half-filled folder
+                // behind at the destination. Record the failure and keep going;
+                // what's missing is reported at the end.
+                do {
+                    // On-device copy first (the album's own file, or an offline
+                    // cache of a cloud track), and only download when there isn't
+                    // one — duplicating an album you've already made available
+                    // offline shouldn't re-fetch every track.
+                    let data: Data
+                    if let url = track.localFileURL ?? cacheService.cachedFileURL(for: track),
+                       fm.fileExists(atPath: url.path) {
+                        data = try Data(contentsOf: url)
+                    } else if let sourceService {
+                        data = try await sourceService.downloadFileData(fileId: track.googleFileId)
+                    } else {
+                        throw DuplicateError.sourceUnavailable(track.name)
+                    }
+                    let mime = track.mimeType.isEmpty ? "audio/mpeg" : track.mimeType
+                    let driveItem = try await driveService.createFile(
+                        name: track.name,
+                        mimeType: mime,
+                        inFolder: driveFolder.id,
+                        data: data
+                    )
+                    uploadedTracks.append(UploadedTrack(
+                        driveItem: driveItem,
+                        mimeType: mime,
+                        fileSize: Int64(data.count),
+                        trackNumber: track.trackNumber
+                    ))
+                } catch {
+                    firstUploadError = firstUploadError ?? error
+                    failedTrackNames.append(track.name)
                     #if DEBUG
-                    print("[Duplicate] Skipping missing file: \(track.name)")
+                    print("[Duplicate] Track failed: \(track.name) — \(error)")
                     #endif
-                    continue
                 }
-                let mime = track.mimeType.isEmpty ? "audio/mpeg" : track.mimeType
-                let driveItem = try await driveService.createFile(
-                    name: track.name,
-                    mimeType: mime,
-                    inFolder: driveFolder.id,
-                    data: data
-                )
-                uploadedTracks.append(UploadedTrack(
-                    driveItem: driveItem,
-                    mimeType: mime,
-                    fileSize: Int64(data.count),
-                    trackNumber: track.trackNumber
-                ))
             }
 
             #if DEBUG
             print("[Duplicate] Uploaded \(uploadedTracks.count)/\(localTracks.count) tracks")
             #endif
+
+            // Nothing landed at all: delete the folder we just made rather than
+            // leaving an orphan holding only .addit-data and a cover, and report
+            // it as the outright failure it is.
+            guard !uploadedTracks.isEmpty else {
+                try? await driveService.deleteFile(fileId: driveFolder.id)
+                throw firstUploadError ?? DuplicateError.nothingUploaded
+            }
+
+            // Keep the ordering file honest about what actually arrived — a
+            // tracklist naming absent files renders as phantom rows.
+            let finalTracklist = failedTrackNames.isEmpty
+                ? tracklist
+                : tracklist.filter { !failedTrackNames.contains($0) }
+            if finalTracklist != tracklist,
+               let revised = try? JSONEncoder().encode(
+                   AdditMetadata(tracklist: finalTracklist, artist: album.artistName)
+               ) {
+                try? await driveService.updateFileData(
+                    fileId: additDataItem.id, data: revised, mimeType: "application/json"
+                )
+            }
 
             // 5. Create the new Drive Album record in shared store
             let existingAlbums = (try? modelContext.fetch(FetchDescriptor<Album>())) ?? []
@@ -1340,7 +1373,7 @@ extension AlbumDetailView {
                 storageSource: provider.storageSource
             )
             newAlbum.additDataFileId = additDataItem.id
-            newAlbum.cachedTracklist = tracklist
+            newAlbum.cachedTracklist = finalTracklist
             if let coverItem = uploadedCoverItem {
                 newAlbum.coverFileId = coverItem.id
                 newAlbum.coverMimeType = "image/jpeg"
@@ -1376,6 +1409,18 @@ extension AlbumDetailView {
             await MainActor.run {
                 isSavingToDrive = false
                 uploadProgress = (0, 0, "")
+                guard failedTrackNames.isEmpty else {
+                    // Stay put and say what's missing. Dismissing here would
+                    // tear down this view along with the alert explaining the
+                    // gap, and the copy is already in the library either way.
+                    saveToDriveErrorTitle = "Copied Without \(failedTrackNames.count) Track"
+                        + (failedTrackNames.count == 1 ? "" : "s")
+                    saveToDriveError = """
+                        \(uploadedTracks.count) of \(localTracks.count) tracks copied. \
+                        These didn't upload: \(Self.trackNameList(failedTrackNames))
+                        """
+                    return
+                }
                 // Switch to the library the copy landed in and navigate back.
                 // This was hardcoded to Google Drive, which sent you to the
                 // wrong library whenever the upload went to OneDrive.
@@ -1389,6 +1434,7 @@ extension AlbumDetailView {
             await MainActor.run {
                 isSavingToDrive = false
                 uploadProgress = (0, 0, "")
+                saveToDriveErrorTitle = "Upload Failed"
                 saveToDriveError = error.localizedDescription
             }
         }
@@ -1440,6 +1486,29 @@ extension AlbumDetailView {
                 print("Failed to prepare track for sharing: \(error)")
                 #endif
             }
+        }
+    }
+
+    /// Joins names for an alert, capped so a wholesale failure on a 19-track
+    /// album doesn't produce a wall of text.
+    static func trackNameList(_ names: [String], limit: Int = 4) -> String {
+        guard names.count > limit else { return names.joined(separator: ", ") }
+        return "\(names.prefix(limit).joined(separator: ", ")), and \(names.count - limit) more"
+    }
+}
+
+/// Failures specific to duplicating an album. `errorDescription` is what lands
+/// in the alert, so these read as sentences rather than diagnostics.
+enum DuplicateError: LocalizedError {
+    case sourceUnavailable(String)
+    case nothingUploaded
+
+    var errorDescription: String? {
+        switch self {
+        case .sourceUnavailable(let name):
+            return "\(name) isn't stored on this device and couldn't be downloaded."
+        case .nothingUploaded:
+            return "None of the tracks could be uploaded."
         }
     }
 }

@@ -50,6 +50,10 @@ struct AlbumDetailView: View {
     @State var isSavingToDrive = false
     @State var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State var saveToDriveError: String?
+    /// A duplicate that partly succeeded isn't a failure — the copy exists and
+    /// plays — so the alert heading has to be able to say something other than
+    /// "Upload Failed".
+    @State var saveToDriveErrorTitle = "Upload Failed"
     @State private var trackToSplit: Track?
 
     // MARK: Inline edit mode state (behavior inherited from the old AlbumMetadataEditorSheet)
@@ -920,7 +924,7 @@ struct AlbumDetailView: View {
             .environment(cloudRouter)
             .environment(authService)
         }
-        .alert("Upload Failed", isPresented: Binding(
+        .alert(saveToDriveErrorTitle, isPresented: Binding(
             get: { saveToDriveError != nil },
             set: { if !$0 { saveToDriveError = nil } }
         )) {

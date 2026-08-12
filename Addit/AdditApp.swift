@@ -106,22 +106,18 @@ struct AccountContainerView: View {
     @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(AudioCacheService.self) private var cacheService
     @Environment(AlbumArtService.self) private var albumArtService
-    @Environment(ThemeService.self) private var themeService
 
     var body: some View {
         Group {
             if authService.isRestoringSession {
-                // Wait for auth to resolve before creating any ModelContainer
-                VStack(spacing: 16) {
-                    LoadingIndicator(size: .large)
-                    Text("addit")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                // ContentView tints its own copy of this splash; match it here
-                // so launch and account-switch look identical.
-                .tint(themeService.accentColor)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Wait for auth to resolve before creating any ModelContainer.
+                //
+                // This is the splash you actually see on launch — it renders
+                // before `ContentView` exists at all, so ContentView's copy
+                // only ever covers account switching. Both call the same view;
+                // they used to be two hand-maintained VStacks, and the one down
+                // there was the one that never showed.
+                LoadingSplashView()
             } else if let email = authService.userEmail {
                 ContentView()
                     .modelContainer(Self.sharedContainer)

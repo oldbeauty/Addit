@@ -7,14 +7,20 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.234191398888-6juqhe695b4p2oua8q6hpjv9o96d0s63</string>
+				<string>com.googleusercontent.apps.234191398888-58jmohlpegd1mir5jivla9e579rp6uh7</string>
 			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 		</dict>
 	</array>
 	<key>GIDClientID</key>
-	<string>234191398888-6juqhe695b4p2oua8q6hpjv9o96d0s63.apps.googleusercontent.com</string>
+	<string>234191398888-58jmohlpegd1mir5jivla9e579rp6uh7.apps.googleusercontent.com</string>
+	<!-- Addit ships no encryption of its own. It talks HTTPS to Google Drive
+	     and Microsoft Graph, which is exempt, so the answer is a flat "no".
+	     Without this key App Store Connect stops every single upload to ask
+	     the export-compliance question by hand. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Select album cover images from your photo library.</string>
 	<key>UIAppFonts</key>

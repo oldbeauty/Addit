@@ -63,5 +63,13 @@ struct SignInView: View {
             Spacer()
                 .frame(height: 60)
         }
+        .alert("Sign-In Failed", isPresented: Binding(
+            get: { authService.signInError != nil },
+            set: { if !$0 { authService.signInError = nil } }
+        )) {
+            Button("OK", role: .cancel) { authService.signInError = nil }
+        } message: {
+            Text(authService.signInError ?? "")
+        }
     }
 }

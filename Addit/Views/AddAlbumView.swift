@@ -268,10 +268,15 @@ struct FolderBrowserView: View {
     let source: FolderSource
     let existingFolderIds: Set<String>
     let onAdd: (DriveItem, [DriveItem]) -> Void
+    /// Which cloud to browse. `nil` means the account you're currently in,
+    /// which is what every flow wants except "Copy from…", where the point is
+    /// to reach a cloud other than the active one.
+    var provider: AccountProvider? = nil
 
     @Environment(CloudServiceRouter.self) private var cloudRouter
     private var driveService: any CloudDriveService {
-        cloudRouter.activeService
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
     }
     @State private var subfolders: [DriveItem] = []
     @State private var audioFiles: [DriveItem] = []
@@ -407,17 +412,25 @@ struct FolderBrowserView: View {
 
 struct CopyAlbumFromDriveView: View {
     let onCopy: (DriveItem, [DriveItem]) -> Void
+    /// The cloud being copied *from*, chosen before this sheet opens. `nil`
+    /// falls back to the active account.
+    var provider: AccountProvider? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @State private var selectedSource: FolderSource = .personal
     @State private var searchText = ""
 
+    private var driveService: any CloudDriveService {
+        guard let provider else { return cloudRouter.activeService }
+        return cloudRouter.service(for: provider.storageSource)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Source", selection: $selectedSource) {
-                    ForEach(FolderSource.availableCases(for: cloudRouter.activeService), id: \.self) { source in
+                    ForEach(FolderSource.availableCases(for: driveService), id: \.self) { source in
                         Text(source.rawValue).tag(source)
                     }
                 }
@@ -433,7 +446,8 @@ struct CopyAlbumFromDriveView: View {
                     onAdd: { folder, audioFiles in
                         onCopy(folder, audioFiles)
                         dismiss()
-                    }
+                    },
+                    provider: provider
                 )
                 .id(selectedSource)
             }
@@ -447,7 +461,8 @@ struct CopyAlbumFromDriveView: View {
                     onAdd: { folder, audioFiles in
                         onCopy(folder, audioFiles)
                         dismiss()
-                    }
+                    },
+                    provider: provider
                 )
             }
             .searchable(text: $searchText, prompt: "Search folders")

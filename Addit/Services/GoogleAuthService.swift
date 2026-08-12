@@ -8,6 +8,9 @@ final class GoogleAuthService {
     var isSwitchingAccount = false
     var userName: String?
     var userEmail: String?
+    /// Last interactive sign-in failure, for the sign-in screen to show. `nil`
+    /// after a success or a user cancel.
+    var signInError: String?
 
     @ObservationIgnored
     var accountManager = AccountManager()
@@ -40,7 +43,11 @@ final class GoogleAuthService {
     }
 
     func signIn() async {
-        guard let presenter = topViewController() else { return }
+        signInError = nil
+        guard let presenter = topViewController() else {
+            signInError = "Couldn't find a window to present sign-in from. Try again."
+            return
+        }
         do {
             let result = try await GIDSignIn.sharedInstance.signIn(
                 withPresenting: presenter,
@@ -51,9 +58,26 @@ final class GoogleAuthService {
             registerCurrentUser()
         } catch {
             #if DEBUG
-            print("Google Sign-In error: \(error.localizedDescription)")
+            print("Google Sign-In error: \(error)")
             #endif
+            // Deliberately surfaced rather than swallowed. This used to fail
+            // silently, dropping the user back on the sign-in screen with no
+            // hint as to why — and a first attempt failing while the second
+            // succeeds is exactly the shape that leaves people tapping twice
+            // out of habit. A cancel isn't an error and says nothing.
+            if !Self.isCancellation(error) {
+                signInError = error.localizedDescription
+            }
         }
+    }
+
+    /// Dismissing the Google sheet throws like any other failure. Reporting it
+    /// as one would put an alert on screen every time someone changes their
+    /// mind.
+    private static func isCancellation(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == kGIDSignInErrorDomain
+            && error.code == GIDSignInError.canceled.rawValue
     }
 
     /// Add a new account without losing existing account data

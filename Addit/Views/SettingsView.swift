@@ -8,6 +8,11 @@ struct SettingsView: View {
     /// (instead of a separate `Bool`) means the sheet always knows
     /// which scheme to operate on without an extra prop drill.
     @State private var editingScheme: ColorScheme? = nil
+    /// Same defaults key `LibraryView` reads, so the two stay in lockstep with
+    /// no plumbing — this moved here when the toolbar's layout button was
+    /// replaced by the bug reporter. `false` is icon/grid, and it is the
+    /// default for a fresh install.
+    @AppStorage("libraryViewMode") private var isListMode = false
 
     var body: some View {
         NavigationStack {
@@ -20,6 +25,14 @@ struct SettingsView: View {
                         ForEach(AppearanceMode.allCases, id: \.self) { mode in
                             Text(mode.label).tag(mode)
                         }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("Library") {
+                    Picker("Layout", selection: $isListMode) {
+                        Text("Icons").tag(false)
+                        Text("List").tag(true)
                     }
                     .pickerStyle(.segmented)
                 }

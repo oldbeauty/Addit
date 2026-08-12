@@ -21,16 +21,11 @@ struct PlasmaOrb: View {
 
     var body: some View {
         ScrollTorque(scrollOffset: scrollOffset, maxTwist: Self.maxTwist) { twist in
-            Rectangle()
-                .fill(.white)
-                .frame(width: diameter, height: diameter)
-                .colorEffect(
-                    ShaderLibrary.plasmaOrb(
-                        .float2(diameter, diameter),
-                        .float(scrollOffset * Self.radiansPerPoint),
-                        .float(twist)
-                    )
-                )
+            PlasmaOrbGlass(
+                diameter: diameter,
+                angle: scrollOffset * Self.radiansPerPoint,
+                twist: twist
+            )
         }
         .frame(width: diameter, height: diameter)
         // Left at the drawn size, with no tap-target padding of its own. The
@@ -44,6 +39,64 @@ struct PlasmaOrb: View {
         // the gaps between the blob's lobes stay live rather than punching
         // holes in the button.
         .contentShape(Rectangle())
+    }
+}
+
+/// The blob at an explicit orientation and shear, with nothing driving it.
+/// Both the toolbar's scroll-fed orb and the launch screen's freewheeling one
+/// are this view with a different clock behind them — the shape and every bit
+/// of its colour come from `PlasmaOrb.metal` either way.
+struct PlasmaOrbGlass: View {
+    var diameter: CGFloat
+    /// Orientation in radians.
+    var angle: Double
+    /// Shear, in radians per world unit of height.
+    var twist: Double
+
+    var body: some View {
+        Rectangle()
+            .fill(.white)
+            .frame(width: diameter, height: diameter)
+            .colorEffect(
+                ShaderLibrary.plasmaOrb(
+                    .float2(diameter, diameter),
+                    .float(angle),
+                    .float(twist)
+                )
+            )
+    }
+}
+
+/// The orb turning under its own clock, for the one place with no scroll to
+/// drive it: the launch screen.
+///
+/// `TimelineView(.animation)` for the same reason `RotatingStructureView` uses
+/// it — the motion is continuous and unbounded, so there's no keyframe pair to
+/// animate between, just elapsed time.
+struct SpinningPlasmaOrb: View {
+    var diameter: CGFloat = 64
+    /// Seconds per revolution. Slow: this sits under a wordmark on a screen
+    /// that's only up for a moment, and a fast spin reads as a busy-indicator
+    /// rather than as an object.
+    var period: Double = 7
+    /// A standing shear, so it reads as glass being wrung rather than a ball
+    /// rotating. Kept well under `PlasmaOrb`'s own ceiling, past which the
+    /// folds start passing through each other.
+    var twist: Double = 0.55
+
+    /// Elapsed time is measured from here rather than the reference date, for
+    /// the precision reason spelled out in `RotatingStructureView`.
+    @State private var start = Date()
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            PlasmaOrbGlass(
+                diameter: diameter,
+                angle: 2 * .pi * timeline.date.timeIntervalSince(start) / period,
+                twist: twist
+            )
+        }
+        .frame(width: diameter, height: diameter)
     }
 }
 

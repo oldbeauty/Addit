@@ -1,8 +1,13 @@
 import Foundation
 
 enum Constants {
-    // Replace with your actual Google OAuth Client ID
-    static let googleClientID = "234191398888-6juqhe695b4p2oua8q6hpjv9o96d0s63.apps.googleusercontent.com"
+    // Google Cloud → Credentials → OAuth client ID (type: iOS), bound to
+    // `tv.hollowpoint.addit`. An iOS client has no secret, so Google identifies
+    // the app by its bundle ID — which means a new bundle ID always needs a new
+    // client, and the two must change together. Keep in sync with Info.plist:
+    // both `GIDClientID` and the reversed-client-ID URL scheme
+    // `com.googleusercontent.apps.<id>`.
+    static let googleClientID = "234191398888-58jmohlpegd1mir5jivla9e579rp6uh7.apps.googleusercontent.com"
 
     static let driveAPIBase = "https://www.googleapis.com/drive/v3"
     static let driveScope = "https://www.googleapis.com/auth/drive"

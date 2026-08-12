@@ -145,6 +145,12 @@ final class OneDriveService: CloudDriveService {
         }
 
         let quota = try JSONDecoder().decode(DriveQuota.self, from: data).quota
+        #if DEBUG
+        if let quota, let total = quota.total {
+            let free = total - (quota.used ?? 0)
+            print("[OneDrive] quota: \(free / 1_048_576) MB free of \(total / 1_048_576) MB")
+        }
+        #endif
         return StorageQuota(
             usedBytes: quota?.used ?? 0,
             limitBytes: quota?.total
@@ -180,8 +186,16 @@ final class OneDriveService: CloudDriveService {
     /// root — it leaves the album folder but isn't destroyed.
     func removeFileFromFolder(fileId: String, folderId: String) async throws {
         let (driveId, _) = try splitId(fileId)
+        // `parentReference` wants a real item id. "root" is a path alias, not
+        // an id, so resolve the drive's actual root item first — same trap as
+        // the one `itemURL` sidesteps.
+        let (rootData, _) = try await authorizedRequest(
+            urlString: "\(baseURL)/drives/\(driveId)/root?$select=id"
+        )
+        struct RootItem: Decodable { let id: String }
+        let rootId = try JSONDecoder().decode(RootItem.self, from: rootData).id
         let body = try JSONSerialization.data(withJSONObject: [
-            "parentReference": ["driveId": driveId, "id": "root"]
+            "parentReference": ["driveId": driveId, "id": rootId]
         ])
         _ = try await authorizedRequest(
             urlString: itemURL(fileId), method: "PATCH", body: body,
@@ -258,32 +272,81 @@ final class OneDriveService: CloudDriveService {
         return try await createFolder(name: name, inParent: parentId)
     }
 
-    /// Files ≤ 4 MB upload in a single PUT; anything larger (i.e. most
-    /// audio) goes through a Graph upload session in 10 MB chunks —
-    /// Graph hard-rejects simple PUTs above 4 MB.
-    func createFile(name: String, mimeType: String, inFolder parentId: String, data: Data) async throws -> DriveItem {
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+    /// Graph's simple `PUT …/content` upload takes files up to 250 MB, which
+    /// covers any realistic audio file — only past that is an upload session
+    /// actually required. The 4 MB threshold this used to carry was Graph's
+    /// *old* published limit.
+    ///
+    /// Preferring the simple PUT is also a reliability win. `createUploadSession`
+    /// on the consumer OneDrive endpoint intermittently answers `invalidRequest`
+    /// ("The request is malformed or incorrect") to requests byte-identical to
+    /// ones it accepted minutes earlier: observed 2026-08-11, where one run
+    /// uploaded three tracks and was refused on the fourth, and the next run was
+    /// refused three times on the track that had just succeeded. No `Retry-After`,
+    /// 5 GB free. The simple PUT has never failed in any of those runs — it is
+    /// what puts `.addit-data` and `cover.jpg` up every time.
+    private static let simpleUploadLimit = 250 * 1024 * 1024
 
-        if data.count <= 4_000_000 {
-            let url = "\(itemURL(parentId)):/\(encodedName):/content?@microsoft.graph.conflictBehavior=replace"
-            let (respData, _) = try await authorizedRequest(
-                urlString: url, method: "PUT", body: data, contentType: mimeType
-            )
-            let item = try JSONDecoder().decode(GraphItem.self, from: respData)
-            guard let mapped = mapItem(item, ownedByMe: nil) else {
-                throw OneDriveError.badResponse(0, "Unmappable uploaded file")
+    func createFile(name: String, mimeType: String, inFolder parentId: String, data: Data) async throws -> DriveItem {
+        let safeName = Self.sanitizedName(name)
+        let encodedName = safeName.addingPercentEncoding(withAllowedCharacters: Self.nameAllowed) ?? safeName
+
+        if data.count <= Self.simpleUploadLimit {
+            do {
+                let url = "\(itemURL(parentId)):/\(encodedName):/content?@microsoft.graph.conflictBehavior=replace"
+                let (respData, _) = try await authorizedRequest(
+                    urlString: url, method: "PUT", body: data, contentType: mimeType
+                )
+                let item = try JSONDecoder().decode(GraphItem.self, from: respData)
+                guard let mapped = mapItem(item, ownedByMe: nil) else {
+                    throw OneDriveError.badResponse(0, "Unmappable uploaded file")
+                }
+                return mapped
+            } catch {
+                // Fall through to the session path rather than failing outright,
+                // so a size limit lower than advertised still has a way through.
+                #if DEBUG
+                print("[OneDrive] simple upload failed for \(safeName) — trying an upload session")
+                #endif
             }
-            return mapped
         }
 
-        // Upload session for large files
+        // Upload session: files past the simple-upload ceiling, or a retry
+        // after the simple PUT was rejected.
         let sessionBody = try JSONSerialization.data(withJSONObject: [
-            "item": ["@microsoft.graph.conflictBehavior": "replace", "name": name]
+            "item": ["@microsoft.graph.conflictBehavior": "replace", "name": safeName]
         ])
-        let (sessData, _) = try await authorizedRequest(
-            urlString: "\(itemURL(parentId)):/\(encodedName):/createUploadSession",
-            method: "POST", body: sessionBody, contentType: "application/json"
-        )
+        // Graph intermittently refuses session creation with a bare
+        // `invalidRequest` on requests that are structurally identical to ones
+        // it just accepted — it shows up when several sessions are opened back
+        // to back, and the drive has plenty of free space. Retry the identical
+        // request: if attempt 2 succeeds, the request was never malformed.
+        let sessionURL = "\(itemURL(parentId)):/\(encodedName):/createUploadSession"
+        var sessionData: Data?
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                sessionData = try await authorizedRequest(
+                    urlString: sessionURL, method: "POST", body: sessionBody,
+                    contentType: "application/json"
+                ).0
+                #if DEBUG
+                if attempt > 1 { print("[OneDrive] session for \(safeName) succeeded on attempt \(attempt)") }
+                #endif
+                break
+            } catch {
+                lastError = error
+                #if DEBUG
+                print("[OneDrive] session attempt \(attempt)/3 failed for \(safeName)")
+                #endif
+                if attempt < 3 {
+                    try? await Task.sleep(for: .milliseconds(500 << (attempt - 1)))
+                }
+            }
+        }
+        guard let sessData = sessionData else {
+            throw lastError ?? OneDriveError.badResponse(0, "No upload session for \(safeName)")
+        }
         struct UploadSession: Decodable { let uploadUrl: String }
         let uploadSession = try JSONDecoder().decode(UploadSession.self, from: sessData)
 
@@ -597,12 +660,51 @@ final class OneDriveService: CloudDriveService {
     }
 
     private func itemURL(_ compositeId: String) -> String {
+        // "root" is Google Drive's alias for the drive root, and it reaches us
+        // from provider-neutral callers — the folder picker hands it back as
+        // the parent whenever you create at the top level rather than inside a
+        // folder. Graph has no item whose *id* is "root"; /me/drive/items/root
+        // is a 400 invalidRequest. Address the root the way Graph expects.
+        if compositeId == Self.rootAlias { return "\(baseURL)/me/drive/root" }
         guard let (driveId, itemId) = try? splitId(compositeId) else {
             // Fall back to own-drive addressing for non-composite ids.
             return "\(baseURL)/me/drive/items/\(compositeId)"
         }
         return "\(baseURL)/drives/\(driveId)/items/\(itemId)"
     }
+
+    /// Google Drive's name for the drive root, which provider-neutral callers
+    /// pass through to us as an opaque parent id.
+    private static let rootAlias = "root"
+
+    // MARK: - File names
+
+    /// Graph addresses a new file as `{parent}:/{name}:/content`, so anything
+    /// in the name that reads as path syntax corrupts the URL — a track called
+    /// "AC/DC Live" would silently become a two-segment path and Graph answers
+    /// `invalidRequest`. OneDrive rejects these characters in names anyway
+    /// (`" * : < > ? / \ |`), plus surrounding spaces and trailing dots, so
+    /// substitute rather than encode: the file lands with a legal name instead
+    /// of a mangled one.
+    private static func sanitizedName(_ name: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "\"*:<>?/\\|")
+        var cleaned = String(name.unicodeScalars.map {
+            forbidden.contains($0) ? "_" : Character($0)
+        })
+        cleaned = cleaned.trimmingCharacters(in: .whitespaces)
+        while cleaned.hasSuffix(".") { cleaned.removeLast() }
+        return cleaned.isEmpty ? "untitled" : cleaned
+    }
+
+    /// `.urlPathAllowed` leaves `/` and `:` unescaped — exactly the two
+    /// characters the path syntax above is delimited by. Drop them, and the
+    /// other reserved characters, so encoding can't reintroduce the problem
+    /// `sanitizedName` just removed.
+    private static let nameAllowed: CharacterSet = {
+        var set = CharacterSet.urlPathAllowed
+        set.remove(charactersIn: ":/?#[]@")
+        return set
+    }()
 
     // MARK: - HTTP plumbing
 
@@ -647,9 +749,20 @@ final class OneDriveService: CloudDriveService {
         if let contentType {
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
+        #if DEBUG
+        print("[OneDrive] → \(method) \(relativePath(urlString))")
+        #endif
         let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
+        try validateResponse(response, data: data, method: method, urlString: urlString)
         return (data, response)
+    }
+
+    /// Trims the API base off a URL so logs and error text show the part that
+    /// actually varies — and stay short enough to survive an alert box.
+    private func relativePath(_ urlString: String) -> String {
+        urlString.hasPrefix(baseURL)
+            ? String(urlString.dropFirst(baseURL.count))
+            : urlString
     }
 
     private func getToken() async throws -> String {
@@ -657,14 +770,32 @@ final class OneDriveService: CloudDriveService {
         return try await authService.validAccessToken()
     }
 
-    private func validateResponse(_ response: URLResponse, data: Data?) throws {
+    private func validateResponse(
+        _ response: URLResponse,
+        data: Data?,
+        method: String = "",
+        urlString: String = ""
+    ) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             let bodyText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            // The failing request goes *first* in the message: Graph's error
+            // bodies are long enough to fill an alert on their own, and which
+            // call failed matters more than the boilerplate innerError.
+            let request = urlString.isEmpty ? "" : "\(method) \(relativePath(urlString)) — "
             #if DEBUG
-            print("[OneDrive] HTTP \(http.statusCode): \(bodyText.prefix(300))")
+            print("[OneDrive] HTTP \(http.statusCode) on \(request)\(bodyText.prefix(300))")
+            // Graph puts the real reason in headers more often than in the
+            // body — throttling arrives as Retry-After, and quota problems
+            // often surface only as a generic `invalidRequest`.
+            let interesting = ["Retry-After", "x-ms-ags-diagnostic", "WWW-Authenticate"]
+            for key in interesting {
+                if let value = http.value(forHTTPHeaderField: key) {
+                    print("[OneDrive]   \(key): \(value)")
+                }
+            }
             #endif
-            throw OneDriveError.badResponse(http.statusCode, String(bodyText.prefix(300)))
+            throw OneDriveError.badResponse(http.statusCode, request + String(bodyText.prefix(300)))
         }
     }
 }
