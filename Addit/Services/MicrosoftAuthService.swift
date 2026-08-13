@@ -158,12 +158,21 @@ final class MicrosoftAuthService: NSObject {
         case notSignedIn
         case tokenRefreshFailed
         case accountMismatch
+        /// A Graph call that came back non-2xx, carrying what Graph said.
+        case graph(Int, String)
+        /// Authenticated fine, but Graph returned no address to identify the
+        /// account by — the app keys everything off email, so there's nothing
+        /// to register.
+        case profileMissingEmail
 
         var errorDescription: String? {
             switch self {
             case .notSignedIn: return "Not signed in to a Microsoft account"
             case .tokenRefreshFailed: return "Failed to refresh Microsoft access token"
             case .accountMismatch: return "Signed-in account doesn't match the active account"
+            case .graph(let code, let body): return "Microsoft error \(code): \(body)"
+            case .profileMissingEmail:
+                return "Microsoft signed in but reported no email address for this account."
             }
         }
     }
@@ -268,7 +277,19 @@ final class MicrosoftAuthService: NSObject {
     private func fetchProfile(accessToken: String) async throws -> Profile {
         var request = URLRequest(url: URL(string: "\(Constants.graphAPIBase)/me")!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        // Check the status before decoding. `Me`'s fields are all optional, so
+        // a Graph *error* body decodes perfectly happily into a struct of
+        // nils — which then tripped the guard below and got reported as a
+        // token-refresh failure. Whatever actually went wrong was thrown away.
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            #if DEBUG
+            print("[MSAuth] GET /me → HTTP \(http.statusCode): \(body.prefix(300))")
+            #endif
+            throw MSAuthError.graph(http.statusCode, String(body.prefix(200)))
+        }
 
         struct Me: Decodable {
             let displayName: String?
@@ -279,7 +300,10 @@ final class MicrosoftAuthService: NSObject {
         // Consumer accounts report the sign-in email as userPrincipalName;
         // `mail` is often nil for personal accounts.
         guard let email = me.mail ?? me.userPrincipalName else {
-            throw MSAuthError.tokenRefreshFailed
+            #if DEBUG
+            print("[MSAuth] GET /me returned no email: \(String(data: data, encoding: .utf8) ?? "")")
+            #endif
+            throw MSAuthError.profileMissingEmail
         }
         return Profile(email: email, name: me.displayName ?? email)
     }

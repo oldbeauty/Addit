@@ -106,6 +106,10 @@ struct AccountContainerView: View {
     @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(AudioCacheService.self) private var cacheService
     @Environment(AlbumArtService.self) private var albumArtService
+    /// Set once the user chooses "Use without an account" on the sign-in
+    /// screen. Read here and in `ContentView`; `UserDefaults` is the shared
+    /// channel, so the key is the contract between them.
+    @AppStorage(AppStorageKey.usesLocalOnly) private var usesLocalOnly = false
 
     var body: some View {
         Group {
@@ -134,8 +138,17 @@ struct AccountContainerView: View {
                             albumArtService.activeAccountId = accountId
                         }
                     }
+            } else if usesLocalOnly {
+                // Local-only: no cloud account, but the user can still import
+                // music from the device — so this needs the REAL store. The
+                // in-memory container below would drop every local album on
+                // relaunch. Deliberately no `.id()`: there's no account
+                // identity to key the view on.
+                ContentView()
+                    .modelContainer(Self.sharedContainer)
             } else {
-                // Not signed in — use a lightweight in-memory container
+                // Signed out and at the sign-in screen, where nothing can be
+                // created — a lightweight in-memory container is enough.
                 ContentView()
                     .modelContainer(Self.signedOutContainer)
             }

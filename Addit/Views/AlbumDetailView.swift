@@ -77,7 +77,10 @@ struct AlbumDetailView: View {
     @State var coverUploadErrorMessage: String?
     @State private var imageToCrop: CoverCropItem?
     @State var showEditDocumentPicker = false
-    @State var showEditDriveAudioPicker = false
+    /// Which cloud edit mode's "add tracks" is browsing. Non-nil presents the
+    /// picker; the value travels with it so the download reads the same drive
+    /// that was browsed.
+    @State var editDriveSource: AccountProvider?
     @State var isUploadingTracks = false
 
     /// What the rename popup is editing — album title, artist, or one track.

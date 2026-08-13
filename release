@@ -1,0 +1,97 @@
+#!/bin/zsh
+# release — archive Addit for App Store Connect and export a signed .ipa,
+# with no Xcode Organizer involved. Sibling of ./deploy: that one puts a
+# debug build on the phone, this one produces the thing TestFlight eats.
+#
+#   ./release          archive + export at the current build number
+#   ./release --bump   increment CURRENT_PROJECT_VERSION first
+#
+# App Store Connect rejects a build whose CFBundleVersion it has already
+# seen, and that is the single most common upload failure. --bump exists so
+# you don't have to remember; it is deliberately NOT the default, because
+# re-exporting the same build after a failed upload is a normal thing to do.
+set -e
+
+cd "$(dirname "$0")"
+
+# Bundle ID and team both live in gitignored Addit/Local.xcconfig — read them
+# rather than duplicating, so this can't drift from ./deploy or the project.
+CONFIG=Addit/Local.xcconfig
+BUNDLE_ID=$(awk -F' = ' '/^PRODUCT_BUNDLE_IDENTIFIER/{print $2}' "$CONFIG")
+TEAM_ID=$(awk -F' = ' '/^DEVELOPMENT_TEAM/{print $2}' "$CONFIG")
+[[ -n "$BUNDLE_ID" && -n "$TEAM_ID" ]] ||
+  { echo "✗ PRODUCT_BUNDLE_IDENTIFIER / DEVELOPMENT_TEAM missing from $CONFIG" >&2; exit 1; }
+
+PBX=Addit.xcodeproj/project.pbxproj
+
+if [[ "$1" == "--bump" ]]; then
+  CURRENT=$(awk -F'= ' '/CURRENT_PROJECT_VERSION/{gsub(/;/,"",$2); print $2; exit}' "$PBX")
+  NEXT=$((CURRENT + 1))
+  # Both configurations, so Debug and Release never disagree about which
+  # build this is.
+  sed -i '' "s/CURRENT_PROJECT_VERSION = $CURRENT;/CURRENT_PROJECT_VERSION = $NEXT;/g" "$PBX"
+  echo "▸ Build number $CURRENT → $NEXT"
+fi
+
+VERSION=$(awk -F'= ' '/MARKETING_VERSION/{gsub(/;/,"",$2); print $2; exit}' "$PBX")
+BUILD=$(awk -F'= ' '/CURRENT_PROJECT_VERSION/{gsub(/;/,"",$2); print $2; exit}' "$PBX")
+echo "▸ $BUNDLE_ID  $VERSION ($BUILD)  team $TEAM_ID"
+
+OUT=build
+ARCHIVE=$OUT/Addit.xcarchive
+rm -rf "$ARCHIVE" "$OUT/export"
+mkdir -p "$OUT"
+
+echo "▸ Archiving (Release)…"
+xcodebuild -project Addit.xcodeproj -scheme Addit -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" \
+  -allowProvisioningUpdates archive -quiet
+
+cat > "$OUT/ExportOptions.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store-connect</string>
+  <key>teamID</key><string>$TEAM_ID</string>
+  <key>uploadSymbols</key><true/>
+  <key>destination</key><string>export</string>
+</dict>
+</plist>
+EOF
+
+# The archive signs with Apple Development; export is what re-signs it with
+# the Apple Distribution certificate. That re-signing is the step worth
+# watching — it is where a signing problem actually shows up.
+echo "▸ Exporting for App Store Connect…"
+xcodebuild -exportArchive -archivePath "$ARCHIVE" \
+  -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" \
+  -allowProvisioningUpdates
+
+IPA=$(ls "$OUT"/export/*.ipa 2>/dev/null | head -1)
+[[ -n "$IPA" ]] || { echo "✗ no .ipa produced" >&2; exit 1; }
+
+# Inspect what's inside the .ipa, NOT the archive. The archive is signed
+# Apple *Development*; only the exported payload carries the Apple
+# Distribution signature App Store Connect requires, so checking the archive
+# would cheerfully report the wrong answer.
+echo "▸ Verifying the exported payload…"
+VERIFY=$(mktemp -d)
+unzip -q "$IPA" -d "$VERIFY"
+codesign -dvv "$VERIFY"/Payload/*.app 2>&1 |
+  grep -E "^(Identifier|Authority=Apple (Distribution|Development)|TeamIdentifier)" | sed 's/^/    /'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VERIFY"/Payload/*.app/Info.plist |
+  sed 's/^/    Version=/'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VERIFY"/Payload/*.app/Info.plist |
+  sed 's/^/    Build=/'
+rm -rf "$VERIFY"
+
+echo
+echo "✓ $IPA  ($(du -h "$IPA" | cut -f1))"
+echo
+echo "Upload it with either:"
+echo "  • Transporter.app — drag the .ipa in (free on the Mac App Store)"
+echo "  • Xcode → Window → Organizer → Distribute App"
+echo
+echo "Then App Store Connect → TestFlight. Processing takes 10–30 min before"
+echo "the build is assignable to testers."

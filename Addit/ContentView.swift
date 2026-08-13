@@ -6,12 +6,16 @@ struct ContentView: View {
     @Environment(ThemeService.self) private var themeService
     @Environment(\.colorScheme) private var colorScheme
     @State private var libraryPath: [Album] = []
+    /// "Use without an account" — the library opens on iPhone Storage with no
+    /// cloud session. Sticky, so a relaunch doesn't dump the user back on the
+    /// sign-in screen; the account menu is still how you sign in later.
+    @AppStorage(AppStorageKey.usesLocalOnly) private var usesLocalOnly = false
 
     var body: some View {
         Group {
             if authService.isRestoringSession || authService.isSwitchingAccount {
                 LoadingSplashView()
-            } else if authService.isSignedIn {
+            } else if authService.isSignedIn || usesLocalOnly {
                 ZStack(alignment: .bottom) {
                     NavigationStack(path: $libraryPath) {
                         LibraryView(libraryPath: $libraryPath)

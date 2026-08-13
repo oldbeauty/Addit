@@ -11,10 +11,22 @@ import UniformTypeIdentifiers
 extension AlbumDetailView {
     // MARK: - Inline edit mode
 
-    /// Add-tracks "From cloud" pulls from the active account's provider for
-    /// local albums (sheet parity); cloud albums use their own provider.
-    private var editDriveService: any CloudDriveService {
-        album.isLocal ? cloudRouter.activeService : driveService
+    /// Writes made *into* a cloud album — uploading an iPhone file, copying a
+    /// cloud file in — always go to the album's own drive.
+    ///
+    /// Both remaining call sites sit in the `else` of an `album.isLocal` check
+    /// (a local album writes to disk instead), so this never routes for a local
+    /// album. It used to fall back to `activeService` in that case, which was
+    /// unreachable dead weight that read as if local albums had a cloud
+    /// destination. Where a local album genuinely needs a *source* cloud, the
+    /// provider is passed explicitly — see `handleEditDriveFilesAdded`.
+    private var editDriveService: any CloudDriveService { driveService }
+
+    /// Clouds the user actually holds an account for, in a stable order — the
+    /// choices a *local* album offers when adding tracks from a cloud.
+    private var editSourceProviders: [AccountProvider] {
+        let owned = Set(authService.accountManager.accounts.map(\.provider))
+        return AccountProvider.allCases.filter(owned.contains)
     }
 
     /// Provider name for UI labels ("Google Drive" / "OneDrive").
@@ -215,10 +227,18 @@ extension AlbumDetailView {
             ) { result in
                 Task { await handleEditPickedFiles(result) }
             }
-            .sheet(isPresented: $showEditDriveAudioPicker) {
-                DriveAudioPickerView(targetFolderId: album.googleFolderId) { files in
-                    Task { await handleEditDriveFilesAdded(files) }
-                }
+            // The chosen cloud *is* the presentation's identity, so the picker
+            // can't open without knowing which drive it's reading — the same
+            // shape as "Copy from…" in the library. A cloud album pins this to
+            // its own provider; a local album lets the user pick.
+            .sheet(item: $editDriveSource) { provider in
+                DriveAudioPickerView(
+                    targetFolderId: album.googleFolderId,
+                    onFilesAdded: { files in
+                        Task { await handleEditDriveFilesAdded(files, from: provider) }
+                    },
+                    provider: provider
+                )
             }
     }
 
@@ -250,10 +270,24 @@ extension AlbumDetailView {
                 LoadingIndicator(size: .small)
             } else if album.canEdit {
                 Menu {
-                    Button {
-                        showEditDriveAudioPicker = true
-                    } label: {
-                        Label("From \(cloudLabel)", systemImage: "cloud")
+                    // A cloud album can only take files from its own drive, so
+                    // there's nothing to choose. A local album can pull from
+                    // either — and used to silently use whichever account was
+                    // active, with no way to reach the other.
+                    if let albumProvider = album.storageSource.provider {
+                        Button {
+                            editDriveSource = albumProvider
+                        } label: {
+                            Label("From \(cloudLabel)", systemImage: "cloud")
+                        }
+                    } else {
+                        ForEach(editSourceProviders) { provider in
+                            Button {
+                                editDriveSource = provider
+                            } label: {
+                                Label("From \(provider.displayName)", systemImage: "cloud")
+                            }
+                        }
                     }
                     Button {
                         showEditDocumentPicker = true
@@ -676,15 +710,22 @@ extension AlbumDetailView {
         try? modelContext.save()
     }
 
-    private func handleEditDriveFilesAdded(_ files: [DriveItem]) async {
+    /// `provider` is the cloud the files were *browsed* from, which for a local
+    /// album is whichever one the user picked — not necessarily the active
+    /// account. Reading through `editDriveService` here would download the
+    /// picked IDs from the wrong drive.
+    private func handleEditDriveFilesAdded(
+        _ files: [DriveItem], from provider: AccountProvider
+    ) async {
         isUploadingTracks = true
         defer { isUploadingTracks = false }
+        let sourceService = cloudRouter.service(for: provider.storageSource)
 
         for file in files {
             do {
                 if album.isLocal {
                     // Download from the cloud and save locally
-                    let data = try await editDriveService.downloadFileData(fileId: file.id)
+                    let data = try await sourceService.downloadFileData(fileId: file.id)
                     let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
                     let fm = FileManager.default
                     let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1424,6 +1465,16 @@ extension AlbumDetailView {
                 // Switch to the library the copy landed in and navigate back.
                 // This was hardcoded to Google Drive, which sent you to the
                 // wrong library whenever the upload went to OneDrive.
+                //
+                // `selectProvider` as well as `storageSource`, and that pairing
+                // is load-bearing: the viewed library and the active account
+                // have to move together. Account-scoped flows — "Add Existing",
+                // "Create New", the folder pickers — all browse
+                // `cloudRouter.activeService`, which routes off the *account*,
+                // not off which library is on screen. Setting only
+                // `storageSource` left you looking at OneDrive while every
+                // picker still browsed Google.
+                _ = authService.selectProvider(provider)
                 storageSource = provider.storageSource.rawValue
                 dismiss()
             }

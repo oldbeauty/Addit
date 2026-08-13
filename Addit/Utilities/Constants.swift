@@ -47,3 +47,13 @@ enum Constants {
         "video/mp4"
     ]
 }
+
+/// `UserDefaults` keys shared between views that can't reach each other
+/// directly. A key used in one place should stay a local literal; these are
+/// here precisely because more than one file depends on the exact string.
+enum AppStorageKey {
+    /// The user chose "Use without an account" on the sign-in screen. Read by
+    /// `AccountContainerView` (which store to hand out) and `ContentView`
+    /// (whether to show the library or the sign-in screen).
+    static let usesLocalOnly = "usesLocalOnly"
+}

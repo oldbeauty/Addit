@@ -89,11 +89,6 @@ struct LibraryView: View {
 
     private var libraryIsLocal: Bool { currentSource == .localStorage }
 
-    /// The drive client for the active account's provider.
-    private var driveService: any CloudDriveService {
-        cloudRouter.activeService
-    }
-
     // MARK: - Library switching
     //
     // Flipping libraries is synchronous: both providers' sessions stay
@@ -674,16 +669,22 @@ struct LibraryView: View {
                                 // A submenu, not a button: this used to copy
                                 // from whichever cloud you happened to be in
                                 // last, with no way to reach the other one.
-                                Menu {
-                                    ForEach(connectedProviders) { provider in
-                                        Button {
-                                            copyFromProvider = provider
-                                        } label: {
-                                            Text(provider.displayName)
+                                // Hidden entirely with no accounts — someone
+                                // using the app without signing in has no
+                                // cloud to copy from, and an empty submenu
+                                // reads as broken.
+                                if !connectedProviders.isEmpty {
+                                    Menu {
+                                        ForEach(connectedProviders) { provider in
+                                            Button {
+                                                copyFromProvider = provider
+                                            } label: {
+                                                Text(provider.displayName)
+                                            }
                                         }
+                                    } label: {
+                                        Label("Copy Albums from…", systemImage: "folder.badge.plus")
                                     }
-                                } label: {
-                                    Label("Copy Albums from…", systemImage: "folder.badge.plus")
                                 }
                             } label: {
                                 Image(systemName: "plus")
@@ -784,6 +785,18 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showFeedback) {
             FeedbackSheet()
+        }
+        // Adding an account from this menu could fail silently — the alert on
+        // SignInView only covers the signed-out screen, so a failed "Add
+        // Account" just left the switcher unchanged with nothing said, which
+        // reads as the app ignoring you.
+        .alert("Couldn't Add Account", isPresented: Binding(
+            get: { authService.signInError != nil },
+            set: { if !$0 { authService.signInError = nil } }
+        )) {
+            Button("OK", role: .cancel) { authService.signInError = nil }
+        } message: {
+            Text(authService.signInError ?? "")
         }
         .fileImporter(
             isPresented: $showLocalImporter,
