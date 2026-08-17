@@ -38,6 +38,22 @@ struct ContentView: View {
                                 libraryPath.append(album)
                             }
                         })
+                        // The pill is pinned to the bottom of the window and has
+                        // no text input of its own, so it has no business moving
+                        // for a keyboard — and letting it move is what allowed it
+                        // to get *stuck* mid-screen.
+                        //
+                        // Collapsing the library's search bar removes its
+                        // `TextField` from the hierarchy in the same transaction
+                        // that clears focus, so the responder disappears instead
+                        // of resigning and the keyboard's frame change can fail to
+                        // unwind the safe-area inset. Rather than trying to make
+                        // that reset reliable — it depends on ordering inside
+                        // SwiftUI — the pill simply never reads the inset, so
+                        // there is no raised position for it to be stranded in.
+                        // The library itself keeps normal keyboard avoidance, so
+                        // the search field is still lifted clear.
+                        .ignoresSafeArea(.keyboard, edges: .bottom)
                     }
                 }
             } else {

@@ -81,10 +81,22 @@ final class OneDriveService: CloudDriveService {
         return DriveFileListResponse(files: all.filter(\.isFolder), nextPageToken: nil)
     }
 
+    /// `.urlQueryAllowed` lets `&`, `=`, `?` and `+` through, and each one
+    /// changes the meaning of the *URL* rather than the search: a folder called
+    /// "Drum & Bass" ended the query string at the ampersand, so the search ran
+    /// for "Drum" and quietly returned the wrong folders.
+    private static let searchQueryAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&=?+#")
+        return set
+    }()
+
     func searchFolders(query searchText: String) async throws -> DriveFileListResponse {
+        // Doubling is OData's own escape for a quote; percent-encoding is the
+        // URL's. Both are needed, in that order.
         let escaped = searchText
             .replacingOccurrences(of: "'", with: "''")
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchText
+            .addingPercentEncoding(withAllowedCharacters: Self.searchQueryAllowed) ?? searchText
         let url = "\(baseURL)/me/drive/root/search(q='\(escaped)')?$top=200"
         let page = try await fetchItemPage(urlString: url, ownedByMe: true)
         return DriveFileListResponse(
