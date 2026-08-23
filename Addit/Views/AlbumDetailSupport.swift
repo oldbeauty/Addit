@@ -14,6 +14,7 @@ struct TrackRow: View {
     var onDownload: (() -> Void)?
     var onToggleHidden: (() -> Void)?
     var onSplit: (() -> Void)?
+    var onShareLink: (() -> Void)?
     @Environment(ThemeService.self) private var themeService
 
     var body: some View {
@@ -76,6 +77,12 @@ struct TrackRow: View {
                 } label: {
                     Label(track.isHidden ? "Unhide Track" : "Hide Track",
                           systemImage: track.isHidden ? "eye" : "eye.slash")
+                }
+
+                if let onShareLink {
+                    Button(action: onShareLink) {
+                        Label("Share Link", systemImage: "link")
+                    }
                 }
 
                 Button {

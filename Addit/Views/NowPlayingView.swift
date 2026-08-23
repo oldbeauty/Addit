@@ -43,9 +43,14 @@ struct NowPlayingView: View {
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) private var albumArtService
     @Environment(ThemeService.self) private var themeService
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @Environment(AudioCacheService.self) private var cacheService
     @Environment(\.colorScheme) private var colorScheme
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
+    @State private var shareItem: AlbumLinkShareItem?
+    @State private var restrictedShareItem: AlbumLinkShareItem?
+    @State private var exportFileURL: URL?
     /// The current cover's own colour, or `nil` for art with none to take.
     @State private var coverAccent: Color?
 
@@ -104,6 +109,30 @@ struct NowPlayingView: View {
             // Same argument for queue mode: the mini bar has no queue form, so
             // coming back up into one is a state nobody asked for.
             isShowingQueue = false
+        }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(activityItems: [item])
+        }
+        .alert("Restricted Access", isPresented: Binding(
+            get: { restrictedShareItem != nil },
+            set: { if !$0 { restrictedShareItem = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { restrictedShareItem = nil }
+            Button("Proceed") {
+                let item = restrictedShareItem
+                restrictedShareItem = nil
+                DispatchQueue.main.async { shareItem = item }
+            }
+        } message: {
+            Text(ShareAccess.restrictedWarning)
+        }
+        .sheet(isPresented: Binding(
+            get: { exportFileURL != nil },
+            set: { if !$0 { discardExportFile() } }
+        )) {
+            if let url = exportFileURL {
+                ShareSheet(activityItems: [url]) { discardExportFile() }
+            }
         }
         .task(id: artworkTaskID) {
             albumImage = await loadedArtwork()
@@ -254,7 +283,25 @@ struct NowPlayingView: View {
 
             Spacer()
 
-            queueButton
+            bottomRow
+        }
+        // The share button is drawn here, not inside `bottomRow`, because it
+        // has to be positioned from two anchors that live in different
+        // branches: the repeat button's column and the bottom row's line.
+        // Preferences only travel *up*, so this VStack is the nearest view that
+        // can see both — reading them any lower silently yields nil, and the
+        // button simply never appears.
+        .overlayPreferenceValue(ShareSlotAnchorKey.self) { anchors in
+            GeometryReader { proxy in
+                if let column = anchors.repeatColumn, let row = anchors.bottomRow {
+                    shareSlot
+                        .frame(width: MiniLayout.shareSize, height: MiniLayout.shareSize)
+                        .position(x: proxy[column].midX, y: proxy[row].midY)
+                }
+            }
+            // The overlay spans the whole card; only the button itself may
+            // take a touch, or it would swallow the scrubber and transport.
+            .allowsHitTesting(true)
         }
         // No top padding — the drag indicator brings its own, and the
         // card's top edge is this view's top edge.
@@ -531,6 +578,101 @@ struct NowPlayingView: View {
         .nowPlayingChrome(progress)
     }
 
+    /// The card's bottom line: the queue toggle where it has always been, and
+    /// the share menu out in the repeat button's column.
+    private var bottomRow: some View {
+        ZStack {
+            queueButton
+        }
+        .frame(maxWidth: .infinity, minHeight: MiniLayout.shareSize)
+        // Publishes the row; the share button is drawn by the ancestor, which
+        // is the only place that can see both this and the repeat button.
+        .anchorPreference(key: ShareSlotAnchorKey.self, value: .bounds) {
+            ShareSlotAnchors(repeatColumn: nil, bottomRow: $0)
+        }
+    }
+
+    /// One control in two places: bottom-right when the card is open, and
+    /// beside play/pause when it's a bar. A `MorphSlot` rather than two buttons
+    /// because it *is* the same control — two would cross-fade against each
+    /// other and both would be live at the halfway point.
+    private var shareSlot: some View {
+        MorphSlot(progress: progress, cardSize: cardSize, miniFrame: MiniLayout.share) {
+            shareControl(font: .uiTitle3)
+        } mini: {
+            shareControl(font: .uiSubheadline)
+        }
+    }
+
+    @ViewBuilder
+    private func shareControl(font: Font) -> some View {
+        if let track = playerService.currentTrack, let album = track.album {
+            Menu {
+                // A local album has nothing on the other end to point at, so
+                // the link is simply absent rather than broken.
+                if AlbumShareLink(track: track, in: album) != nil {
+                    Button {
+                        offerShareLink(for: track, in: album)
+                    } label: {
+                        Label("Share Link", systemImage: "link")
+                    }
+                }
+                Button {
+                    exportCurrentTrack(track, in: album)
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(font)
+                    .foregroundStyle(.primary.opacity(0.6))
+                    .frame(width: MiniLayout.shareSize, height: MiniLayout.shareSize)
+                    .contentShape(Rectangle())
+            }
+        }
+    }
+
+    /// Warn first when the album is restricted, then share either way — the
+    /// recipient may already be on the access list, and if they aren't the link
+    /// fails in a way they can't diagnose.
+    private func offerShareLink(for track: Track, in album: Album) {
+        Task {
+            // Sequential, not `async let` — see the note in AlbumDetailView.
+            let coverId = await CoverUploader.upload(albumImage)
+            let isRestricted = await ShareAccess.isRestricted(
+                album, driveService: cloudRouter.service(for: album)
+            )
+            guard let item = AlbumLinkShareItem.make(for: track, in: album, coverId: coverId)
+            else { return }
+            if isRestricted { restrictedShareItem = item } else { shareItem = item }
+        }
+    }
+
+    private func exportCurrentTrack(_ track: Track, in album: Album) {
+        Task {
+            do {
+                exportFileURL = try await TrackExporter.stage(
+                    track,
+                    driveService: cloudRouter.service(for: album),
+                    cacheService: cacheService
+                )
+            } catch {
+                #if DEBUG
+                print("Failed to prepare track for sharing: \(error)")
+                #endif
+            }
+        }
+    }
+
+    /// The staged file is ours to clean up — `UIActivityViewController`
+    /// dismisses itself without touching the binding that presented it.
+    private func discardExportFile() {
+        if let url = exportFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        exportFileURL = nil
+    }
+
     @ViewBuilder
     private var queueButton: some View {
         if !playerService.queue.isEmpty {
@@ -642,7 +784,7 @@ struct NowPlayingView: View {
                     text: playerService.currentTrack?.displayName ?? "Not Playing",
                     alignment: .center
                 )
-                .font(.uiTitle3.bold())
+                .font(.uiTitle3.weight(.semibold))
                 subtitle(font: .uiSubheadline, alignment: .center)
             }
         } mini: {
@@ -839,6 +981,13 @@ struct NowPlayingView: View {
                     }
             }
             .nowPlayingChrome(progress)
+            // Publishes this button's column so the share menu on the row below
+            // can sit in it. The transport row is centred and two of its five
+            // glyphs are intrinsically sized, so the only honest way to line up
+            // with the last one is to measure it.
+            .anchorPreference(key: ShareSlotAnchorKey.self, value: .bounds) {
+                ShareSlotAnchors(repeatColumn: $0, bottomRow: nil)
+            }
         }
         .contrastPanel(.transport)
     }
@@ -1593,5 +1742,23 @@ private struct HorizontalPagerGesture: UIViewRepresentable {
         ) -> Bool {
             true
         }
+    }
+}
+
+
+/// Where the share button goes: the repeat button's column, on the bottom row's
+/// line. Two anchors in one key because they're set in different branches and
+/// only their common ancestor can read them, so they have to arrive together.
+private struct ShareSlotAnchors: Equatable {
+    var repeatColumn: Anchor<CGRect>?
+    var bottomRow: Anchor<CGRect>?
+}
+
+private struct ShareSlotAnchorKey: PreferenceKey {
+    static let defaultValue = ShareSlotAnchors()
+    static func reduce(value: inout ShareSlotAnchors, nextValue: () -> ShareSlotAnchors) {
+        let next = nextValue()
+        value.repeatColumn = value.repeatColumn ?? next.repeatColumn
+        value.bottomRow = value.bottomRow ?? next.bottomRow
     }
 }

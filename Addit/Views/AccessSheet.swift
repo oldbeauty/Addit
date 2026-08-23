@@ -1,9 +1,11 @@
 import SwiftUI
+import UIKit
 
-struct SharingSheet: View {
+struct AccessSheet: View {
     let album: Album
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(CloudAuthCoordinator.self) private var authService
+    @Environment(AlbumArtService.self) private var albumArtService
     @Environment(\.dismiss) private var dismiss
 
     /// Drive client for whichever provider hosts this album.
@@ -21,6 +23,11 @@ struct SharingSheet: View {
     @State private var showRemoveAlert = false
     @State private var showSelfDemoteAlert = false
     @State private var pendingSelfChange: (permission: DrivePermission, newRole: String)?
+    /// The album's cover, uploaded with the link so the preview card has art
+    /// even when the folder itself is unreadable to a stranger.
+    @State private var coverImage: UIImage?
+    @State private var linkShareItem: AlbumLinkShareItem?
+    @State private var restrictedShareItem: AlbumLinkShareItem?
 
     private var canEdit: Bool { album.canEdit }
 
@@ -45,7 +52,7 @@ struct SharingSheet: View {
                     listContent
                 }
             }
-            .navigationTitle("Sharing")
+            .navigationTitle("Access")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -53,6 +60,26 @@ struct SharingSheet: View {
                 }
             }
             .task { await loadPermissions() }
+            .task {
+                guard let coverFileId = album.coverFileId else { return }
+                coverImage = await albumArtService.image(for: coverFileId)
+            }
+            .sheet(item: $linkShareItem) { item in
+                ShareSheet(activityItems: [item])
+            }
+            .alert("Restricted Access", isPresented: Binding(
+                get: { restrictedShareItem != nil },
+                set: { if !$0 { restrictedShareItem = nil } }
+            )) {
+                Button("Cancel", role: .cancel) { restrictedShareItem = nil }
+                Button("Proceed") {
+                    let item = restrictedShareItem
+                    restrictedShareItem = nil
+                    DispatchQueue.main.async { linkShareItem = item }
+                }
+            } message: {
+                Text(ShareAccess.restrictedWarning)
+            }
             .alert("Remove Access", isPresented: $showRemoveAlert) {
                 Button("Remove", role: .destructive) {
                     guard let perm = removeTarget else { return }
@@ -86,10 +113,11 @@ struct SharingSheet: View {
     private var listContent: some View {
         List {
             generalAccessSection
-            peopleSection
+            linkSection
             if canEdit {
                 addPersonSection
             }
+            peopleSection
         }
         .disabled(isSaving)
         .overlay {
@@ -134,10 +162,7 @@ struct SharingSheet: View {
                     }
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: generalAccessIcon)
-                            .font(.uiTitle3)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32)
+                        generalAccessOrnament
                         VStack(alignment: .leading, spacing: 2) {
                             Text(generalAccess.label)
                                 .font(.uiSubheadline.weight(.medium))
@@ -155,10 +180,7 @@ struct SharingSheet: View {
                 .buttonStyle(.plain)
             } else {
                 HStack(spacing: 12) {
-                    Image(systemName: generalAccessIcon)
-                        .font(.uiTitle3)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32)
+                    generalAccessOrnament
                     VStack(alignment: .leading, spacing: 2) {
                         Text(generalAccess.label)
                             .font(.uiSubheadline.weight(.medium))
@@ -170,6 +192,61 @@ struct SharingSheet: View {
             }
         } header: {
             Text("General access")
+        }
+    }
+
+    /// The album as something you can paste into a chat.
+    ///
+    /// Sits directly under general access on purpose: the link is only as good
+    /// as the access above it, and the two being adjacent is what stops someone
+    /// sending a restricted album to a friend who then can't open it. It
+    /// deliberately does NOT widen access on its own — quietly making an album
+    /// public because someone tapped Share would be a genuinely bad surprise.
+    @ViewBuilder
+    private var linkSection: some View {
+        if AlbumShareLink(album: album) != nil {
+            Section {
+                Button {
+                    Task {
+                        let coverId = await CoverUploader.upload(coverImage)
+                        let item = AlbumLinkShareItem.make(for: album, coverId: coverId)
+                        // This sheet has already loaded the permissions, so the
+                        // answer is in hand — no second round trip.
+                        if generalAccess == .restricted {
+                            restrictedShareItem = item
+                        } else {
+                            linkShareItem = item
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        ChainIcon()
+                            .frame(width: Self.ornamentColumn)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Share Album Link")
+                                .font(.uiSubheadline.weight(.medium))
+                            Text(linkAudienceNote)
+                                .font(.uiCaption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Link")
+            }
+        }
+    }
+
+    private var linkAudienceNote: String {
+        switch generalAccess {
+        case .restricted:
+            return "Only the people listed below can open it"
+        case .anyoneViewer, .anyoneCommenter, .anyoneEditor:
+            return generalAccess.description
         }
     }
 
@@ -328,11 +405,29 @@ struct SharingSheet: View {
 
     // MARK: - Helpers
 
-    private var generalAccessIcon: String {
-        switch generalAccess {
-        case .restricted: return "lock"
-        case .anyoneViewer, .anyoneCommenter, .anyoneEditor: return "link"
+    /// A world for "anyone with the link", a hazard plate for "restricted" —
+    /// the two states the row can be in, as objects rather than glyphs.
+    /// Width of the icon column. Shared by both rows that have one, so their
+    /// text starts in the same place — the globe is what set it, being the
+    /// largest of the three.
+    private static let ornamentColumn: CGFloat = 36
+
+    @ViewBuilder
+    private var generalAccessOrnament: some View {
+        Group {
+            switch generalAccess {
+            case .restricted:
+                HazardIcon()
+            case .anyoneViewer, .anyoneCommenter, .anyoneEditor:
+                // Rendered larger than the others rather than scaled up: the
+                // globe is raymarched, so a bigger box is more sphere, not a
+                // stretched one. It never appears beside the hazard plate —
+                // they're the two states of one row — so the size difference
+                // is only ever seen across a toggle.
+                GlobeIcon(side: 35)
+            }
         }
+        .frame(width: Self.ornamentColumn)
     }
 
     private var sortedPermissions: [DrivePermission] {

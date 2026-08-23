@@ -15,6 +15,7 @@ struct AdditApp: App {
     @State private var albumArtService = AlbumArtService()
     @State private var themeService = ThemeService()
     @State private var analyzerService = AudioAnalyzerService()
+    @State private var shareLinks = ShareLinkService()
 
     init() {
         // Let a button inside a scroll view show its press state on touch-down.
@@ -81,7 +82,18 @@ struct AdditApp: App {
                 .environment(albumArtService)
                 .environment(themeService)
                 .environment(analyzerService)
+                .environment(shareLinks)
                 .onOpenURL { url in
+                    // Album links and the Google OAuth callback arrive through
+                    // the same door, so this has to be a branch rather than an
+                    // unconditional hand-off — passing a share link to
+                    // GIDSignIn silently swallows it.
+                    //
+                    // Universal links reach a SwiftUI scene here too, not only
+                    // through `onContinueUserActivity`, so one handler covers
+                    // https://hollowpoint.tv/a/… and the addit:// test scheme
+                    // alike.
+                    if shareLinks.handle(url) { return }
                     GIDSignIn.sharedInstance.handle(url)
                 }
                 .task {

@@ -133,144 +133,21 @@ struct AddAlbumView: View {
     /// `dismiss()`, so a batch that set it would close the sheet after its
     /// first album and abandon the rest of the selection.
     private func addToLibrary(folder: DriveItem, audioFiles: [DriveItem], thenDismiss: Bool = true) {
-        let existingAlbums = (try? modelContext.fetch(FetchDescriptor<Album>())) ?? []
-        let nextOrder = (existingAlbums.map(\.displayOrder).max() ?? -1) + 1
-
-        let album = Album(
-            googleFolderId: folder.id,
-            name: folder.name,
-            trackCount: audioFiles.count,
-            canEdit: folder.canEdit,
-            displayOrder: nextOrder,
-            // Stamp the album with the provider it was browsed from —
-            // this is what routes every subsequent API call for it.
-            storageSource: authService.activeProvider.storageSource
-        )
-        if let email = authService.userEmail {
-            album.accountId = AccountManager.storageIdentifier(for: email)
-        }
-        modelContext.insert(album)
-
-        for (index, file) in audioFiles.enumerated() {
-            let track = Track(
-                googleFileId: file.id,
-                name: file.name,
-                album: album,
-                mimeType: file.mimeType,
-                fileSize: file.fileSizeBytes,
-                trackNumber: index + 1,
-                modifiedTime: file.modifiedTime
-            )
-            modelContext.insert(track)
-        }
-
+        let importer = AlbumImporter(driveService: driveService, modelContext: modelContext)
         do {
-            try modelContext.save()
-            Task {
-                // Resolve folder ownership
-                let folderMeta = try? await driveService.getFileMetadata(fileId: folder.id)
-                album.isFolderOwner = folderMeta?.ownedByMe ?? false
-                try? modelContext.save()
-
-                await initializeAdditData(for: album, audioFiles: audioFiles)
-                await loadAdditMetadata(for: album)
-                if album.isFolderOwner {
-                    await claimCoverOwnership(for: album)
-                }
-                await syncCoverArt(for: album, folderId: folder.id)
-            }
+            let album = try importer.insert(
+                folder: folder,
+                audioFiles: audioFiles,
+                accountId: authService.userEmail.map { AccountManager.storageIdentifier(for: $0) },
+                // Stamp the album with the provider it was browsed from —
+                // this is what routes every subsequent API call for it.
+                storageSource: authService.activeProvider.storageSource
+            )
+            Task { await importer.finishImport(of: album, audioFiles: audioFiles) }
             if thenDismiss { addedSuccessfully = true }
         } catch {
             saveError = error.localizedDescription
         }
-    }
-
-    private func initializeAdditData(for album: Album, audioFiles: [DriveItem]) async {
-        do {
-            let existing = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId)
-
-            if let existing {
-                // File exists — claim ownership if we're the folder owner and don't own it
-                if album.isFolderOwner && existing.ownedByMe == false {
-                    let oldData = try await driveService.downloadFileData(fileId: existing.id)
-                    try await driveService.removeFileFromFolder(fileId: existing.id, folderId: album.googleFolderId)
-                    _ = try await driveService.createFile(
-                        name: ".addit-data",
-                        mimeType: "application/json",
-                        inFolder: album.googleFolderId,
-                        data: oldData
-                    )
-                }
-                // If we already own it or aren't the folder owner, nothing to do
-                return
-            }
-
-            // File doesn't exist — create it
-            let metadata = AdditMetadata(tracklist: audioFiles.map(\.name))
-            let data = try JSONEncoder().encode(metadata)
-
-            _ = try await driveService.createFile(
-                name: ".addit-data",
-                mimeType: "application/json",
-                inFolder: album.googleFolderId,
-                data: data
-            )
-        } catch {
-            // Best effort — will be created on next sync or edit
-        }
-    }
-
-    private func loadAdditMetadata(for album: Album) async {
-        do {
-            guard let additData = try await driveService.findFile(named: ".addit-data", inFolder: album.googleFolderId) else { return }
-            let data = try await driveService.downloadFileData(fileId: additData.id)
-            let metadata = try JSONDecoder().decode(AdditMetadata.self, from: data)
-            if let artist = metadata.artist, !artist.isEmpty {
-                album.artistName = artist
-            }
-            album.additDataFileId = additData.id
-            try? modelContext.save()
-        } catch {
-            // Best effort
-        }
-    }
-
-    private func claimCoverOwnership(for album: Album) async {
-        do {
-            guard let existing = try await driveService.findCoverImage(inFolder: album.googleFolderId) else { return }
-            guard existing.ownedByMe == false else { return }
-
-            let data = try await driveService.downloadFileData(fileId: existing.id)
-            try await driveService.removeFileFromFolder(fileId: existing.id, folderId: album.googleFolderId)
-            let newCover = try await driveService.createFile(
-                name: existing.name,
-                mimeType: existing.mimeType,
-                inFolder: album.googleFolderId,
-                data: data
-            )
-            album.coverFileId = newCover.id
-            album.coverMimeType = newCover.mimeType
-            album.coverModifiedTime = newCover.modifiedTime
-            try? modelContext.save()
-        } catch {
-            // Best effort — cover still usable even if not owned
-        }
-    }
-
-    private func syncCoverArt(for album: Album, folderId: String) async {
-        let coverItem = try? await driveService.findCoverImage(inFolder: folderId)
-        if let coverItem {
-            album.coverFileId = coverItem.id
-            album.coverMimeType = coverItem.mimeType
-            album.coverModifiedTime = coverItem.modifiedTime
-            album.coverUpdatedAt = .now
-        } else {
-            album.coverFileId = nil
-            album.coverMimeType = nil
-            album.coverModifiedTime = nil
-            album.coverUpdatedAt = nil
-        }
-        try? modelContext.save()
     }
 }
 

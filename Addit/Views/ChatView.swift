@@ -20,7 +20,7 @@ struct ChatView: View {
     @State private var timestampDragOffset: CGFloat = 0
     @State private var timestampGeneration = 0
     @State private var members: [DrivePermission] = []
-    @State private var showSharingSheet = false
+    @State private var showAccessSheet = false
     @State private var keyboardHeight: CGFloat = 0
     @FocusState private var isComposerFocused: Bool
 
@@ -93,7 +93,7 @@ struct ChatView: View {
                     Spacer()
 
                     Button {
-                        showSharingSheet = true
+                        showAccessSheet = true
                     } label: {
                         chatHeader
                     }
@@ -116,8 +116,8 @@ struct ChatView: View {
         }
         .ignoresSafeArea(.keyboard)
         .navigationBarHidden(true)
-        .sheet(isPresented: $showSharingSheet) {
-            SharingSheet(album: album)
+        .sheet(isPresented: $showAccessSheet) {
+            AccessSheet(album: album)
                 .environment(cloudRouter)
                 .environment(authService)
         }

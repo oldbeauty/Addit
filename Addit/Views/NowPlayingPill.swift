@@ -335,6 +335,9 @@ nonisolated enum MiniLayout {
     /// the glyph's width would move the button, which is precisely the drift
     /// that centre-anchoring it caused.
     static let playSize: CGFloat = 32
+    /// The share menu, immediately left of play/pause.
+    static let shareSize: CGFloat = 30
+    static let shareGap: CGFloat = 2
 
     /// Centre line of the artwork row, measured up from the card's bottom.
     private static let rowCenterFromBottom: CGFloat = 30
@@ -366,9 +369,23 @@ nonisolated enum MiniLayout {
         )
     }
 
+    static func share(in card: CGSize) -> CGRect {
+        CGRect(
+            x: card.width - sidePadding - playSize - shareGap - shareSize,
+            y: card.height - rowCenterFromBottom - shareSize / 2,
+            width: shareSize,
+            height: shareSize
+        )
+    }
+
     static func trackInfo(in card: CGSize) -> CGRect {
         let leading = sidePadding + artworkSize + rowSpacing
-        let trailing = sidePadding + playSize + rowSpacing
+        // The share menu has to be subtracted here too, not just drawn. This
+        // rect is the width the title's marquee and its fade measure
+        // themselves against — leave it at the old value and the text runs
+        // under the new button, and the fade that should hide the overflow
+        // starts somewhere behind it.
+        let trailing = sidePadding + playSize + shareGap + shareSize + rowSpacing
         let height: CGFloat = 36
         return CGRect(
             x: leading,

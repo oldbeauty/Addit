@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app's half of the universal-link handshake: it claims album links
+	     on hollowpoint.tv, and the domain agrees by serving a matching
+	     /.well-known/apple-app-site-association naming this app ID. Neither
+	     half does anything alone.
+
+	     iOS fetches that file when the app is INSTALLED, so the file has to be
+	     live before a build ships or the links stay dormant until reinstall.
+
+	     Sits at the repo root next to Info.plist, deliberately outside the
+	     synchronized Addit/ group, so Xcode can't decide to copy it into the
+	     bundle as a resource. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:hollowpoint.tv</string>
+	</array>
+</dict>
+</plist>

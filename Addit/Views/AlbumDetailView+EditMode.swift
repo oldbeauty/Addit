@@ -187,17 +187,44 @@ extension AlbumDetailView {
         .buttonStyle(.plain)
     }
 
-    /// "Add disc marker" / "Add tracks" controls in the header column —
-    /// also the attachment point for every edit-mode presentation modifier
-    /// (rename popup, delete confirmation, error alert, file importer, cloud
-    /// picker), kept off the main body chain for type-checker budget.
+    /// "Add disc marker" / "Add tracks" controls in the header column.
     var editControlsRow: some View {
         editControlsRowContent
+    }
+
+    /// Every edit-mode presentation: rename popup, delete confirmation, error
+    /// alert, file importer, cloud picker.
+    ///
+    /// Applied to the whole screen, **not** to `editControlsRow`, where these
+    /// used to live. That row is inside `headerSection`, which is a row in a
+    /// `List` — so scrolling it off screen tears it down and takes any alert
+    /// attached to it with it, while the `@State` driving the alert stays set.
+    /// That desync is invisible until you hit it and then total: renaming your
+    /// way down a long tracklist scrolls the header away, and from that point
+    /// tapping a name sets `editRenameTarget` to a value that is already
+    /// non-nil, so `isPresented` never transitions and nothing opens. Scroll
+    /// back or re-enter edit mode and the modifier reattaches, finds the
+    /// binding still true, and presents whichever track was stranded there.
+    ///
+    /// Still one grouped function so the main body chain grows by a single
+    /// call — the type-checker budget was the reason these were tucked away,
+    /// and it is still a real constraint on this view.
+    @ViewBuilder
+    func editModePresentations(_ content: some View) -> some View {
+        content
             .selectAllInTextFields(while: editRenameTarget != nil)
-            .alert(editRenameAlertTitle, isPresented: editRenameAlertBinding) {
+            // `presenting:` hands the target to the action. Reading
+            // `editRenameTarget` inside the button instead is a race: dismissal
+            // clears the binding, and if that lands first the rename is
+            // silently dropped.
+            .alert(
+                editRenameAlertTitle,
+                isPresented: editRenameAlertBinding,
+                presenting: editRenameTarget
+            ) { target in
                 TextField(editRenamePlaceholder, text: $editRenameText)
                 Button("Cancel", role: .cancel) {}
-                Button("Save") { applyEditRename() }
+                Button("Save") { applyEditRename(to: target) }
             }
             .alert("Delete Track?", isPresented: Binding(
                 get: { editTrackToDelete != nil },
@@ -351,8 +378,7 @@ extension AlbumDetailView {
 
     /// Applies the popup's text. Empty input keeps the old title/track name
     /// (both are required); an empty artist clears the field.
-    private func applyEditRename() {
-        guard let target = editRenameTarget else { return }
+    private func applyEditRename(to target: EditRenameTarget) {
         let trimmed = editRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
         switch target {
         case .title:
@@ -381,6 +407,9 @@ extension AlbumDetailView {
         editedTrackNames = [:]
         editItems = displayItems
         editErrorMessage = nil
+        // Nothing should survive from a previous session; a target left set
+        // would present itself the moment the alert attaches.
+        editRenameTarget = nil
         editAdditDataFileId = album.additDataFileId
         editAdditDataOwnedByMe = true
         withAnimation {
@@ -416,6 +445,7 @@ extension AlbumDetailView {
     func cancelEdits() {
         withAnimation { isEditing = false }
         editedTrackNames = [:]
+        editRenameTarget = nil
         // Deletes, added tracks, and cover changes apply immediately —
         // rebuild the display list so they survive the cancel.
         refreshTracklist()
@@ -427,6 +457,7 @@ extension AlbumDetailView {
             isEditing = false
         }
         editedTrackNames = [:]
+        editRenameTarget = nil
     }
 
     func saveEdits() async {
@@ -1500,47 +1531,15 @@ extension AlbumDetailView {
         }
     }
 
-    /// Export a track to the iOS share sheet. This is deliberately
-    /// share-*only*: if the track isn't already on-device (local file or
-    /// offline cache) we fetch it straight to a temp file and never touch the
-    /// persistent audio cache — so "send a song to a friend" leaves no
-    /// residue once the share sheet's temp file is purged (we delete it on
-    /// dismiss; iOS reclaims the temp dir regardless). If a local/cached copy
-    /// exists we reuse those bytes via a hardlink (near-zero cost) rather than
-    /// re-downloading or duplicating on disk. All file I/O runs off the main
-    /// actor so playback doesn't stutter during the copy.
+    /// Export a track to the iOS share sheet. The staging rules — no cache
+    /// residue, hardlink an existing copy — live in `TrackExporter`, shared
+    /// with the player's own share menu.
     func exportTrack(_ track: Track) {
-        let fileId = track.googleFileId
-        // Use the stored filename verbatim so the exported file keeps its
-        // original extension case (e.g. "wav", not the uppercased "WAV" that
-        // `fileExtension` produces for the on-screen badge).
-        let niceName = track.name
-        // A local track already lives on-device; a cached cloud track has an
-        // offline copy. Either is a local source we can reuse without hitting
-        // the network. Only a cloud track with neither needs a download.
-        let localSource = track.localFileURL ?? cacheService.cachedFileURL(for: track)
-        let client = driveService
         Task {
             do {
-                let url = try await Task.detached(priority: .userInitiated) {
-                    let fm = FileManager.default
-                    let dest = fm.temporaryDirectory.appendingPathComponent(niceName)
-                    if fm.fileExists(atPath: dest.path) {
-                        try fm.removeItem(at: dest)
-                    }
-                    if let localSource {
-                        // Reuse the existing on-device copy: a hardlink shares
-                        // the same bytes, so deleting the temp file later
-                        // doesn't disturb the original. Copy as a fallback in
-                        // case temp and source ever land on different volumes.
-                        do { try fm.linkItem(at: localSource, to: dest) }
-                        catch { try fm.copyItem(at: localSource, to: dest) }
-                    } else {
-                        try await client.downloadFile(fileId: fileId, to: dest)
-                    }
-                    return dest
-                }.value
-                shareFileURL = url
+                shareFileURL = try await TrackExporter.stage(
+                    track, driveService: driveService, cacheService: cacheService
+                )
             } catch {
                 #if DEBUG
                 print("Failed to prepare track for sharing: \(error)")

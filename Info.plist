@@ -12,6 +12,22 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 		</dict>
+		<!-- Album links travel as https://hollowpoint.tv/a/… — Messages only
+		     makes http(s) tappable, so this scheme is NOT the shipping path.
+		     It exists so album links can be exercised in the Simulator, where
+		     universal links depend on an installed-app AASA fetch that isn't
+		     reliable there:
+
+		         xcrun simctl openurl booted "addit://a/g/<folderId>"
+		 -->
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>addit</string>
+			</array>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+		</dict>
 	</array>
 	<key>GIDClientID</key>
 	<string>234191398888-58jmohlpegd1mir5jivla9e579rp6uh7.apps.googleusercontent.com</string>

@@ -28,7 +28,7 @@ struct AlbumDetailView: View {
     @State private var isSyncing = true
     @State var cachedTrackIds: Set<String> = []
     @State private var syncError: String?
-    @State private var showSharingSheet = false
+    @State private var showAccessSheet = false
     @State private var navigateToChat = false
     @State var albumImage: UIImage?
     @State private var queuedTrackId: String?
@@ -49,6 +49,10 @@ struct AlbumDetailView: View {
     @State var duplicateTarget: AccountProvider?
     /// Edit was asked for on an album the user can only read.
     @State var showEditAccessDenied = false
+    @State private var linkShareItem: AlbumLinkShareItem?
+    /// Held while the restricted-access warning is up; released to
+    /// `linkShareItem` when it's acknowledged.
+    @State private var restrictedShareItem: AlbumLinkShareItem?
     /// Second step of "Duplicate to…" from the denial alert — an alert button
     /// can't open a submenu, so the destinations get their own dialog.
     @State var showDuplicateDestinations = false
@@ -274,7 +278,7 @@ struct AlbumDetailView: View {
     private var titleBlock: some View {
         VStack(spacing: 4) {
             Text(album.name)
-                .font(.uiTitle2.bold())
+                .font(.uiTitle2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
 
@@ -484,9 +488,27 @@ struct AlbumDetailView: View {
     private var albumActions: some View {
         if !album.isLocal {
             Button {
-                showSharingSheet = true
+                showAccessSheet = true
             } label: {
-                Label("Sharing", systemImage: "person.2")
+                Label("Access", systemImage: "person.2")
+            }
+
+            // The link on its own, for when access is already sorted and you
+            // just want to send it. Whether the recipient can actually open it
+            // is a question about the folder's permissions, which is why the
+            // Sharing sheet — where those are visible — carries the same link
+            // with a note about who it currently works for.
+            //
+            // Not a plain `ShareLink`: `albumImage` is the cover already on
+            // screen, and handing it over builds the preview card with no
+            // network round trip and no dependence on the cover being publicly
+            // readable.
+            if AlbumShareLink(album: album) != nil {
+                Button {
+                    offerShareLink(track: nil)
+                } label: {
+                    Label("Share Link", systemImage: "link")
+                }
             }
 
             // Chat rides on the Drive comments API, which OneDrive
@@ -585,7 +607,11 @@ struct AlbumDetailView: View {
                 track.isHidden.toggle()
                 try? modelContext.save()
             },
-            onSplit: splitAction(for: track)
+            onSplit: splitAction(for: track),
+            // Absent for a local album — nothing on the other end to point at.
+            onShareLink: AlbumShareLink(track: track, in: album) == nil ? nil : {
+                offerShareLink(track: track)
+            }
         )
         .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
         .listRowBackground(Color.clear)
@@ -919,10 +945,47 @@ struct AlbumDetailView: View {
         }
     }
 
+    /// Share Link, from anywhere on this screen.
+    ///
+    /// The cover goes up with it. `albumImage` is the art already on screen, so
+    /// the card gets it without the preview fetcher needing to read Drive —
+    /// which it cannot do for a restricted album or a OneDrive one at all.
+    ///
+    /// A restricted album is still worth sending a link for — the recipient may
+    /// already be on the list — but if they aren't, the link fails in a way they
+    /// can't diagnose from their end. So the warning comes first, and then the
+    /// share proceeds either way.
+    private func offerShareLink(track: Track?) {
+        Task {
+            // Sequential rather than `async let`: the concurrent child task
+            // that `async let` creates isn't main-actor isolated, and `Album`
+            // is a SwiftData model that can't cross that boundary. Two short
+            // round trips is the honest cost of keeping it on this actor.
+            let coverId = await CoverUploader.upload(albumImage)
+            let isRestricted = await ShareAccess.isRestricted(album, driveService: driveService)
+
+            let item: AlbumLinkShareItem?
+            if let track {
+                item = AlbumLinkShareItem.make(for: track, in: album, coverId: coverId)
+            } else {
+                item = AlbumLinkShareItem.make(for: album, coverId: coverId)
+            }
+            guard let item else { return }
+
+            if isRestricted {
+                restrictedShareItem = item
+            } else {
+                linkShareItem = item
+            }
+        }
+    }
+
     private var presentationLayer: some View {
-        chromeLayer
-        .sheet(isPresented: $showSharingSheet) {
-            SharingSheet(album: album)
+        // Edit-mode presentations belong to the screen, not to the header row
+        // they used to hang off — see `editModePresentations`.
+        editModePresentations(chromeLayer)
+        .sheet(isPresented: $showAccessSheet) {
+            AccessSheet(album: album)
         }
         .sheet(item: $duplicateTarget) { provider in
             ChooseDriveFolderSheet(provider: provider) { parentId, markStarred in
@@ -984,6 +1047,25 @@ struct AlbumDetailView: View {
                 // which never reaches the binding setter above.
                 ShareSheet(activityItems: [url]) { discardSharedFile() }
             }
+        }
+        .sheet(item: $linkShareItem) { item in
+            ShareSheet(activityItems: [item])
+        }
+        .alert("Restricted Access", isPresented: Binding(
+            get: { restrictedShareItem != nil },
+            set: { if !$0 { restrictedShareItem = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { restrictedShareItem = nil }
+            Button("Proceed") {
+                let item = restrictedShareItem
+                restrictedShareItem = nil
+                // Next runloop turn. Handing SwiftUI a sheet while an alert is
+                // still tearing down is exactly how a presentation goes
+                // missing — the same class of desync as the rename popup.
+                DispatchQueue.main.async { linkShareItem = item }
+            }
+        } message: {
+            Text(ShareAccess.restrictedWarning)
         }
         .fullScreenCover(item: $trackToSplit, onDismiss: refreshTracklist) { splitTrack in
             TrackSplitView(track: splitTrack, album: album)
