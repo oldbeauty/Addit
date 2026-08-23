@@ -23,7 +23,7 @@ struct AccessSheet: View {
     @State private var showRemoveAlert = false
     @State private var showSelfDemoteAlert = false
     @State private var pendingSelfChange: (permission: DrivePermission, newRole: String)?
-    /// The album's cover, uploaded with the link so the preview card has art
+    /// The album's cover, handed to the preview card directly so it appears
     /// even when the folder itself is unreadable to a stranger.
     @State private var coverImage: UIImage?
     @State private var linkShareItem: AlbumLinkShareItem?
@@ -208,8 +208,7 @@ struct AccessSheet: View {
             Section {
                 Button {
                     Task {
-                        let coverId = await CoverUploader.upload(coverImage)
-                        let item = AlbumLinkShareItem.make(for: album, coverId: coverId)
+                        let item = await AlbumLinkShareItem.make(for: album, image: coverImage)
                         // This sheet has already loaded the permissions, so the
                         // answer is in hand — no second round trip.
                         if generalAccess == .restricted {

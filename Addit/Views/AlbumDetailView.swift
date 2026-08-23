@@ -947,9 +947,9 @@ struct AlbumDetailView: View {
 
     /// Share Link, from anywhere on this screen.
     ///
-    /// The cover goes up with it. `albumImage` is the art already on screen, so
-    /// the card gets it without the preview fetcher needing to read Drive —
-    /// which it cannot do for a restricted album or a OneDrive one at all.
+    /// `albumImage` — the art already on screen — goes onto the card directly,
+    /// so it appears even for a restricted album, whose folder the preview
+    /// fetcher cannot read.
     ///
     /// A restricted album is still worth sending a link for — the recipient may
     /// already be on the list — but if they aren't, the link fails in a way they
@@ -959,16 +959,14 @@ struct AlbumDetailView: View {
         Task {
             // Sequential rather than `async let`: the concurrent child task
             // that `async let` creates isn't main-actor isolated, and `Album`
-            // is a SwiftData model that can't cross that boundary. Two short
-            // round trips is the honest cost of keeping it on this actor.
-            let coverId = await CoverUploader.upload(albumImage)
+            // is a SwiftData model that can't cross that boundary.
             let isRestricted = await ShareAccess.isRestricted(album, driveService: driveService)
 
             let item: AlbumLinkShareItem?
             if let track {
-                item = AlbumLinkShareItem.make(for: track, in: album, coverId: coverId)
+                item = await AlbumLinkShareItem.make(for: track, in: album, image: albumImage)
             } else {
-                item = AlbumLinkShareItem.make(for: album, coverId: coverId)
+                item = await AlbumLinkShareItem.make(for: album, image: albumImage)
             }
             guard let item else { return }
 

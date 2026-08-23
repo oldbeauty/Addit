@@ -27,11 +27,12 @@ struct AlbumShareLink: Equatable, Hashable, Identifiable {
     /// real card — the app re-reads both from the folder on import and never
     /// trusts what the URL said.
     let artist: String?
-    /// Google-only. The preview card's image is served by fetching this file
-    /// from Drive *anonymously*, which works exactly when the album is shared
-    /// "anyone with the link" and fails otherwise — so it can never expose a
-    /// cover that Drive would have withheld. Graph has no anonymous thumbnail
-    /// equivalent, so OneDrive albums travel without one.
+    /// Google-only, and only for `og:image` — i.e. the card someone else's
+    /// server builds when the link is *pasted* into Slack or a browser. It is
+    /// fetched from Drive anonymously, so it resolves exactly when the album is
+    /// shared "anyone with the link" and can never expose a cover Drive would
+    /// have withheld. Sharing from inside the app doesn't rely on it: that path
+    /// supplies the on-device cover directly (`AlbumLinkShareItem`).
     let coverFileId: String?
     /// Set when the link points at one song rather than the whole album. The
     /// album still travels — a track can only be reached through the folder
@@ -76,28 +77,25 @@ struct AlbumShareLink: Equatable, Hashable, Identifiable {
 
     // MARK: - Building
 
-    /// `coverId` is an *uploaded* cover — see `CoverUploader`. It is preferred
-    /// over the Drive file id, which only resolves for albums shared "anyone
-    /// with the link" and never for OneDrive.
-    init?(album: Album, coverId: String? = nil) {
+    init?(album: Album) {
         guard Self.code(for: album.storageSource) != nil else { return nil }
         self.source = album.storageSource
         self.folderId = album.googleFolderId
         self.name = album.name
         self.artist = album.artistName
-        self.coverFileId = coverId ?? (album.storageSource == .googleDrive ? album.coverFileId : nil)
+        self.coverFileId = album.storageSource == .googleDrive ? album.coverFileId : nil
         self.trackFileId = nil
     }
 
     /// One song. Its cover and artist are the album's — a track carries neither
     /// of its own — but the title is the song's.
-    init?(track: Track, in album: Album, coverId: String? = nil) {
+    init?(track: Track, in album: Album) {
         guard Self.code(for: album.storageSource) != nil else { return nil }
         self.source = album.storageSource
         self.folderId = album.googleFolderId
         self.name = track.displayName
         self.artist = album.artistName
-        self.coverFileId = coverId ?? (album.storageSource == .googleDrive ? album.coverFileId : nil)
+        self.coverFileId = album.storageSource == .googleDrive ? album.coverFileId : nil
         self.trackFileId = track.googleFileId
     }
 

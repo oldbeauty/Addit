@@ -638,11 +638,10 @@ struct NowPlayingView: View {
     private func offerShareLink(for track: Track, in album: Album) {
         Task {
             // Sequential, not `async let` — see the note in AlbumDetailView.
-            let coverId = await CoverUploader.upload(albumImage)
             let isRestricted = await ShareAccess.isRestricted(
                 album, driveService: cloudRouter.service(for: album)
             )
-            guard let item = AlbumLinkShareItem.make(for: track, in: album, coverId: coverId)
+            guard let item = await AlbumLinkShareItem.make(for: track, in: album, image: albumImage)
             else { return }
             if isRestricted { restrictedShareItem = item } else { shareItem = item }
         }

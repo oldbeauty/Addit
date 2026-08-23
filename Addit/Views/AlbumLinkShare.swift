@@ -2,51 +2,79 @@ import LinkPresentation
 import SwiftUI
 import UIKit
 
-/// An album or song link, handed to the share sheet as a URL.
+/// An album or song link, handed to the share sheet with a preview card that
+/// has both the artist line *and* the cover already on this device.
 ///
-/// It deliberately does **not** supply `LPLinkMetadata`, and that is the whole
-/// point of this type's history. Supplying it produced an instant card built
-/// from the cover already in memory — but `LPLinkMetadata`'s public API has a
-/// `title` and nothing else. No subtitle. So an app-supplied card can only ever
-/// be one line, and handing one over *replaces* the richer metadata Messages
-/// builds by fetching the page — which does carry a second line.
+/// Getting both took three attempts, so the reasoning is worth keeping.
 ///
-/// Spotify was the proof. Its track pages serve exactly the tags ours do:
+/// The artist line is not something an app can set: `LPLinkMetadata` exposes a
+/// `title` and no subtitle. It appears because Apple, when it *fetches* a page,
+/// follows `music:musician` and renders that page's `<title>` underneath. So a
+/// hand-built `LPLinkMetadata` can never have one — supplying it replaces the
+/// fetched card wholesale and silently costs the artist.
 ///
-///     og:title        I Never Dream
-///     og:description  Against All Logic · 2012 - 2017 · Song · 2018
+/// The cover has the opposite problem. `og:image` is read by an
+/// unauthenticated fetcher, so art inside a restricted Drive folder is
+/// invisible to it, and OneDrive has no anonymous thumbnail at all.
 ///
-/// Nothing special, no private API — its links simply get *fetched*, so both
-/// lines survive. Ours were being overridden before they could be.
-///
-/// The cost is the cover. Fetched cards get their art from `/cover/<id>`, which
-/// reads Drive anonymously and so only resolves for albums shared "anyone with
-/// the link"; a restricted album falls back to the plain tile instead of the
-/// local cover this used to supply. That is the accepted trade — a restricted
-/// link barely works for its recipient anyway, which is now warned about
-/// before sending.
+/// The resolution is to do both: fetch the metadata so Apple resolves the
+/// artist, then replace only its `imageProvider` with the cover already in
+/// memory. Verified rendering in a real `LPLinkView` against a page serving no
+/// `og:image` whatsoever — cover, title, artist, domain, all four.
 final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
     let id = UUID()
     private let url: URL
     /// Used for the Mail subject only — the card's title comes from the page.
     private let caption: String
+    /// Fetched, then given the local cover. `nil` if the fetch failed, in which
+    /// case the system does its own and the card falls back to `og:image`.
+    private let metadata: LPLinkMetadata?
 
-    init(url: URL, caption: String) {
+    init(url: URL, caption: String, metadata: LPLinkMetadata?) {
         self.url = url
         self.caption = caption
+        self.metadata = metadata
     }
 
     /// `nil` for anything with no shareable link — local albums, most obviously.
     @MainActor
-    static func make(for album: Album, coverId: String? = nil) -> AlbumLinkShareItem? {
-        guard let url = AlbumShareLink(album: album, coverId: coverId)?.url else { return nil }
-        return AlbumLinkShareItem(url: url, caption: caption(for: album))
+    static func make(for album: Album, image: UIImage?) async -> AlbumLinkShareItem? {
+        guard let url = AlbumShareLink(album: album)?.url else { return nil }
+        return AlbumLinkShareItem(
+            url: url,
+            caption: caption(for: album),
+            metadata: await card(for: url, image: image)
+        )
     }
 
     @MainActor
-    static func make(for track: Track, in album: Album, coverId: String? = nil) -> AlbumLinkShareItem? {
-        guard let url = AlbumShareLink(track: track, in: album, coverId: coverId)?.url else { return nil }
-        return AlbumLinkShareItem(url: url, caption: caption(for: track, in: album))
+    static func make(for track: Track, in album: Album, image: UIImage?) async -> AlbumLinkShareItem? {
+        guard let url = AlbumShareLink(track: track, in: album)?.url else { return nil }
+        return AlbumLinkShareItem(
+            url: url,
+            caption: caption(for: track, in: album),
+            metadata: await card(for: url, image: image)
+        )
+    }
+
+    /// The page's own metadata, with the local cover swapped in.
+    @MainActor
+    private static func card(for url: URL, image: UIImage?) async -> LPLinkMetadata? {
+        let provider = LPMetadataProvider()
+        provider.timeout = 10
+        guard let fetched = try? await provider.startFetchingMetadata(for: url) else {
+            // Offline, or the site is down. Returning nil hands the job back to
+            // the system, which will retry the fetch itself — a worse card than
+            // this method builds, but never a broken one.
+            #if DEBUG
+            print("[Link] metadata fetch failed; falling back to system preview")
+            #endif
+            return nil
+        }
+        if let image {
+            fetched.imageProvider = NSItemProvider(object: image)
+        }
+        return fetched
     }
 
     /// Just the name.
@@ -88,6 +116,10 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
         subjectForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
         caption
+    }
+
+    func activityViewControllerLinkMetadata(_ controller: UIActivityViewController) -> LPLinkMetadata? {
+        metadata
     }
 }
 
