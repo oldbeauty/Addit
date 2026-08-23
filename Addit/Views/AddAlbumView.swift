@@ -105,11 +105,6 @@ struct AddAlbumView: View {
             .searchable(text: $searchText, prompt: "Search folders")
             .navigationTitle("Add Album")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
             .alert("Failed to Save", isPresented: .init(
                 get: { saveError != nil },
                 set: { if !$0 { saveError = nil } }
@@ -122,6 +117,7 @@ struct AddAlbumView: View {
                 if success { dismiss() }
             }
         }
+        .presentationDragIndicator(.visible)
     }
 
     private func existingFolderIds() -> Set<String> {
@@ -365,6 +361,18 @@ struct FolderBrowserView: View {
         existingFolderIds.contains(id) || addedThisSession.contains(id)
     }
 
+    /// What "Select All" can actually reach. Already-added folders stay in the
+    /// list but aren't selectable, so counting them would leave the button
+    /// unable to arrive at the state it promises.
+    private var selectableFolders: [DriveItem] {
+        subfolders.filter { !isAdded($0.id) }
+    }
+
+    private var everythingSelected: Bool {
+        let selectable = selectableFolders
+        return !selectable.isEmpty && selectable.allSatisfy { selection.contains($0.id) }
+    }
+
     var body: some View {
         Group {
             if isSearchActive {
@@ -440,21 +448,31 @@ struct FolderBrowserView: View {
             // Sits beside the "+" wherever a folder has both audio of its own
             // and subfolders.
             //
-            // The exit is an X rather than a word. "Done" reads as if it kept
-            // the selection, which it doesn't; "Cancel" is honest but collides
-            // with the sheet's own Cancel a few points to the left, and two of
-            // them meaning different things is worse than a glyph.
+            // The exit is an X rather than a word: "Done" reads as if it kept
+            // the selection, which it doesn't, and a third label beside
+            // "Select All" and "Confirm n" is what tips this bar into an
+            // overflow menu.
             if allowsMultiSelect && !subfolders.isEmpty && !isLoading && !isSearchActive {
                 ToolbarItem(placement: .topBarTrailing) {
                     if isSelecting {
-                        HStack(spacing: 14) {
+                        HStack(spacing: 12) {
+                            // Flips to "Deselect All" once it has nothing left
+                            // to do — otherwise the obvious way to undo a
+                            // fat-fingered select-all is tapping every row.
+                            Button(everythingSelected ? "Deselect All" : "Select All") {
+                                selection = everythingSelected
+                                    ? []
+                                    : Set(selectableFolders.map(\.id))
+                            }
+                            .disabled(selectableFolders.isEmpty || isAddingSelection)
+
                             Button {
                                 Task { await addSelected() }
                             } label: {
                                 if isAddingSelection {
                                     ProgressView()
                                 } else {
-                                    Text("Add \(selection.count)")
+                                    Text("Confirm \(selection.count)")
                                         .fontWeight(.semibold)
                                 }
                             }
@@ -715,11 +733,7 @@ struct CopyAlbumFromDriveView: View {
             .searchable(text: $searchText, prompt: "Search folders")
             .navigationTitle("Copy from \(cloudRouter.activeProvider.displayName)")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
         }
+        .presentationDragIndicator(.visible)
     }
 }

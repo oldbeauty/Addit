@@ -367,6 +367,15 @@ extension AlbumDetailView {
     // MARK: Edit-mode lifecycle
 
     func enterEditMode() {
+        // The single choke point for edit mode — the album's own Edit button
+        // and both library context menus all arrive here, and the library ones
+        // offer Edit without knowing whether the album is writable. Gating
+        // anywhere else would leave one of the three paths open.
+        guard album.isLocal || album.canEdit else {
+            showEditAccessDenied = true
+            return
+        }
+
         editedTitle = album.name
         editedArtist = album.artistName ?? ""
         editedTrackNames = [:]

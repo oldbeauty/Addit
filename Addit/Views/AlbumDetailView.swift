@@ -46,7 +46,12 @@ struct AlbumDetailView: View {
     @State var saveProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     /// Destination provider for "Duplicate to…", which is also what presents
     /// the folder picker — the presentation's identity *is* the chosen cloud.
-    @State private var duplicateTarget: AccountProvider?
+    @State var duplicateTarget: AccountProvider?
+    /// Edit was asked for on an album the user can only read.
+    @State var showEditAccessDenied = false
+    /// Second step of "Duplicate to…" from the denial alert — an alert button
+    /// can't open a submenu, so the destinations get their own dialog.
+    @State var showDuplicateDestinations = false
     @State var isSavingToDrive = false
     @State var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State var saveToDriveError: String?
@@ -934,6 +939,30 @@ struct AlbumDetailView: View {
             Button("OK") { saveToDriveError = nil }
         } message: {
             Text(saveToDriveError ?? "")
+        }
+        .alert("No Edit Access", isPresented: $showEditAccessDenied) {
+            Button("Duplicate to…") { showDuplicateDestinations = true }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("You do not have edit access to this album. Do you wish to create a copy of your own?")
+        }
+        .confirmationDialog(
+            "Duplicate to",
+            isPresented: $showDuplicateDestinations,
+            titleVisibility: .visible
+        ) {
+            // Same destinations as the album menu's own "Duplicate to…", and
+            // for the same reason: only providers with an account, and no
+            // local option for an album that already is local.
+            ForEach(AccountProvider.allCases) { provider in
+                if authService.accountManager.activeEmail(for: provider) != nil {
+                    Button(provider.displayName) { duplicateTarget = provider }
+                }
+            }
+            if !album.isLocal {
+                Button("Local Library") { Task { await saveToLocalLibrary() } }
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .alert("Export Failed", isPresented: Binding(
             get: { exportError != nil },
