@@ -32,10 +32,6 @@ Secrets.swift
 *.mobileprovision
 *.provisionprofile
 
-*AGENTS.md
-
-
-
 # Python bytecode
 __pycache__/
 *.pyc
