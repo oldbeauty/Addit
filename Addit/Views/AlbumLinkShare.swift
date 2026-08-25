@@ -142,3 +142,28 @@ enum ShareAccess {
         return !permissions.contains { $0.type == "anyone" }
     }
 }
+
+
+/// Shown while a share link is being prepared.
+///
+/// Preparing one is two round trips — the folder's permissions, then the page's
+/// own metadata (which is what resolves the artist line) — so there is a real
+/// gap between the tap and the share sheet. Without this the button looks dead
+/// and people tap it again.
+struct PreparingLinkOverlay: View {
+    var body: some View {
+        ZStack {
+            // Also swallows taps, so the button can't be fired twice.
+            Color.black.opacity(0.25).ignoresSafeArea()
+            VStack(spacing: 14) {
+                LoadingIndicator()
+                Text("Preparing link…")
+                    .font(.uiSubheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(28)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        }
+        .transition(.opacity)
+    }
+}

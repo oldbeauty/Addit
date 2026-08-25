@@ -53,6 +53,7 @@ struct AlbumDetailView: View {
     /// Held while the restricted-access warning is up; released to
     /// `linkShareItem` when it's acknowledged.
     @State private var restrictedShareItem: AlbumLinkShareItem?
+    @State private var isPreparingShare = false
     /// Second step of "Duplicate to…" from the denial alert — an alert button
     /// can't open a submenu, so the destinations get their own dialog.
     @State var showDuplicateDestinations = false
@@ -956,7 +957,10 @@ struct AlbumDetailView: View {
     /// can't diagnose from their end. So the warning comes first, and then the
     /// share proceeds either way.
     private func offerShareLink(track: Track?) {
+        guard !isPreparingShare else { return }
+        isPreparingShare = true
         Task {
+            defer { isPreparingShare = false }
             // Sequential rather than `async let`: the concurrent child task
             // that `async let` creates isn't main-actor isolated, and `Album`
             // is a SwiftData model that can't cross that boundary.
@@ -1045,6 +1049,9 @@ struct AlbumDetailView: View {
                 // which never reaches the binding setter above.
                 ShareSheet(activityItems: [url]) { discardSharedFile() }
             }
+        }
+        .overlay {
+            if isPreparingShare { PreparingLinkOverlay() }
         }
         .sheet(item: $linkShareItem) { item in
             ShareSheet(activityItems: [item])

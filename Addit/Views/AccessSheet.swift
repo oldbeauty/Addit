@@ -28,6 +28,7 @@ struct AccessSheet: View {
     @State private var coverImage: UIImage?
     @State private var linkShareItem: AlbumLinkShareItem?
     @State private var restrictedShareItem: AlbumLinkShareItem?
+    @State private var isPreparingShare = false
 
     private var canEdit: Bool { album.canEdit }
 
@@ -63,6 +64,9 @@ struct AccessSheet: View {
             .task {
                 guard let coverFileId = album.coverFileId else { return }
                 coverImage = await albumArtService.image(for: coverFileId)
+            }
+            .overlay {
+                if isPreparingShare { PreparingLinkOverlay() }
             }
             .sheet(item: $linkShareItem) { item in
                 ShareSheet(activityItems: [item])
@@ -207,7 +211,10 @@ struct AccessSheet: View {
         if AlbumShareLink(album: album) != nil {
             Section {
                 Button {
+                    guard !isPreparingShare else { return }
+                    isPreparingShare = true
                     Task {
+                        defer { isPreparingShare = false }
                         let item = await AlbumLinkShareItem.make(for: album, image: coverImage)
                         // This sheet has already loaded the permissions, so the
                         // answer is in hand — no second round trip.
