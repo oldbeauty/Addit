@@ -212,19 +212,24 @@ extension AlbumDetailView {
     @ViewBuilder
     func editModePresentations(_ content: some View) -> some View {
         content
-            .selectAllInTextFields(while: editRenameTarget != nil)
             // `presenting:` hands the target to the action. Reading
             // `editRenameTarget` inside the button instead is a race: dismissal
             // clears the binding, and if that lands first the rename is
             // silently dropped.
-            .alert(
+            //
+            // Our own popup rather than an `.alert` with a `TextField` in it:
+            // an alert's buttons fire for a finger that merely *drags* onto
+            // them, so selecting a name and sliding past the field's edge hit
+            // Cancel and lost the edit. See `PromptPopup`.
+            .prompt(
                 editRenameAlertTitle,
                 isPresented: editRenameAlertBinding,
-                presenting: editRenameTarget
+                presenting: editRenameTarget,
+                placeholder: editRenamePlaceholder,
+                text: $editRenameText,
+                multiline: editRenameTarget?.isMultiline ?? false
             ) { target in
-                TextField(editRenamePlaceholder, text: $editRenameText)
-                Button("Cancel", role: .cancel) {}
-                Button("Save") { applyEditRename(to: target) }
+                applyEditRename(to: target)
             }
             .alert("Delete Track?", isPresented: Binding(
                 get: { editTrackToDelete != nil },
@@ -354,6 +359,7 @@ extension AlbumDetailView {
     private var editRenameAlertTitle: String {
         switch editRenameTarget {
         case .artist: return "Edit Artist"
+        case .description: return "Album Description"
         case .track: return "Rename Track"
         default: return "Rename Album"
         }
@@ -362,6 +368,7 @@ extension AlbumDetailView {
     private var editRenamePlaceholder: String {
         switch editRenameTarget {
         case .artist: return "Artist"
+        case .description: return "What's this album about?"
         case .track: return "Track name"
         default: return "Album title"
         }
@@ -371,6 +378,7 @@ extension AlbumDetailView {
         switch target {
         case .title: editRenameText = editedTitle
         case .artist: editRenameText = editedArtist
+        case .description: editRenameText = editedDescription
         case .track(let track): editRenameText = editedTrackNames[track.googleFileId] ?? track.displayName
         }
         editRenameTarget = target
@@ -385,6 +393,8 @@ extension AlbumDetailView {
             if !trimmed.isEmpty { editedTitle = trimmed }
         case .artist:
             editedArtist = trimmed
+        case .description:
+            editedDescription = trimmed
         case .track(let track):
             if !trimmed.isEmpty { editedTrackNames[track.googleFileId] = trimmed }
         }
@@ -404,6 +414,7 @@ extension AlbumDetailView {
 
         editedTitle = album.name
         editedArtist = album.artistName ?? ""
+        editedDescription = album.albumDescription ?? ""
         editedTrackNames = [:]
         editItems = displayItems
         editErrorMessage = nil
@@ -469,10 +480,13 @@ extension AlbumDetailView {
 
         let trimmedArtist = editedArtist.trimmingCharacters(in: .whitespacesAndNewlines)
         let newArtist: String? = trimmedArtist.isEmpty ? nil : trimmedArtist
+        let trimmedDescription = editedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newDescription: String? = trimmedDescription.isEmpty ? nil : trimmedDescription
 
         if album.isLocal {
             album.name = trimmedTitle
             album.artistName = newArtist
+            album.albumDescription = newDescription
 
             // Update track names, numbers, and persist tracklist with disc markers
             var tracklist: [String] = []
@@ -513,12 +527,14 @@ extension AlbumDetailView {
         // Snapshot current state for rollback
         let previousName = album.name
         let previousArtist = album.artistName
+        let previousDescription = album.albumDescription
         let allTracks = editItems.compactMap(\.asTrack)
         let previousTrackNames = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.googleFileId, $0.name) })
         let previousTrackNumbers = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.googleFileId, $0.trackNumber) })
 
         album.name = trimmedTitle
         album.artistName = newArtist
+        album.albumDescription = newDescription
         try? modelContext.save()
 
         do {
@@ -528,6 +544,14 @@ extension AlbumDetailView {
                 _ = try await driveService.renameFile(fileId: album.googleFolderId, newName: trimmedTitle)
             }
 
+            // Same "only when it changed" rule, for the same reason: writing
+            // the folder's description needs edit permission, and a plain
+            // reorder shouldn't ask for it. Empty clears the field rather than
+            // leaving the old blurb stranded upstream.
+            if newDescription != previousDescription {
+                try await driveService.setDescription(newDescription ?? "", fileId: album.googleFolderId)
+            }
+
             try await renameChangedEditTracks()
             try await saveEditAdditData(artist: newArtist)
             finishEditing()
@@ -535,6 +559,7 @@ extension AlbumDetailView {
             // Revert all local changes on failure; stay in edit mode.
             album.name = previousName
             album.artistName = previousArtist
+            album.albumDescription = previousDescription
             for item in editItems {
                 if case .track(let track) = item {
                     if let oldName = previousTrackNames[track.googleFileId] {

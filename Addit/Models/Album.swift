@@ -17,6 +17,12 @@ final class Album {
     var googleFolderId: String
     var name: String
     var artistName: String?
+    /// The album's blurb. On a cloud album this mirrors the Drive/OneDrive
+    /// folder's own description field, so it is editable from the provider's
+    /// web UI too and travels with a shared folder; the copy here is the
+    /// offline one. Named around `description` rather than as it, which on a
+    /// type means something else entirely.
+    var albumDescription: String?
     var coverFileId: String?
     var coverMimeType: String?
     var coverModifiedTime: String?

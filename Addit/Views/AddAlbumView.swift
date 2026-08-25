@@ -225,7 +225,8 @@ struct FolderBrowserView: View {
             parents: nil,
             capabilities: nil,
             ownedByMe: nil,
-            modifiedTime: nil
+            modifiedTime: nil,
+            description: nil
         )
     }
 

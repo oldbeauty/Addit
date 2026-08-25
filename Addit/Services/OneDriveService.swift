@@ -188,7 +188,19 @@ final class OneDriveService: CloudDriveService {
         let item = try JSONDecoder().decode(GraphItem.self, from: data)
         return mapItem(item, ownedByMe: nil) ?? DriveItem(
             id: fileId, name: newName, mimeType: "application/octet-stream",
-            size: nil, parents: nil, capabilities: nil, ownedByMe: nil, modifiedTime: nil
+            size: nil, parents: nil, capabilities: nil, ownedByMe: nil, modifiedTime: nil,
+            description: nil
+        )
+    }
+
+    /// Graph's `description` on `driveItem` is documented as OneDrive
+    /// Personal only, which is the only OneDrive this app signs into — the
+    /// `/consumers` authority in `Constants` sees to that.
+    func setDescription(_ description: String, fileId: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["description": description])
+        _ = try await authorizedRequest(
+            urlString: itemURL(fileId), method: "PATCH", body: body,
+            contentType: "application/json"
         )
     }
 
@@ -529,6 +541,7 @@ final class OneDriveService: CloudDriveService {
             let folder: FolderFacet?
             let parentReference: ParentRef?
             let lastModifiedDateTime: String?
+            let description: String?
         }
 
         let id: String?
@@ -539,6 +552,7 @@ final class OneDriveService: CloudDriveService {
         let parentReference: ParentRef?
         let lastModifiedDateTime: String?
         let remoteItem: RemoteItem?
+        let description: String?
     }
 
     private struct GraphPermission: Decodable {
@@ -600,7 +614,8 @@ final class OneDriveService: CloudDriveService {
             // read-only share surfaces a 403 on the first write attempt.
             capabilities: DriveCapabilities(canEdit: true, canAddChildren: true),
             ownedByMe: ownedByMe,
-            modifiedTime: modified
+            modifiedTime: modified,
+            description: item.remoteItem?.description ?? item.description
         )
     }
 

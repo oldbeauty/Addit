@@ -59,6 +59,12 @@ struct NowPlayingPill: View {
     /// bottom safe area so scrolled-to-end content rests above it, not under.
     static let overlayHeight: CGFloat = MiniLayout.cardHeight + bottomInset
 
+    /// Height of the mini play/pause button's centre line above the bottom
+    /// safe area — the card's inset off that edge plus the row centre inside
+    /// the card. What a screen aims at to stand something else exactly where
+    /// the mini player would have been.
+    static let miniPlayCenterFromBottom: CGFloat = MiniLayout.rowCenterFromBottom + bottomInset
+
     private static let horizontalInset: CGFloat = 12
     private static let bottomInset: CGFloat = 4
 
@@ -340,7 +346,10 @@ nonisolated enum MiniLayout {
     static let shareGap: CGFloat = 2
 
     /// Centre line of the artwork row, measured up from the card's bottom.
-    private static let rowCenterFromBottom: CGFloat = 30
+    /// Not private: the library places its add button on this same line when
+    /// no track is playing, so the two occupy one position rather than two
+    /// that happen to look alike.
+    static let rowCenterFromBottom: CGFloat = 30
 
     static func artwork(in card: CGSize) -> CGRect {
         CGRect(

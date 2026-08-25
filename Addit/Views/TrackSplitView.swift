@@ -123,17 +123,18 @@ struct TrackSplitView: View {
                 ? "The original track is never changed — but your unsaved split points will be lost."
                 : "The \(savedSegmentIndices.count) already-saved tracks stay in the album — only the remaining splits are discarded.")
         }
-        .selectAllInTextFields(while: renamingSegmentID != nil)
-        .alert("Rename Track", isPresented: renameAlertBinding) {
-            TextField("Track name", text: $renameText)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                if let id = renamingSegmentID {
-                    plan.rename(segmentID: id, to: renameText)
-                }
-            }
-        } message: {
-            Text("Clear the field to restore the default name.")
+        // Our own popup, not an `.alert` with a `TextField`: an alert's
+        // buttons fire for a finger that drags onto them, so selecting the
+        // name and sliding past the field's edge hit Cancel. See `PromptPopup`.
+        .prompt(
+            "Rename Track",
+            isPresented: renameAlertBinding,
+            presenting: renamingSegmentID,
+            message: "Clear the field to restore the default name.",
+            placeholder: "Track name",
+            text: $renameText
+        ) { id in
+            plan.rename(segmentID: id, to: renameText)
         }
         .alert("Couldn't Save Splits", isPresented: saveErrorBinding) {
             Button("OK") { saveError = nil }

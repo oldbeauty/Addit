@@ -65,6 +65,10 @@ struct AlbumDetailView: View {
     /// "Upload Failed".
     @State var saveToDriveErrorTitle = "Upload Failed"
     @State private var trackToSplit: Track?
+    /// Whether the header's blurb is showing past its four-line cap. Resets
+    /// with the view, which is the right scope — it's a reading state, not a
+    /// preference.
+    @State private var isDescriptionExpanded = false
 
     // MARK: Inline edit mode state (behavior inherited from the old AlbumMetadataEditorSheet)
 
@@ -74,6 +78,7 @@ struct AlbumDetailView: View {
     @State var editItems: [TracklistItem] = []
     @State var editedTitle = ""
     @State var editedArtist = ""
+    @State var editedDescription = ""
     @State var editedTrackNames: [String: String] = [:]
     @State var editRenameTarget: EditRenameTarget?
     @State var editRenameText = ""
@@ -93,16 +98,26 @@ struct AlbumDetailView: View {
     @State var editDriveSource: AccountProvider?
     @State var isUploadingTracks = false
 
-    /// What the rename popup is editing — album title, artist, or one track.
+    /// What the rename popup is editing — album title, artist, description,
+    /// or one track.
     enum EditRenameTarget: Identifiable {
-        case title, artist, track(Track)
+        case title, artist, description, track(Track)
 
         var id: String {
             switch self {
             case .title: return "title"
             case .artist: return "artist"
+            case .description: return "description"
             case .track(let track): return "track-\(track.googleFileId)"
             }
+        }
+
+        /// The description is prose and wants room and newlines; a name is one
+        /// line. This also decides whether the popup opens with its text
+        /// pre-selected — see `PromptPopup`.
+        var isMultiline: Bool {
+            if case .description = self { return true }
+            return false
         }
     }
 
@@ -263,10 +278,12 @@ struct AlbumDetailView: View {
                     editableCraterCover
                     editTitleBlock
                     editControlsRow
+                    editDescriptionRow
                 } else {
                     craterCover
                     titleBlock
                     playButtons
+                    descriptionBlock
                 }
             }
             .frame(maxWidth: .infinity)
@@ -286,6 +303,40 @@ struct AlbumDetailView: View {
             Text(album.artistName ?? "Unknown Artist")
                 .font(.uiSubheadline)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The blurb, below the transport buttons.
+    ///
+    /// Track-name size at regular weight — it reads as another line of the
+    /// album's own text rather than as a caption, and the tracklist right
+    /// under it sets the size the eye is already using.
+    ///
+    /// The 3pt top pad is what keeps `playButtons` centered: the buttons'
+    /// own 1pt bottom pad plus the stack's 16 makes 17, and 3 more makes the
+    /// gap below them 20 — the same 20 that sits above them. Without a blurb
+    /// nothing here renders and the buttons keep their original centering
+    /// against the first track row instead.
+    @ViewBuilder
+    private var descriptionBlock: some View {
+        if let blurb = album.albumDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !blurb.isEmpty {
+            // Four lines, then tap for the rest. Uncapped, a long blurb
+            // pushes the tracklist off the first screen; capped with no
+            // way to open it, the text is simply unreadable.
+            Text(blurb)
+                .font(.uiBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(isDescriptionExpanded ? nil : 4)
+                .padding(.top, 3)
+                .padding(.horizontal, 32)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        isDescriptionExpanded.toggle()
+                    }
+                }
         }
     }
 
@@ -345,6 +396,24 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// Edit-mode counterpart of `descriptionBlock`, under the row that stands
+    /// in for the transport buttons. Always present, unlike the read-only one:
+    /// with no blurb yet it's the placeholder that gives you somewhere to tap.
+    private var editDescriptionRow: some View {
+        Button {
+            beginEditRename(.description)
+        } label: {
+            Text(editedDescription.isEmpty ? "Description" : editedDescription)
+                .font(.uiBody)
+                .foregroundStyle(editedDescription.isEmpty ? .tertiary : .secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(4)
+                .padding(.top, 3)
+                .padding(.horizontal, 32)
+        }
+        .buttonStyle(.plain)
     }
 
     /// Edit-mode cover: same crater plate, but the artwork is a PhotosPicker
@@ -1313,6 +1382,10 @@ struct AlbumDetailView: View {
                 album.name = folderInfo.name
                 album.canEdit = folderInfo.canEdit
                 album.isFolderOwner = folderInfo.ownedByMe ?? false
+                // The folder's own description field is the album blurb, so a
+                // collaborator's edit — made here or in Drive itself — arrives
+                // with the same refresh that picks up a rename.
+                album.albumDescription = folderInfo.description
             }
 
             let response = try await driveService.listAudioFiles(inFolder: album.googleFolderId)

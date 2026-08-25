@@ -124,6 +124,13 @@ Signing check (device builds): append
 - Unsupported audio formats convert via AVAssetExportSession/AVAssetReader in
   `AudioCacheService`; a hard failure surfaces through `playerService.failedTrack`
   (alert in `ContentView`). MIME allow-list in `Constants.audioMimeTypes`.
+- Text entry in a popup goes through `.prompt(...)` (`Views/PromptPopup.swift`),
+  **never `.alert` with a `TextField`** — alert buttons fire for a finger that
+  drags onto them, so selecting text and sliding out of the field hits Cancel.
+- Album blurbs are the **cloud folder's own `description` field** (Drive
+  `files.description`; Graph's, which is OneDrive-Personal-only and so fine on
+  the `/consumers` tenant), cached in `Album.albumDescription`. Not `.addit-data`
+  — the point is that it's the same text the provider's own UI shows.
 - Debug logging gated `#if DEBUG`, with filterable prefixes: **`[Q]`**
   (queue/playback decisions in `AudioPlayerService` — detailed enough to
   reconstruct the whole playback timeline) and **`[NP]`** (Now Playing artwork).

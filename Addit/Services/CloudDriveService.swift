@@ -38,6 +38,10 @@ protocol CloudDriveService {
     func findFile(named fileName: String, inFolder folderId: String) async throws -> DriveItem?
     func getFileMetadata(fileId: String) async throws -> DriveItem
     func renameFile(fileId: String, newName: String) async throws -> DriveItem
+    /// Writes the provider's own description field. An empty string clears
+    /// it. Album blurbs live here rather than in `.addit-data` so they are
+    /// the same text the folder shows in Drive's or OneDrive's own UI.
+    func setDescription(_ description: String, fileId: String) async throws
     func removeFileFromFolder(fileId: String, folderId: String) async throws
     func deleteFile(fileId: String) async throws
     func copyFile(fileId: String, toFolder folderId: String) async throws -> DriveItem

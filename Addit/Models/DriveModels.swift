@@ -14,6 +14,12 @@ struct DriveItem: Codable, Identifiable, Hashable {
     let capabilities: DriveCapabilities?
     let ownedByMe: Bool?
     let modifiedTime: String?
+    /// The provider's own description field. Drive exposes it on every file
+    /// (folders included) and only returns it when asked for by name; Graph
+    /// has it on `driveItem`, documented as OneDrive Personal only — which is
+    /// the only OneDrive this app talks to (`/consumers`). Albums use the
+    /// album folder's copy as their blurb.
+    let description: String?
 
     var isFolder: Bool {
         mimeType == "application/vnd.google-apps.folder"

@@ -350,6 +350,122 @@ struct LibraryView: View {
         }
     }
 
+    // MARK: - Add button
+
+    /// Diameter of the bottom "+" button — the toolbar's own button size,
+    /// measured off a screenshot rather than guessed at.
+    private static let addButtonDiameter: CGFloat = 44
+    /// Gap between the button and the mini player when both are on screen.
+    private static let addButtonGap: CGFloat = 8
+
+    /// Distance from the bottom safe area to the button's bottom edge.
+    ///
+    /// With nothing playing the button takes the mini player's place, centered
+    /// on the line the mini play/pause button sits on — `MiniLayout`'s row
+    /// center measured up from the card's bottom, plus the card's own inset
+    /// off the safe area. With a track playing it stands clear above the whole
+    /// pill instead. Both numbers are read from the pill rather than guessed,
+    /// so a change to its geometry moves this too.
+    private var addButtonBottomPadding: CGFloat {
+        if playerService.currentTrack != nil {
+            return NowPlayingPill.overlayHeight + Self.addButtonGap
+        }
+        return NowPlayingPill.miniPlayCenterFromBottom - Self.addButtonDiameter / 2
+    }
+
+    /// Bottom safe area the library reserves for what floats over it, so the
+    /// last row of covers rests above the furniture instead of under it.
+    private var bottomOverlayInset: CGFloat {
+        addButtonBottomPadding + Self.addButtonDiameter + Self.addButtonGap
+    }
+
+    /// A `Menu`, so one tap opens the same tree the toolbar glyph used to,
+    /// wearing the same glass as the rest of the toolbar — it left the bar,
+    /// not the bar's material.
+    private var addButton: some View {
+        Menu {
+            addMenuContent
+        } label: {
+            Image(systemName: "plus")
+                // Sized by the ink it lays down, not by the number: a symbol's
+                // point size is an em box, and a plus fills far less of one
+                // than a magnifying glass does. 25 here draws the same ~21pt
+                // of glyph the toolbar's search button draws, which is what
+                // "the same size" actually means to the eye.
+                .font(.ui(25, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: Self.addButtonDiameter, height: Self.addButtonDiameter)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .accessibilityLabel("Add album")
+    }
+
+    /// One tree for a cloud library, another for Local. Kept out of the button
+    /// so the button can move without dragging seventy lines of menu with it.
+    @ViewBuilder
+    private var addMenuContent: some View {
+        if currentSource.isCloud {
+            Button {
+                showAddAlbum = true
+            } label: {
+                Label("Add Existing", systemImage: "folder.badge.plus")
+            }
+            Button {
+                showCreateAlbum = true
+            } label: {
+                Label("Create New", systemImage: "plus.rectangle.on.folder")
+            }
+        } else {
+            Menu {
+                Button {
+                    // Create empty local album
+                    createEmptyLocalAlbum()
+                } label: {
+                    Label("Create Empty", systemImage: "rectangle.badge.plus")
+                }
+                // Every source in one submenu, for the same reason as
+                // "Copy from…": the cloud entry used to be whichever account
+                // was active, leaving the other one unreachable.
+                Menu {
+                    ForEach(connectedProviders) { provider in
+                        Button {
+                            addFromProvider = provider
+                        } label: {
+                            Text(provider.displayName)
+                        }
+                    }
+                    Button {
+                        showLocalImporter = true
+                    } label: {
+                        Text("iPhone")
+                    }
+                } label: {
+                    Label("Add Songs from…", systemImage: "square.and.arrow.down")
+                }
+            } label: {
+                Label("Create New", systemImage: "plus.rectangle.on.folder")
+            }
+            // A submenu, not a button: this used to copy from whichever cloud
+            // you happened to be in last, with no way to reach the other one.
+            // Hidden entirely with no accounts — someone using the app without
+            // signing in has no cloud to copy from, and an empty submenu reads
+            // as broken.
+            if !connectedProviders.isEmpty {
+                Menu {
+                    ForEach(connectedProviders) { provider in
+                        Button {
+                            copyFromProvider = provider
+                        } label: {
+                            Text(provider.displayName)
+                        }
+                    }
+                } label: {
+                    Label("Copy Albums from…", systemImage: "folder.badge.plus")
+                }
+            }
+        }
+    }
+
     private var searchBar: some View {
         HStack {
             Image(systemName: "magnifyingglass")
@@ -605,91 +721,18 @@ struct LibraryView: View {
                 }
             } else {
                 ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 16) {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                isSearchExpanded.toggle()
-                                if !isSearchExpanded {
-                                    searchText = ""
-                                    isSearchFocused = false
-                                } else {
-                                    isSearchFocused = true
-                                }
-                            }
-                        } label: {
-                            Image(systemName: isSearchExpanded ? "xmark" : "magnifyingglass")
-                        }
-                        if currentSource.isCloud {
-                            Menu {
-                                Button {
-                                    showAddAlbum = true
-                                } label: {
-                                    Label("Add Existing", systemImage: "folder.badge.plus")
-                                }
-                                Button {
-                                    showCreateAlbum = true
-                                } label: {
-                                    Label("Create New", systemImage: "plus.rectangle.on.folder")
-                                }
-                            } label: {
-                                Image(systemName: "plus")
-                            }
-                        } else {
-                            Menu {
-                                Menu {
-                                    Button {
-                                        // Create empty local album
-                                        createEmptyLocalAlbum()
-                                    } label: {
-                                        Label("Create Empty", systemImage: "rectangle.badge.plus")
-                                    }
-                                    // Every source in one submenu, for the same
-                                    // reason as "Copy from…": the cloud entry
-                                    // used to be whichever account was active,
-                                    // leaving the other one unreachable.
-                                    Menu {
-                                        ForEach(connectedProviders) { provider in
-                                            Button {
-                                                addFromProvider = provider
-                                            } label: {
-                                                Text(provider.displayName)
-                                            }
-                                        }
-                                        Button {
-                                            showLocalImporter = true
-                                        } label: {
-                                            Text("iPhone")
-                                        }
-                                    } label: {
-                                        Label("Add Songs from…", systemImage: "square.and.arrow.down")
-                                    }
-                                } label: {
-                                    Label("Create New", systemImage: "plus.rectangle.on.folder")
-                                }
-                                // A submenu, not a button: this used to copy
-                                // from whichever cloud you happened to be in
-                                // last, with no way to reach the other one.
-                                // Hidden entirely with no accounts — someone
-                                // using the app without signing in has no
-                                // cloud to copy from, and an empty submenu
-                                // reads as broken.
-                                if !connectedProviders.isEmpty {
-                                    Menu {
-                                        ForEach(connectedProviders) { provider in
-                                            Button {
-                                                copyFromProvider = provider
-                                            } label: {
-                                                Text(provider.displayName)
-                                            }
-                                        }
-                                    } label: {
-                                        Label("Copy Albums from…", systemImage: "folder.badge.plus")
-                                    }
-                                }
-                            } label: {
-                                Image(systemName: "plus")
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            isSearchExpanded.toggle()
+                            if !isSearchExpanded {
+                                searchText = ""
+                                isSearchFocused = false
+                            } else {
+                                isSearchFocused = true
                             }
                         }
+                    } label: {
+                        Image(systemName: isSearchExpanded ? "xmark" : "magnifyingglass")
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -875,12 +918,27 @@ struct LibraryView: View {
         .task(id: inUseAccountKey) {
             await refreshStorageQuotas()
         }
+        // The add button rides *inside* the reserved band rather than in an
+        // overlay over it. A `safeAreaInset`'s content is laid out with its
+        // bottom on the safe-area edge, which is the one thing
+        // `addButtonBottomPadding` is measured from — an overlay attached
+        // outside this modifier would be inset by the band as well and count
+        // the same distance twice.
         .safeAreaInset(edge: .bottom) {
-            if playerService.currentTrack != nil {
-                // Exactly the bar's height: the grid's 16pt bottom padding then
-                // puts the last row's artist line the same distance above the
-                // bar as it would sit above a cover in the row below.
-                Color.clear.frame(height: NowPlayingPill.overlayHeight)
+            ZStack(alignment: .bottom) {
+                // The reserve itself: the pill's height when it's there, plus
+                // the button's, so the last row of covers clears both instead
+                // of hiding under them.
+                Color.clear
+                    .frame(height: bottomOverlayInset)
+                    .allowsHitTesting(false)
+
+                // Arranging has its own Done/Cancel chrome and no use for a
+                // button that pushes new albums onto the list being reordered.
+                if !isArranging {
+                    addButton
+                        .padding(.bottom, addButtonBottomPadding)
+                }
             }
         }
     }

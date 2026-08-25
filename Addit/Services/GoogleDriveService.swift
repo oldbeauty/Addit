@@ -81,7 +81,7 @@ final class GoogleDriveService: CloudDriveService {
 
     func getFileMetadata(fileId: String) async throws -> DriveItem {
         let token = try await getToken()
-        let fields = "id,name,mimeType,size,parents,ownedByMe,modifiedTime,capabilities/canEdit,capabilities/canAddChildren"
+        let fields = "id,name,mimeType,size,parents,ownedByMe,modifiedTime,description,capabilities/canEdit,capabilities/canAddChildren"
         var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
         components.queryItems = [
             URLQueryItem(name: "fields", value: fields),
@@ -155,6 +155,27 @@ final class GoogleDriveService: CloudDriveService {
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(DriveItem.self, from: data)
+    }
+
+    /// Drive's `description` is a plain writable field on any file, folders
+    /// included — the same box the web UI's "Folder details" pane edits.
+    func setDescription(_ description: String, fileId: String) async throws {
+        let token = try await getToken()
+
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "id")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["description": description])
+
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
     }
 
     // MARK: - Ownership
