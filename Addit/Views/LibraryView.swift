@@ -720,6 +720,14 @@ struct LibraryView: View {
                     }
                 }
             } else {
+                // Background work — an album's offline download, or a transfer
+                // — keeps its ring here once you leave the album that started
+                // it. Before this the progress still existed on the services;
+                // it just had nowhere to draw, so leaving the page made a
+                // running download look like a stalled one.
+                ToolbarItem(placement: .primaryAction) {
+                    ActivityRing()
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         withAnimation(.easeInOut(duration: 0.25)) {

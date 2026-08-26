@@ -325,3 +325,54 @@ struct DownloadProgressRing: View {
     }
 }
 
+
+/// The toolbar's one indicator for background work: an album's offline
+/// download, or a transfer (duplicate / save to device).
+///
+/// It lives in both the library's toolbar and an album's, which is the point —
+/// progress for both kinds already outlives the screen that started it
+/// (`AudioCacheService.albumCacheProgress`, `TransferService.jobs`), but until
+/// there was somewhere else to draw it, leaving the album page made it vanish
+/// and the work looked like it had stopped.
+///
+/// `albumFolderId` scopes the download half to one album; `nil` — the library —
+/// counts every download in flight.
+struct ActivityRing: View {
+    var albumFolderId: String?
+
+    @Environment(AudioCacheService.self) private var cacheService
+    @Environment(TransferService.self) private var transfers
+
+    /// A transfer takes precedence: it's the one the user just started, and
+    /// it's the slower of the two by a wide margin.
+    private var fraction: Double? {
+        if let job = transfers.active, job.total > 0 {
+            return job.fraction
+        }
+        let runs: [AudioCacheService.AlbumCacheProgress]
+        if let albumFolderId {
+            runs = cacheService.albumCacheProgress[albumFolderId].map { [$0] } ?? []
+        } else {
+            runs = Array(cacheService.albumCacheProgress.values)
+        }
+        let total = runs.reduce(0) { $0 + $1.total }
+        guard total > 0 else { return nil }
+        let current = runs.reduce(0) { $0 + $1.current }
+        return Double(current) / Double(total)
+    }
+
+    var body: some View {
+        Group {
+            if let fraction {
+                Button {
+                    // A visual affordance for now; cancel/details would hang
+                    // off here.
+                } label: {
+                    DownloadProgressRing(progress: fraction)
+                }
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: fraction != nil)
+    }
+}

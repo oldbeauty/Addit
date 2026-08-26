@@ -263,8 +263,8 @@ final class MotionShine {
 ///
 /// In light mode it degrades to a plain sub-visible dark hairline (a bright
 /// specular on white reads as dirt, and covers don't melt into white).
-struct GlassRim: View {
-    var cornerRadius: CGFloat
+struct GlassRim<S: InsettableShape>: View {
+    var shape: S
     var lineWidth: CGFloat = 1
 
     @Environment(\.colorScheme) private var scheme
@@ -272,7 +272,6 @@ struct GlassRim: View {
     private let motion = MotionShine.shared
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if scheme == .dark {
             ZStack {
                 // Base hairline — the always-there thin border.
@@ -312,6 +311,16 @@ struct GlassRim: View {
     private var shineAngle: Angle {
         if reduceMotion { return .degrees(-90) }
         return .degrees(-90) + .radians(atan2(-motion.gravityX, -motion.gravityY))
+    }
+}
+
+extension GlassRim where S == RoundedRectangle {
+    /// The original spelling, for the rounded artwork it was written for.
+    init(cornerRadius: CGFloat, lineWidth: CGFloat = 1) {
+        self.init(
+            shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
+            lineWidth: lineWidth
+        )
     }
 }
 

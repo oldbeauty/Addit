@@ -277,7 +277,7 @@ extension AlbumDetailView {
     /// Laid out on the edit rows' grid: the plus glyph is centered in the
     /// same 24pt leading slot as the trash buttons, so the "Add disc
     /// marker" text starts exactly where the song titles do. Occupies
-    /// `playButtons`' exact vertical envelope (4 + 70pt socket + 1) so the
+    /// `playButtons`' exact vertical envelope (now the 56pt controls) so the
     /// tracklist below starts at the same level in both modes.
     private var editControlsRowContent: some View {
         HStack(spacing: 12) {
@@ -335,7 +335,7 @@ extension AlbumDetailView {
         // Edit rows' 8pt edge inset, so the 24pt slot sits on the
         // trash-button grid.
         .padding(.horizontal, 8)
-        .frame(height: 70)
+        .frame(height: AlbumDetailView.playControlSize)
         .padding(.top, 4)
         .padding(.bottom, 1)
     }
@@ -1112,8 +1112,13 @@ extension AlbumDetailView {
     }
 
     func saveToLocalLibrary() async {
-        guard !isSavingToLocal, !album.isLocal else { return }
-        await MainActor.run { isSavingToLocal = true }
+        guard !album.isLocal else { return }
+        // Waits its turn, then runs. The screen is free the whole time — see
+        // TransferService.
+        guard let jobId = await transfers.begin(
+            albumId: album.googleFolderId, albumName: album.name, kind: .saveToDevice
+        ) else { return }
+        defer { transfers.finish(jobId) }
 
         let fm = FileManager.default
         let localAlbumId = UUID().uuidString
@@ -1162,9 +1167,8 @@ extension AlbumDetailView {
 
         for (index, file) in allAudioFiles.enumerated() {
             do {
-                await MainActor.run {
-                    saveProgress = (current: index + 1, total: allAudioFiles.count, trackName: file.name)
-                }
+                transfers.update(jobId, current: index + 1,
+                                 total: allAudioFiles.count, detail: file.name)
                 let destURL = albumDir.appendingPathComponent(file.name)
                 let byteCount: Int64
 
@@ -1295,8 +1299,6 @@ extension AlbumDetailView {
         #endif
 
         await MainActor.run {
-            isSavingToLocal = false
-            saveProgress = (0, 0, "")
             // Switch to Local Library and navigate back
             storageSource = StorageSource.localStorage.rawValue
             dismiss()
@@ -1312,11 +1314,11 @@ extension AlbumDetailView {
     /// them. That covers all six directions — local→either cloud, either
     /// cloud→the other, and either cloud→itself (a copy into another folder).
     func duplicateAlbum(to provider: AccountProvider, parentId: String, markStarred: Bool) async {
-        guard !isSavingToDrive else { return }
-        await MainActor.run {
-            isSavingToDrive = true
-            uploadProgress = (0, 0, "")
-        }
+        guard let jobId = await transfers.begin(
+            albumId: album.googleFolderId, albumName: album.name,
+            kind: .duplicate(providerName: provider.displayName)
+        ) else { return }
+        defer { transfers.finish(jobId) }
 
         // The destination. Deliberately not the album-routed `driveService`
         // property (that's the *source*) and not `activeService` (the
@@ -1332,9 +1334,7 @@ extension AlbumDetailView {
 
         do {
             // 1. Create the destination folder in Drive
-            await MainActor.run {
-                uploadProgress = (current: 0, total: totalSteps, trackName: "Creating folder...")
-            }
+            transfers.update(jobId, current: 0, total: totalSteps, detail: "Creating folder...")
             let driveFolder = try await driveService.createFolder(name: album.name, inParent: parentId)
 
             // Star the new folder if the user picked the Starred tab
@@ -1343,9 +1343,7 @@ extension AlbumDetailView {
             }
 
             // 2. Upload .addit-data with tracklist + artist
-            await MainActor.run {
-                uploadProgress = (current: 1, total: totalSteps, trackName: ".addit-data")
-            }
+            transfers.update(jobId, current: 1, total: totalSteps, detail: ".addit-data")
             let tracklist: [String]
             if !album.cachedTracklist.isEmpty {
                 tracklist = album.cachedTracklist
@@ -1371,9 +1369,7 @@ extension AlbumDetailView {
                 coverData = try? await sourceService.downloadFileData(fileId: coverFileId)
             }
             if let coverData {
-                await MainActor.run {
-                    uploadProgress = (current: 2, total: totalSteps, trackName: "cover.jpg")
-                }
+                transfers.update(jobId, current: 2, total: totalSteps, detail: "cover.jpg")
                 uploadedCoverItem = try? await driveService.createFile(
                     name: "cover.jpg",
                     mimeType: "image/jpeg",
@@ -1394,9 +1390,7 @@ extension AlbumDetailView {
             var firstUploadError: Error?
 
             for (index, track) in localTracks.enumerated() {
-                await MainActor.run {
-                    uploadProgress = (current: 2 + index + 1, total: totalSteps, trackName: track.name)
-                }
+                    transfers.update(jobId, current: 2 + index + 1, total: totalSteps, detail: track.name)
                 // One bad track used to abandon the whole duplicate, discarding
                 // everything already uploaded and leaving a half-filled folder
                 // behind at the destination. Record the failure and keep going;
@@ -1513,8 +1507,6 @@ extension AlbumDetailView {
             #endif
 
             await MainActor.run {
-                isSavingToDrive = false
-                uploadProgress = (0, 0, "")
                 guard failedTrackNames.isEmpty else {
                     // Stay put and say what's missing. Dismissing here would
                     // tear down this view along with the alert explaining the
@@ -1548,8 +1540,6 @@ extension AlbumDetailView {
             print("[Duplicate] Failed: \(error)")
             #endif
             await MainActor.run {
-                isSavingToDrive = false
-                uploadProgress = (0, 0, "")
                 saveToDriveErrorTitle = "Upload Failed"
                 saveToDriveError = error.localizedDescription
             }

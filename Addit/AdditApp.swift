@@ -16,6 +16,7 @@ struct AdditApp: App {
     @State private var themeService = ThemeService()
     @State private var analyzerService = AudioAnalyzerService()
     @State private var shareLinks = ShareLinkService()
+    @State private var transfers = TransferService()
 
     init() {
         // Let a button inside a scroll view show its press state on touch-down.
@@ -83,6 +84,7 @@ struct AdditApp: App {
                 .environment(themeService)
                 .environment(analyzerService)
                 .environment(shareLinks)
+                .environment(transfers)
                 .onOpenURL { url in
                     // Album links and the Google OAuth callback arrive through
                     // the same door, so this has to be a branch rather than an

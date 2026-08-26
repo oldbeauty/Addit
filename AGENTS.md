@@ -114,6 +114,15 @@ Signing check (device builds): append
   could never see inside a restricted folder (or on OneDrive at all). The
   `?c=` Drive id and `/cover` only serve `og:image`, i.e. links someone *pastes*
   elsewhere; `/cover` sits outside the AASA's `/a/*` claim deliberately.
+- **Background work**: album transfers (duplicate / save-to-device) run through
+  `TransferService` — serial, because two uploads to one account fight for the
+  same rate limit. Progress for those *and* for offline downloads
+  (`AudioCacheService.albumCacheProgress`) lives on the service, not the view,
+  and both draw through one `ActivityRing` placed in **both** the library's and
+  an album's toolbar. That second placement is the whole point: the work always
+  outlived the screen (unstructured `Task`s), but the ring used to exist only in
+  the album's toolbar, so leaving made a running job look stopped. Export is
+  deliberately still modal — it ends in a share sheet.
 - **Navigation**: `ContentView` is the auth gate → `LibraryView` in a
   `NavigationStack`. `NowPlayingBar` mini-player overlays; `NowPlayingView` is a
   sheet. Accent color is scheme-aware (bridged into `ThemeService.currentScheme`).

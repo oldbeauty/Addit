@@ -20,6 +20,7 @@ struct AlbumDetailView: View {
         cloudRouter.service(for: album)
     }
     @Environment(AlbumArtService.self) var albumArtService
+    @Environment(TransferService.self) var transfers
     @Environment(ThemeService.self) var themeService
     @Environment(AudioCacheService.self) var cacheService
     @Environment(\.modelContext) var modelContext
@@ -42,8 +43,6 @@ struct AlbumDetailView: View {
     /// by `calculateAlbumDuration()` from cached / on-disk audio files. Used
     /// for both the album total and per-disc totals.
     @State private var trackDurations: [String: Double] = [:]
-    @State var isSavingToLocal = false
-    @State var saveProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     /// Destination provider for "Duplicate to…", which is also what presents
     /// the folder picker — the presentation's identity *is* the chosen cloud.
     @State var duplicateTarget: AccountProvider?
@@ -57,8 +56,6 @@ struct AlbumDetailView: View {
     /// Second step of "Duplicate to…" from the denial alert — an alert button
     /// can't open a submenu, so the destinations get their own dialog.
     @State var showDuplicateDestinations = false
-    @State var isSavingToDrive = false
-    @State var uploadProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State var saveToDriveError: String?
     /// A duplicate that partly succeeded isn't a failure — the copy exists and
     /// plays — so the alert heading has to be able to say something other than
@@ -178,12 +175,9 @@ struct AlbumDetailView: View {
 
     /// Album header: cover art, title, artist, play buttons. Extracted
     /// from the List body for type-checker budget (see `trackRowCell`).
-    // MARK: - Album cover (Teenage-Engineering-style debossed crater)
+    // MARK: - Album cover
 
-    /// Corner radii + how far the recessed plate extends past the cover.
     private var coverCorner: CGFloat { 12 }
-    private var plateCorner: CGFloat { 28 }
-    private var craterInset: CGFloat { 22 }
 
     /// The tappable artwork itself (pixel-sort interaction preserved),
     /// clipped to its rounded rect. No shadows here — the mount adds those.
@@ -217,70 +211,27 @@ struct AlbumDetailView: View {
             .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
     }
 
-    /// The cover extruded above a debossed "crater" plate. The plate is a
-    /// rounded panel carved into the surface via inner shadows (dark at the
-    /// top-inner lip, faint light at the bottom lip — reads as concave under
-    /// top-down light); the cover floats above it with a soft ambient
-    /// shadow, a tight contact shadow, and a top rim highlight so its edge
-    /// catches light like a raised physical part. Hard, precise, tactile —
-    /// the OP-1 faceplate feel.
-    /// The recessed plate alone — shared by the normal cover mount and the
-    /// edit-mode cover (which swaps the artwork for a PhotosPicker).
-    private var craterPlate: some View {
-        let plateSize = coverSize + craterInset * 2
-        return RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
-            .fill(
-                Color(uiColor: .secondarySystemBackground)
-                    .shadow(.inner(color: .black.opacity(0.6), radius: 7, x: 0, y: 4))
-                    .shadow(.inner(color: .white.opacity(0.05), radius: 2, x: 0, y: -2))
-            )
-            .frame(width: plateSize, height: plateSize)
-            .overlay {
-                // Carved-lip edge: bright at the top, dark at the bottom.
-                RoundedRectangle(cornerRadius: plateCorner, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-            }
-    }
-
-    private var craterCover: some View {
-        ZStack {
-            craterPlate
-
-            coverArtwork
-                .shadow(color: .black.opacity(0.55), radius: 16, x: 0, y: 12)
-                .shadow(color: .black.opacity(0.40), radius: 4, x: 0, y: 3)
-                .overlay {
-                    // Top rim highlight on the raised part's edge.
-                    RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.18), .clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.5
-                        )
-                }
-        }
+    /// The cover, flat.
+    ///
+    /// It used to be a raised part in a debossed "crater" plate — inner
+    /// shadows carving a well, a drop shadow and contact shadow lifting the
+    /// artwork out of it, a rim highlight on the top edge. All of it is gone;
+    /// the artwork is just the artwork. That also hands the header back the
+    /// 44pt the plate's surround was occupying.
+    private var albumCover: some View {
+        coverArtwork
     }
 
     private var headerSection: some View {
         Section {
             VStack(spacing: 16) {
                 if isEditing {
-                    editableCraterCover
+                    editableAlbumCover
                     editTitleBlock
                     editControlsRow
                     editDescriptionRow
                 } else {
-                    craterCover
+                    albumCover
                     titleBlock
                     playButtons
                     descriptionBlock
@@ -340,15 +291,30 @@ struct AlbumDetailView: View {
         }
     }
 
+    /// Play and shuffle, as bare glyphs.
+    ///
+    /// They used to be `TactileButtonStyle` caps seated in debossed sockets,
+    /// matching the album cover's crater. That treatment is gone, so these are
+    /// the icons and nothing else — except a `GlassRim` around play, the same
+    /// tilt-tracking hairline the library covers wear, which marks it as the
+    /// primary action without putting a plate back under it.
+    ///
+    /// The 56pt frames are load-bearing beyond the tap target: edit mode sizes
+    /// its own controls row to `playButtons`' height so the tracklist starts at
+    /// the same place in both modes.
     var playButtons: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 24) {
             Button {
                 playerService.playAlbum(album)
             } label: {
                 Image(systemName: "play.fill")
+                    .font(.ui(20, weight: .semibold))
                     .foregroundStyle(.primary)
+                    .frame(width: Self.playControlSize, height: Self.playControlSize)
+                    .overlay { GlassRim(shape: Circle()) }
+                    .contentShape(Circle())
             }
-            .buttonStyle(TactileButtonStyle())
+            .buttonStyle(ImprintButtonStyle())
 
             Button {
                 if isThisAlbumPlaying {
@@ -357,19 +323,35 @@ struct AlbumDetailView: View {
                     playerService.playAlbum(album, shuffled: true)
                 }
             } label: {
+                // On/off needs two signals, not one. Tinting the glyph alone
+                // failed because the accent is a pale cyan and the off state
+                // was `.primary` — two light colours a shade apart, which is
+                // no signal at all. Off is now dimmed, and on adds a dot.
                 Image(systemName: "shuffle")
-                    .foregroundStyle(shuffleEngaged ? themeService.accentColor.legibleForeground : .primary)
+                    .font(.ui(20, weight: .semibold))
+                    .foregroundStyle(shuffleEngaged ? themeService.accentColor : .secondary)
+                    .frame(width: Self.playControlSize, height: Self.playControlSize)
+                    .overlay(alignment: .bottom) {
+                        // The running-state idiom: a dot under the thing that
+                        // is on. Sized and placed to sit clear of the glyph
+                        // without needing a plate to sit on.
+                        Circle()
+                            .fill(themeService.accentColor)
+                            .frame(width: 5, height: 5)
+                            .padding(.bottom, 11)
+                            .opacity(shuffleEngaged ? 1 : 0)
+                    }
+                    .contentShape(Circle())
             }
-            .buttonStyle(TactileButtonStyle(engaged: shuffleEngaged ? themeService.accentColor : nil))
+            .buttonStyle(ImprintButtonStyle())
+            .animation(.easeInOut(duration: 0.18), value: shuffleEngaged)
         }
         .padding(.top, 4)
-        // The artist→buttons gap is 20pt (16 VStack spacing + 4 top pad).
-        // Below the buttons, the header VStack's bottom pad (8) + the first
-        // row's inset (3) + row padding (8) already total 19 with section
-        // spacing zeroed, so 1pt here makes the tracklist sit exactly 20pt
-        // away too — buttons dead-center between artist and first track.
         .padding(.bottom, 1)
     }
+
+    /// Side of the play/shuffle hit targets, and the ring's diameter.
+    static let playControlSize: CGFloat = 56
 
     /// Edit-mode title/artist: tap to open the rename popup, like the sheet.
     /// Flat text — no engraving, no pencil — with the same fonts and line
@@ -416,19 +398,15 @@ struct AlbumDetailView: View {
         .buttonStyle(.plain)
     }
 
-    /// Edit-mode cover: same crater plate, but the artwork is a PhotosPicker
-    /// with the sheet's dashed "tap to replace" ring. The pixel-sort tap
-    /// interaction is swapped out so the tap goes to the picker.
-    private var editableCraterCover: some View {
-        ZStack {
-            craterPlate
-
-            PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
-                editCoverArtwork
-            }
-            .buttonStyle(.plain)
-            .disabled(isUploadingCover)
+    /// Edit-mode cover: the artwork is a PhotosPicker with the sheet's dashed
+    /// "tap to replace" ring. The pixel-sort tap interaction is swapped out so
+    /// the tap goes to the picker.
+    private var editableAlbumCover: some View {
+        PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
+            editCoverArtwork
         }
+        .buttonStyle(.plain)
+        .disabled(isUploadingCover)
         .onChange(of: selectedCoverPhoto) { _, newValue in
             guard let newValue else { return }
             Task {
@@ -948,29 +926,13 @@ struct AlbumDetailView: View {
                     }
                 }
             } else {
-                // Album-download progress indicator. Visible only while a
-                // "Make Available Offline" run is in flight — appears the
-                // moment `saveProgress.total` becomes non-zero and disappears
-                // again when the download finishes (the existing flow resets
-                // `saveProgress` to `(0, 0, "")`). Placed before the ellipsis
-                // so it renders to the left of it in the trailing toolbar
-                // group.
+                // One ring for every kind of background work: this album's
+                // offline download, and any album transfer. Placed before the
+                // ellipsis so it renders to its left in the trailing group.
+                // The same ring appears in the library's toolbar, which is
+                // what makes it survive leaving this screen.
                 ToolbarItem(placement: .primaryAction) {
-                    if let progress = cacheService.albumCacheProgress[album.googleFolderId],
-                       progress.total > 0 {
-                        Button {
-                            // Intentionally a no-op for now — the button is
-                            // here as a visual progress affordance. Hooking
-                            // it up to "cancel download" / "show details"
-                            // is a one-line change later.
-                        } label: {
-                            DownloadProgressRing(
-                                progress: Double(progress.current) /
-                                    Double(max(progress.total, 1))
-                            )
-                        }
-                        .transition(.scale.combined(with: .opacity))
-                    }
+                    ActivityRing(albumFolderId: album.googleFolderId)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -979,26 +941,6 @@ struct AlbumDetailView: View {
                         Label("More", systemImage: "ellipsis")
                     }
                 }
-            }
-        }
-        .animation(.easeInOut(duration: 0.25),
-                   value: cacheService.albumCacheProgress[album.googleFolderId] != nil)
-        .overlay {
-            if isSavingToLocal {
-                progressCardOverlay(
-                    progress: saveProgress,
-                    countPrefix: "Track",
-                    fallback: "Saving..."
-                )
-            }
-        }
-        .overlay {
-            if isSavingToDrive {
-                progressCardOverlay(
-                    progress: uploadProgress,
-                    countPrefix: "Uploading",
-                    fallback: "Uploading..."
-                )
             }
         }
         // Album export stages every track (downloading the uncached ones)
