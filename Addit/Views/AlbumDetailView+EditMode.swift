@@ -126,7 +126,7 @@ extension AlbumDetailView {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 8)
-        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowInsets(EdgeInsets(top: 3, leading: AlbumDetailView.trackRowLeadingInset, bottom: 3, trailing: AlbumDetailView.trackRowTrailingInset))
         .listRowBackground(Color.clear)
     }
 
@@ -164,7 +164,7 @@ extension AlbumDetailView {
             removeDiscMarkerButton(for: item)
         }
         .padding(.vertical, 4)
-        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowInsets(EdgeInsets(top: 3, leading: AlbumDetailView.trackRowLeadingInset, bottom: 3, trailing: AlbumDetailView.trackRowTrailingInset))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
     }

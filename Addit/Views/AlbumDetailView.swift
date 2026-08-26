@@ -66,6 +66,9 @@ struct AlbumDetailView: View {
     /// with the view, which is the right scope — it's a reading state, not a
     /// preference.
     @State private var isDescriptionExpanded = false
+    /// True only while a pull has actually triggered a sync. Gates the
+    /// pull-to-refresh indicator.
+    @State private var isRefreshing = false
 
     // MARK: Inline edit mode state (behavior inherited from the old AlbumMetadataEditorSheet)
 
@@ -118,7 +121,68 @@ struct AlbumDetailView: View {
         }
     }
 
-    private let coverSize: CGFloat = 256
+    /// Leading inset every track row carries, and the header text with them.
+    ///
+    /// It is the corner radius on purpose. The cover fills the row edge to
+    /// edge, so a title ranged against the row's own edge would sit beside a
+    /// curve already turning away and read as misaligned. Inset the text by
+    /// exactly the radius and it lands on the tangent — where the rounding
+    /// finishes and the straight edge starts, which is the line the eye
+    /// follows down the page. Keeping the tracklist on the same number is
+    /// what keeps the title, the artist and the track numbers on one edge.
+    static let rowLeadingInset: CGFloat = 12
+
+    /// Distance from the side of the screen to the tracklist's container.
+    ///
+    /// Ours, not the system's. This List used to be inset-grouped, which
+    /// brought two problems that only appeared once the cover spanned the
+    /// full row: the section's rounded container clipped the cover's top
+    /// corners (they read rounder and flatter than the bottom two), and its
+    /// ~45pt top content margin held the cover far down the screen. Both
+    /// were being fought with compensating hacks — clearance padding to
+    /// dodge the corner arc, a negative content margin to claw the position
+    /// back — and the negative margin is what started the cover blinking on
+    /// a short pull, since it puts the header row's top outside the scroll
+    /// view's bounds where the List is free to recycle it.
+    ///
+    /// A plain List has no section container, so there is no arc to dodge
+    /// and no margin to cancel. The 16pt is simply matched to what the
+    /// grouped style was drawing, so nothing moved sideways.
+    private static let listSideMargin: CGFloat = 16
+
+    /// Screen edge to the tracklist's left edge: the side margin, plus the
+    /// inset that lands text on the cover's tangent.
+    static var trackRowLeadingInset: CGFloat { listSideMargin + rowLeadingInset }
+
+    /// Screen edge to the tracklist's right edge.
+    static var trackRowTrailingInset: CGFloat { listSideMargin + 8 }
+
+    /// Gap between edit mode's dashed border and the artwork inside it.
+    private static let editCoverBorderInset: CGFloat = 4
+
+    /// How far the toolbar buttons sit in from the side of the screen.
+    /// Measured off a screenshot: the back button's left edge is 16pt in.
+    private static let toolbarButtonScreenInset: CGFloat = 16
+
+    /// How far the toolbar buttons' bottom edge sits above the line where
+    /// List content starts — the navigation bar's bottom, i.e. the top of
+    /// the safe area. The glass buttons measure ~37pt tall centred in a
+    /// 44pt bar, so a little under 4pt of bar shows beneath them. Measured
+    /// off the same screenshot.
+    private static let toolbarButtonBottomToContentTop: CGFloat = 3.5
+
+    /// Gap from the start of the List's content down to the top of the
+    /// cover, chosen so the cover clears the toolbar buttons by exactly the
+    /// distance those buttons clear the side of the screen. One rhythm: the
+    /// space around the buttons is the same in both directions.
+    private static var coverTopGap: CGFloat {
+        toolbarButtonScreenInset - toolbarButtonBottomToContentTop
+    }
+
+    /// Only reached if there is no window to ask, which shouldn't happen
+    /// on screen — the size the cover was fixed at for most of its life.
+    private static let fallbackCoverSize: CGFloat = 256
+
 
     var sortedTracks: [Track] {
         album.tracks.sorted { $0.trackNumber < $1.trackNumber }
@@ -179,36 +243,88 @@ struct AlbumDetailView: View {
 
     private var coverCorner: CGFloat { 12 }
 
+    /// The square the cover occupies: as wide as the row it sits in, with
+    /// that side length handed to `content`.
+    ///
+    /// **Both covers go through here, and nothing may be added outside it.**
+    /// The width is measured off the header stack, and this box lives inside
+    /// that same stack, so anything that makes the cover's footprint exceed
+    /// the measurement makes the stack grow, which reports a larger width,
+    /// which grows the cover again — an unbounded loop that hangs the screen
+    /// on push. That happened twice: once on a deliberate 4pt overhang, and
+    /// once on the `.padding(4)` edit mode's dashed border had been wearing
+    /// all along, harmless back when the cover was a fixed 256.
+    ///
+    /// The fixed frame here is the outermost modifier for exactly that
+    /// reason. Padding, borders and overlays added *inside* `content` shrink
+    /// what they wrap and can never enlarge the box, so the loop is closed
+    /// off by construction rather than by remembering not to trip it. The
+    /// rule that remains is a one-liner: decorate inside the closure, never
+    /// on the value this returns.
+    ///
+    /// `content` receives the side length because `PixelSortCoverView` needs
+    /// a concrete number to build its pixel grid from.
+    private func coverBox<Content: View>(
+        @ViewBuilder content: @escaping (CGFloat) -> Content
+    ) -> some View {
+        let side = coverSize
+        return content(side)
+            .frame(width: side, height: side)
+    }
+
+    /// The window's width, read rather than measured.
+    ///
+    /// Measuring meant `@State`, and a `@State` width is only ever as steady
+    /// as the values the layout system happens to report: a List re-creating
+    /// the header row mid-pull reported a width that wasn't the settled one,
+    /// the cover resized for a frame, and that read as the artwork blinking.
+    /// Filtering those transients was guesswork about which readings to
+    /// distrust. This value doesn't move except on rotation, which
+    /// re-renders anyway.
+    private var windowWidth: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.keyWindow?.bounds.width ?? Self.fallbackCoverSize
+    }
+
+    /// The cover spans the tracklist exactly, edge to edge.
+    private var coverSize: CGFloat {
+        windowWidth - 2 * Self.listSideMargin
+    }
+
+    /// The gradient that shows through wherever there's no artwork yet.
+    private var coverPlaceholderFill: LinearGradient {
+        LinearGradient(
+            colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
     /// The tappable artwork itself (pixel-sort interaction preserved),
     /// clipped to its rounded rect. No shadows here — the mount adds those.
-    @ViewBuilder
     private var coverArtwork: some View {
-        RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .frame(width: coverSize, height: coverSize)
-            .overlay {
-                if let albumImage {
-                    // Tap to kick off a luminance-based pixel-sort
-                    // animation; tap again at the sorted state to replay
-                    // the log in reverse back to the original.
-                    PixelSortCoverView(
-                        image: albumImage,
-                        size: coverSize,
-                        cornerRadius: coverCorner
-                    )
-                } else {
-                    Image(systemName: "music.note")
-                        .font(.ui(48))
-                        .foregroundStyle(.white.opacity(0.8))
+        coverBox { side in
+            RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                .fill(coverPlaceholderFill)
+                .overlay {
+                    if let albumImage {
+                        // Tap to kick off a luminance-based pixel-sort
+                        // animation; tap again at the sorted state to replay
+                        // the log in reverse back to the original.
+                        PixelSortCoverView(
+                            image: albumImage,
+                            size: side,
+                            cornerRadius: coverCorner
+                        )
+                    } else {
+                        Image(systemName: "music.note")
+                            .font(.ui(48))
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
                 }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+        }
     }
 
     /// The cover, flat.
@@ -238,23 +354,39 @@ struct AlbumDetailView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.horizontal, Self.listSideMargin)
+            .padding(.top, Self.coverTopGap)
+            .padding(.bottom, 8)
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets())
+            // Plain draws a separator on every row, so the header arrived
+            // with a rule above the cover and another between the transport
+            // buttons and the first track. The tracklist owns the rules.
+            .listRowSeparator(.hidden)
         }
     }
 
+    /// Title and artist, ranged left off the same edge as the track numbers.
+    ///
+    /// The header row carries zero `listRowInsets` while every track row is
+    /// inset by `rowLeadingInset`, so that same constant is what puts
+    /// these two on the
+    /// tracklist's own left edge rather than the List's. The cover above
+    /// stays centered — it's a fixed 256pt square and centering is its own
+    /// decision, not one this block inherits.
     private var titleBlock: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(album.name)
                 .font(.uiTitle2.weight(.semibold))
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(.leading)
                 .lineLimit(2)
 
             Text(album.artistName ?? "Unknown Artist")
                 .font(.uiSubheadline)
                 .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.rowLeadingInset)
     }
 
     /// The blurb, below the transport buttons.
@@ -357,14 +489,16 @@ struct AlbumDetailView: View {
     /// Flat text — no engraving, no pencil — with the same fonts and line
     /// limits as `titleBlock` so both header variants measure identically.
     private var editTitleBlock: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             Button {
                 beginEditRename(.title)
             } label: {
                 Text(editedTitle)
-                    .font(.uiTitle2.bold())
+                    // Same weight as `titleBlock`. `.bold()` was one step
+                    // heavier, so the title thickened on entering edit mode.
+                    .font(.uiTitle2.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineLimit(2)
             }
             .buttonStyle(.plain)
@@ -378,6 +512,8 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(.plain)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.rowLeadingInset)
     }
 
     /// Edit-mode counterpart of `descriptionBlock`, under the row that stands
@@ -445,41 +581,45 @@ struct AlbumDetailView: View {
         }
     }
 
+    /// Edit mode's cover: the same square, with the artwork inset inside a
+    /// dashed border rather than the border hung outside the artwork.
+    ///
+    /// That inversion matters. The border used to be an `.overlay` on a
+    /// `.padding(4)`, which made this variant 8pt wider than the read-only
+    /// one — invisible while both were a fixed 256, and a hung screen once
+    /// the cover started deriving its width from the row. Insetting the
+    /// artwork instead keeps the two headers exactly the same size, which
+    /// is what `editTitleBlock` has always claimed about the text and is
+    /// now true of the cover too: entering edit mode moves nothing.
     private var editCoverArtwork: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: coverSize, height: coverSize)
-                .overlay {
-                    if let albumImage {
-                        Image(uiImage: albumImage)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Image(systemName: "music.note")
-                            .font(.ui(48))
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
-                .padding(4)
-                .overlay {
-                    RoundedRectangle(cornerRadius: coverCorner + 2, style: .continuous)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-                        .foregroundStyle(.secondary.opacity(0.6))
-                }
-
-            if isUploadingCover {
+        coverBox { side in
+            ZStack {
                 RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .frame(width: coverSize, height: coverSize)
-                LoadingIndicator()
+                    .fill(coverPlaceholderFill)
+                    .overlay {
+                        if let albumImage {
+                            Image(uiImage: albumImage)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "music.note")
+                                .font(.ui(48))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+                    .padding(Self.editCoverBorderInset)
+
+                RoundedRectangle(cornerRadius: coverCorner + 2, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                    .foregroundStyle(.secondary.opacity(0.6))
+
+                if isUploadingCover {
+                    RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .padding(Self.editCoverBorderInset)
+                    LoadingIndicator()
+                }
             }
         }
     }
@@ -498,7 +638,7 @@ struct AlbumDetailView: View {
                         label: label,
                         duration: discSeconds > 0 ? formatDuration(discSeconds) : nil
                     )
-                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                    .listRowInsets(EdgeInsets(top: 3, leading: Self.trackRowLeadingInset, bottom: 3, trailing: Self.trackRowTrailingInset))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
@@ -519,7 +659,7 @@ struct AlbumDetailView: View {
                 // `ellipsis` glyph is ≈18pt wide, centered in 32).
                 // This aligns the duration text's right edge with
                 // the visible right edge of each row's ellipsis.
-                .listRowInsets(EdgeInsets(top: 12, leading: 8, bottom: 8, trailing: 15))
+                .listRowInsets(EdgeInsets(top: 12, leading: Self.trackRowLeadingInset, bottom: 8, trailing: Self.listSideMargin + 15))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             }
@@ -661,7 +801,7 @@ struct AlbumDetailView: View {
                 offerShareLink(track: track)
             }
         )
-        .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+        .listRowInsets(EdgeInsets(top: 3, leading: Self.trackRowLeadingInset, bottom: 3, trailing: Self.trackRowTrailingInset))
         .listRowBackground(Color.clear)
         .contentShape(Rectangle())
         .onTapGesture {
@@ -880,6 +1020,7 @@ struct AlbumDetailView: View {
                         Spacer()
                     }
                     .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             } else {
                 headerSection
@@ -894,13 +1035,18 @@ struct AlbumDetailView: View {
                         Label(syncError, systemImage: "exclamationmark.triangle")
                             .font(.uiCaption)
                             .foregroundStyle(.secondary)
+                            .listRowSeparator(.hidden)
                     }
                 }
             }
         }
         .appBackground()
         .staticTopFade()
+        .listStyle(.plain)
         .listSectionSpacing(0)
+        // Plain has no default top margin to cancel, so the header's own
+        // top padding is the whole gap and nothing needs pulling upward.
+        .contentMargins(.top, 0, for: .scrollContent)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -1120,9 +1266,15 @@ struct AlbumDetailView: View {
             // A pull-to-refresh mid-edit would clobber the working copy
             // with a fresh sync — ignored until the user saves or cancels.
             if !isEditing {
+                // This closure runs for exactly the length of a real
+                // refresh, which is what the indicator is gated on — a
+                // short pull never enters it, so nothing is drawn.
+                isRefreshing = true
+                defer { isRefreshing = false }
                 await syncFromDrive()
             }
         }
+        .additRefreshIndicator(tint: themeService.accentColor, isRefreshing: isRefreshing)
         .onAppear {
             // Everything this page can know without the network, resolved
             // before the first frame is drawn: the cover, the running order,

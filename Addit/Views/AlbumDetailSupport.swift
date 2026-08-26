@@ -19,15 +19,22 @@ struct TrackRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // Ranged left, not centered. Centering meant the column had no
+            // fixed left edge — a single digit sat ~9pt right of the row's
+            // own, and a double digit somewhere between — so nothing above
+            // could line up with "the track numbers". Leading-aligning both
+            // the readout and the meter gives the column one edge, which is
+            // the edge the album title is ranged off. The 24pt width is
+            // unchanged, so no track name moves.
             if isCurrentTrack {
                 PixelEQGrid(isPlaying: isPlaying)
-                    .frame(width: 24)
+                    .frame(width: 24, alignment: .leading)
             } else {
                 // Display layer (Phosphor): track numbers are readouts.
                 Text("\(number)")
                     .font(.readout(11))
                     .foregroundStyle(track.isHidden ? Phosphor.ghost : Phosphor.dim)
-                    .frame(width: 24)
+                    .frame(width: 24, alignment: .leading)
             }
 
             VStack(alignment: .leading, spacing: 2) {

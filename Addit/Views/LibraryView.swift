@@ -392,7 +392,12 @@ struct LibraryView: View {
                 // than a magnifying glass does. 25 here draws the same ~21pt
                 // of glyph the toolbar's search button draws, which is what
                 // "the same size" actually means to the eye.
-                .font(.ui(25, weight: .semibold))
+                //
+                // Weight stays at the default the toolbar glyphs use. The size
+                // is doing the matching already; a semibold on top of it was
+                // the only heavy stroke in the library and read as a different
+                // icon set from the search and account marks beside it.
+                .font(.ui(25))
                 .foregroundStyle(.primary)
                 .frame(width: Self.addButtonDiameter, height: Self.addButtonDiameter)
                 .glassEffect(.regular.interactive(), in: .circle)
