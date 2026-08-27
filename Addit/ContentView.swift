@@ -66,6 +66,23 @@ struct ContentView: View {
                 SignInView()
             }
         }
+        // Both link overlays are attached *above* `.tint` and the font
+        // default, not below them. A modifier only reaches what it wraps, and
+        // an overlay added after `.tint` is outside it — which is how the
+        // spinner in these two ended up drawing in the system's blue instead
+        // of the theme accent it takes from the environment.
+        .overlay {
+            if shareLinks.isImporting {
+                sharedAlbumProgress
+            }
+        }
+        // Outgoing links, from every button that isn't inside a sheet — see
+        // `ShareLinkService.isPreparingLink` for why it isn't the caller's job.
+        .overlay {
+            if shareLinks.isPreparingLink {
+                PreparingLinkOverlay()
+            }
+        }
         .tint(themeService.accentColor)
         // Default UI font for any text without an explicit .font() — routes
         // through the same appFamily knob as the ui* tokens (Phosphor.swift).
@@ -80,11 +97,6 @@ struct ContentView: View {
         .onAppear { themeService.currentScheme = colorScheme }
         .onChange(of: colorScheme) { _, newValue in
             themeService.currentScheme = newValue
-        }
-        .overlay {
-            if shareLinks.isImporting {
-                sharedAlbumProgress
-            }
         }
         // Keyed on the account as well as the request: a link tapped while
         // signed out is held rather than failed, and signing in is what makes

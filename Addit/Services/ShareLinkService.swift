@@ -24,6 +24,21 @@ final class ShareLinkService {
     /// True while the album is being fetched and written.
     var isImporting = false
 
+    /// True while an *outgoing* link is being prepared — the folder's
+    /// permissions, then the page's own metadata.
+    ///
+    /// The only outbound state here, and it lives on the service for a reason
+    /// the inbound half doesn't have: an overlay driven by a view's own
+    /// `@State` can only be drawn inside that view's bounds, and one of the
+    /// share buttons belongs to the mini player, which is a bar. There the
+    /// "Preparing link…" panel had nowhere to appear and the button read as
+    /// dead for both round trips. `ContentView` draws it now, so it covers the
+    /// window whichever button was pressed.
+    ///
+    /// `AccessSheet` is the exception and keeps a local flag: nothing
+    /// `ContentView` draws can appear above a presented sheet.
+    var isPreparingLink = false
+
     /// Set for anything the user needs to read — no access, wrong account,
     /// dead folder. Presented as an alert and cleared by dismissing it.
     var failure: String?

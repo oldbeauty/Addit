@@ -276,9 +276,11 @@ extension AlbumDetailView {
 
     /// Laid out on the edit rows' grid: the plus glyph is centered in the
     /// same 24pt leading slot as the trash buttons, so the "Add disc
-    /// marker" text starts exactly where the song titles do. Occupies
-    /// `playButtons`' exact vertical envelope (now the 56pt controls) so the
-    /// tracklist below starts at the same level in both modes.
+    /// marker" text starts exactly where the song titles do. It keeps the
+    /// 56pt band that `playButtons` used to occupy on its own row; view mode
+    /// no longer has that band, since play and shuffle moved up onto the
+    /// title's line, so edit mode's tracklist now starts lower than view
+    /// mode's. These controls have no title line to ride along on.
     private var editControlsRowContent: some View {
         HStack(spacing: 12) {
             if !editItems.isEmpty {

@@ -28,6 +28,10 @@ struct AccessSheet: View {
     @State private var coverImage: UIImage?
     @State private var linkShareItem: AlbumLinkShareItem?
     @State private var restrictedShareItem: AlbumLinkShareItem?
+    /// Local on purpose, where every other Share Link button drives
+    /// `ShareLinkService.isPreparingLink` instead: this is a sheet, and
+    /// nothing `ContentView` draws can appear above one. The overlay has to
+    /// belong to the presented view itself.
     @State private var isPreparingShare = false
 
     private var canEdit: Bool { album.canEdit }

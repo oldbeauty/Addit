@@ -3,22 +3,26 @@ import SwiftUI
 import UIKit
 
 /// An album or song link, handed to the share sheet with a preview card that
-/// has both the artist line *and* the cover already on this device.
+/// has both the page's own billing *and* the cover already on this device.
 ///
 /// Getting both took three attempts, so the reasoning is worth keeping.
 ///
-/// The artist line is not something an app can set: `LPLinkMetadata` exposes a
-/// `title` and no subtitle. It appears because Apple, when it *fetches* a page,
-/// follows `music:musician` and renders that page's `<title>` underneath. So a
-/// hand-built `LPLinkMetadata` can never have one — supplying it replaces the
-/// fetched card wholesale and silently costs the artist.
+/// What the card says is not something an app can set: `LPLinkMetadata` exposes
+/// a `title` and no subtitle. A song's artist line appears because Apple, when
+/// it *fetches* a page, follows `music:musician` and renders that page's
+/// `<title>` underneath. An album's page can't use that — `music:musician` only
+/// works under `og:type` `music.song`, and iMessage then presents the album as
+/// a track — so it writes "<name> - Album by <artist>" into `og:title` and
+/// takes the plain card. Either way the wording lives on the page, and a
+/// hand-built `LPLinkMetadata` replaces the fetched card wholesale, silently
+/// costing it.
 ///
 /// The cover has the opposite problem. `og:image` is read by an
 /// unauthenticated fetcher, so art inside a restricted Drive folder is
 /// invisible to it, and OneDrive has no anonymous thumbnail at all.
 ///
 /// The resolution is to do both: fetch the metadata so Apple resolves the
-/// artist, then replace only its `imageProvider` with the cover already in
+/// wording, then replace only its `imageProvider` with the cover already in
 /// memory. Verified rendering in a real `LPLinkView` against a page serving no
 /// `og:image` whatsoever — cover, title, artist, domain, all four.
 final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
@@ -79,14 +83,10 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
 
     /// Just the name.
     ///
-    /// `LPLinkMetadata` has a `title` and nothing else — no subtitle — and the
-    /// small grey line Messages draws beneath it is the URL's *domain*, which
-    /// no app can replace. So there is exactly one line to write here, and
-    /// folding the artist into it with a dash only produced a long single line
-    /// in title font, which is not the two-line card it was imitating.
-    ///
-    /// The artist still travels: the page's `og:description` carries it, which
-    /// is what Slack, Discord and the web card render underneath the title.
+    /// This is the Mail subject, not the card — the card's title comes from the
+    /// page, and Messages draws the URL's *domain* under it, which no app can
+    /// replace. A subject line wants the plain name, so neither of these folds
+    /// in the artist even though an album's `og:title` does.
     static func caption(for track: Track, in album: Album) -> String {
         track.displayName
     }
@@ -147,7 +147,7 @@ enum ShareAccess {
 /// Shown while a share link is being prepared.
 ///
 /// Preparing one is two round trips — the folder's permissions, then the page's
-/// own metadata (which is what resolves the artist line) — so there is a real
+/// own metadata (which is what resolves the card's wording) — so there is a real
 /// gap between the tap and the share sheet. Without this the button looks dead
 /// and people tap it again.
 struct PreparingLinkOverlay: View {

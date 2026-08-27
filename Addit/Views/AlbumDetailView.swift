@@ -23,6 +23,7 @@ struct AlbumDetailView: View {
     @Environment(TransferService.self) var transfers
     @Environment(ThemeService.self) var themeService
     @Environment(AudioCacheService.self) var cacheService
+    @Environment(ShareLinkService.self) private var shareLinks
     @Environment(\.modelContext) var modelContext
     @Environment(\.dismiss) var dismiss
     @AppStorage("storageSource") var storageSource: String = StorageSource.googleDrive.rawValue
@@ -52,7 +53,6 @@ struct AlbumDetailView: View {
     /// Held while the restricted-access warning is up; released to
     /// `linkShareItem` when it's acknowledged.
     @State private var restrictedShareItem: AlbumLinkShareItem?
-    @State private var isPreparingShare = false
     /// Second step of "Duplicate to…" from the denial alert — an alert button
     /// can't open a submenu, so the destinations get their own dialog.
     @State var showDuplicateDestinations = false
@@ -324,6 +324,10 @@ struct AlbumDetailView: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+                // Same glass edge the library's covers wear: hairline plus a
+                // gyro-driven specular, so a cover with dark borders separates
+                // from the dark background instead of bleeding into it.
+                .overlay(GlassRim(cornerRadius: coverCorner))
         }
     }
 
@@ -348,8 +352,7 @@ struct AlbumDetailView: View {
                     editDescriptionRow
                 } else {
                     albumCover
-                    titleBlock
-                    playButtons
+                    titleRow
                     descriptionBlock
                 }
             }
@@ -368,12 +371,10 @@ struct AlbumDetailView: View {
 
     /// Title and artist, ranged left off the same edge as the track numbers.
     ///
-    /// The header row carries zero `listRowInsets` while every track row is
-    /// inset by `rowLeadingInset`, so that same constant is what puts
-    /// these two on the
-    /// tracklist's own left edge rather than the List's. The cover above
-    /// stays centered — it's a fixed 256pt square and centering is its own
-    /// decision, not one this block inherits.
+    /// The inset that does that lives on `titleRow`, which owns both edges of
+    /// this line — the tracklist's left edge here, its right edge under the
+    /// transport. The cover above stays centered: it's a fixed square and
+    /// centering is its own decision, not one this block inherits.
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(album.name)
@@ -386,20 +387,38 @@ struct AlbumDetailView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Self.rowLeadingInset)
     }
 
-    /// The blurb, below the transport buttons.
+    /// Title and artist on the left, transport on the right, sharing one
+    /// vertical.
+    ///
+    /// Play and shuffle used to sit on their own row underneath, which spent a
+    /// full 56pt band of header on two glyphs while the space beside a
+    /// one-line title sat empty. Centering the pair against the text block
+    /// puts them on the line the eye is already reading and hands the
+    /// tracklist that band back.
+    ///
+    /// Both insets are the tracklist's own: `rowLeadingInset` on the left, so
+    /// the title lands on the cover's tangent with the track numbers, and the
+    /// 8pt of `trackRowTrailingInset` on the right, so the play ring's edge
+    /// lands on the track rows' right edge.
+    private var titleRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            titleBlock
+            playButtons
+        }
+        .padding(.leading, Self.rowLeadingInset)
+        .padding(.trailing, Self.trackRowTrailingInset - Self.listSideMargin)
+    }
+
+    /// The blurb, below the title row.
     ///
     /// Track-name size at regular weight — it reads as another line of the
     /// album's own text rather than as a caption, and the tracklist right
     /// under it sets the size the eye is already using.
     ///
-    /// The 3pt top pad is what keeps `playButtons` centered: the buttons'
-    /// own 1pt bottom pad plus the stack's 16 makes 17, and 3 more makes the
-    /// gap below them 20 — the same 20 that sits above them. Without a blurb
-    /// nothing here renders and the buttons keep their original centering
-    /// against the first track row instead.
+    /// The 3pt top pad nudges it clear of the artist line above without
+    /// opening a gap the 16pt stack spacing hasn't already earned.
     @ViewBuilder
     private var descriptionBlock: some View {
         if let blurb = album.albumDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -431,23 +450,13 @@ struct AlbumDetailView: View {
     /// tilt-tracking hairline the library covers wear, which marks it as the
     /// primary action without putting a plate back under it.
     ///
-    /// The 56pt frames are load-bearing beyond the tap target: edit mode sizes
-    /// its own controls row to `playButtons`' height so the tracklist starts at
-    /// the same place in both modes.
+    /// Play is the outer one, hard against the tracklist's right edge, with
+    /// shuffle inboard of it: the primary action gets the corner, where the
+    /// thumb already is. The 56pt frames are the tap targets, and their
+    /// spacing is tight because the frames are far wider than the glyphs —
+    /// 4pt here still leaves ~40pt of air between the two marks.
     var playButtons: some View {
-        HStack(spacing: 24) {
-            Button {
-                playerService.playAlbum(album)
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.ui(20, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: Self.playControlSize, height: Self.playControlSize)
-                    .overlay { GlassRim(shape: Circle()) }
-                    .contentShape(Circle())
-            }
-            .buttonStyle(ImprintButtonStyle())
-
+        HStack(spacing: 4) {
             Button {
                 if isThisAlbumPlaying {
                     playerService.toggleShuffle()
@@ -477,9 +486,19 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(ImprintButtonStyle())
             .animation(.easeInOut(duration: 0.18), value: shuffleEngaged)
+
+            Button {
+                playerService.playAlbum(album)
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.ui(20, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: Self.playControlSize, height: Self.playControlSize)
+                    .overlay { GlassRim(shape: Circle()) }
+                    .contentShape(Circle())
+            }
+            .buttonStyle(ImprintButtonStyle())
         }
-        .padding(.top, 4)
-        .padding(.bottom, 1)
     }
 
     /// Side of the play/shuffle hit targets, and the ring's diameter.
@@ -1114,10 +1133,10 @@ struct AlbumDetailView: View {
     /// can't diagnose from their end. So the warning comes first, and then the
     /// share proceeds either way.
     private func offerShareLink(track: Track?) {
-        guard !isPreparingShare else { return }
-        isPreparingShare = true
+        guard !shareLinks.isPreparingLink else { return }
+        shareLinks.isPreparingLink = true
         Task {
-            defer { isPreparingShare = false }
+            defer { shareLinks.isPreparingLink = false }
             // Sequential rather than `async let`: the concurrent child task
             // that `async let` creates isn't main-actor isolated, and `Album`
             // is a SwiftData model that can't cross that boundary.
@@ -1206,9 +1225,6 @@ struct AlbumDetailView: View {
                 // which never reaches the binding setter above.
                 ShareSheet(activityItems: [url]) { discardSharedFile() }
             }
-        }
-        .overlay {
-            if isPreparingShare { PreparingLinkOverlay() }
         }
         .sheet(item: $linkShareItem) { item in
             ShareSheet(activityItems: [item])

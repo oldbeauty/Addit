@@ -45,12 +45,12 @@ struct NowPlayingView: View {
     @Environment(ThemeService.self) private var themeService
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AudioCacheService.self) private var cacheService
+    @Environment(ShareLinkService.self) private var shareLinks
     @Environment(\.colorScheme) private var colorScheme
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
     @State private var shareItem: AlbumLinkShareItem?
     @State private var restrictedShareItem: AlbumLinkShareItem?
-    @State private var isPreparingShare = false
     @State private var exportFileURL: URL?
     /// The current cover's own colour, or `nil` for art with none to take.
     @State private var coverAccent: Color?
@@ -110,9 +110,6 @@ struct NowPlayingView: View {
             // Same argument for queue mode: the mini bar has no queue form, so
             // coming back up into one is a state nobody asked for.
             isShowingQueue = false
-        }
-        .overlay {
-            if isPreparingShare { PreparingLinkOverlay() }
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(activityItems: [item])
@@ -640,10 +637,10 @@ struct NowPlayingView: View {
     /// recipient may already be on the access list, and if they aren't the link
     /// fails in a way they can't diagnose.
     private func offerShareLink(for track: Track, in album: Album) {
-        guard !isPreparingShare else { return }
-        isPreparingShare = true
+        guard !shareLinks.isPreparingLink else { return }
+        shareLinks.isPreparingLink = true
         Task {
-            defer { isPreparingShare = false }
+            defer { shareLinks.isPreparingLink = false }
             // Sequential, not `async let` — see the note in AlbumDetailView.
             let isRestricted = await ShareAccess.isRestricted(
                 album, driveService: cloudRouter.service(for: album)

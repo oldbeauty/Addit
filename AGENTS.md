@@ -106,11 +106,17 @@ Signing check (device builds): append
   rendering real `LPLinkView`s: the artist line comes from **`music:musician`**,
   which Apple *fetches* and whose page `<title>` it shows — `og:description`,
   `og:site_name` and `music:musician_description` are all ignored — and it only
-  does this when **`og:type` is `music.song`**, which is why album pages claim
-  that too. `LPLinkMetadata` has no subtitle field, so a hand-built one can
-  never carry the artist; `AlbumLinkShareItem` therefore *fetches* the page's
-  metadata and swaps only `imageProvider` for the on-device cover. That is what
-  gets both — the artist Apple resolved, and art the unauthenticated fetcher
+  does this when **`og:type` is `music.song`**. **Only song links take that
+  card.** Albums used to claim `music.song` for the same second line, but
+  iMessage reads the type literally and presented the album as a track, so an
+  album page is `music.album` and gets the plain title+domain card, with its
+  whole billing in `og:title`: `<name> - Album by <artist>`. Don't "fix" the
+  duplication by putting the artist back in an album's `og:description` — it is
+  ignored here and only doubles up on Slack. `LPLinkMetadata` has no subtitle
+  field, so a hand-built one can carry neither the artist nor the resolved
+  title; `AlbumLinkShareItem` therefore *fetches* the page's metadata for both
+  kinds of link and swaps only `imageProvider` for the on-device cover. That is
+  what gets both — the line Apple resolved, and art the unauthenticated fetcher
   could never see inside a restricted folder (or on OneDrive at all). The
   `?c=` Drive id and `/cover` only serve `og:image`, i.e. links someone *pastes*
   elsewhere; `/cover` sits outside the AASA's `/a/*` claim deliberately.
