@@ -26,6 +26,7 @@ struct AlbumDetailView: View {
     @Environment(ShareLinkService.self) private var shareLinks
     @Environment(\.modelContext) var modelContext
     @Environment(\.dismiss) var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("storageSource") var storageSource: String = StorageSource.googleDrive.rawValue
     @State private var isSyncing = true
     @State var cachedTrackIds: Set<String> = []
@@ -33,6 +34,29 @@ struct AlbumDetailView: View {
     @State private var showAccessSheet = false
     @State private var navigateToChat = false
     @State var albumImage: UIImage?
+    /// The cover's own colour, or `nil` for art with none to take.
+    /// The cover-derived page colour is shelved.
+    ///
+    /// Everything that makes it is intact and untouched: `CoverColor`'s pixel
+    /// scan, `coverAccent`, `coverTint`, `asAppBackgroundTint`, the wash
+    /// gradient and the smoothstep ramp behind it. This is the one switch —
+    /// flip it to `true` and the page is tinted again, fading out across the
+    /// cover exactly as before.
+    ///
+    /// It gates the *extraction* as well as the paint, so shelved really means
+    /// shelved: no 32x32 resample and no scan per album.
+    static let usesCoverWash = false
+
+    @State private var coverAccent: Color?
+    /// `coverAccent` reduced to the page wash the current scheme can carry —
+    /// the finished value the background is painted with.
+    ///
+    /// Cached rather than derived in `body` for the reason `NowPlayingView`
+    /// caches its own: this body re-runs on playback and cache changes, and
+    /// deriving here would repeat a pixel scan to reach the same answer. The
+    /// two inputs that move it — the artwork and the colour scheme — each
+    /// recompute it once, in `refreshCoverTint`.
+    @State private var coverTint: Color?
     @State private var queuedTrackId: String?
     @State var displayItems: [TracklistItem] = []
     @State private var toolbarActionGeneration = 0
@@ -157,6 +181,17 @@ struct AlbumDetailView: View {
     /// Screen edge to the tracklist's right edge.
     static var trackRowTrailingInset: CGFloat { listSideMargin + 8 }
 
+    /// How far a row separator's right end has to come in to stop the same
+    /// distance from the screen edge that its left end starts from it.
+    ///
+    /// The two content insets are deliberately unequal — the leading one lands
+    /// the title on the cover's tangent, the trailing one lands the play ring
+    /// on the rows' right edge — and a separator drawn to the content's width
+    /// inherits that asymmetry, ending 4pt further out on the right than it
+    /// begins on the left. Correcting it on the separator alone keeps both of
+    /// those alignments intact.
+    static var separatorTrailingPull: CGFloat { trackRowLeadingInset - trackRowTrailingInset }
+
     /// Gap between edit mode's dashed border and the artwork inside it.
     private static let editCoverBorderInset: CGFloat = 4
 
@@ -178,6 +213,14 @@ struct AlbumDetailView: View {
     private static var coverTopGap: CGFloat {
         toolbarButtonScreenInset - toolbarButtonBottomToContentTop
     }
+
+    /// How far the cover pulls in from each side of the tracklist. It used
+    /// to span the row exactly; a few points of daylight let it read as
+    /// artwork placed on the page rather than as the page's own width.
+    ///
+    /// The tracklist's insets are measured off `listSideMargin` rather than
+    /// off the cover, so this moves nothing but the cover.
+    private static let coverSideInset: CGFloat = 6
 
     /// Only reached if there is no window to ask, which shouldn't happen
     /// on screen — the size the cover was fixed at for most of its life.
@@ -287,9 +330,9 @@ struct AlbumDetailView: View {
             .first?.keyWindow?.bounds.width ?? Self.fallbackCoverSize
     }
 
-    /// The cover spans the tracklist exactly, edge to edge.
+    /// The cover spans the tracklist less `coverSideInset` on each side.
     private var coverSize: CGFloat {
-        windowWidth - 2 * Self.listSideMargin
+        windowWidth - 2 * (Self.listSideMargin + Self.coverSideInset)
     }
 
     /// The gradient that shows through wherever there's no artwork yet.
@@ -326,7 +369,7 @@ struct AlbumDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
                 // Same glass edge the library's covers wear: hairline plus a
                 // gyro-driven specular, so a cover with dark borders separates
-                // from the dark background instead of bleeding into it.
+                // from the background instead of bleeding into it.
                 .overlay(GlassRim(cornerRadius: coverCorner))
         }
     }
@@ -340,6 +383,18 @@ struct AlbumDetailView: View {
     /// 44pt the plate's surround was occupying.
     private var albumCover: some View {
         coverArtwork
+            // The wash below fades across exactly this rectangle, so it is
+            // measured rather than derived from the header's paddings — those
+            // are three separate constants and a nav bar away from here.
+            .anchorPreference(key: CoverBoundsKey.self, value: .bounds) { $0 }
+            // Faint, and two layers: a soft ambient one for the lift and a
+            // tight contact one right under the edge, which is what actually
+            // reads as "propped up" rather than "floating". Much lighter than
+            // the pair the crater plate used to need — there is no recess to
+            // climb out of any more, so the same weights would look like the
+            // moulding coming back.
+            .shadow(color: .black.opacity(0.34), radius: 20, x: 0, y: 12)
+            .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 3)
     }
 
     private var headerSection: some View {
@@ -448,7 +503,12 @@ struct AlbumDetailView: View {
     /// matching the album cover's crater. That treatment is gone, so these are
     /// the icons and nothing else — except a `GlassRim` around play, the same
     /// tilt-tracking hairline the library covers wear, which marks it as the
-    /// primary action without putting a plate back under it.
+    /// primary action without putting a plate back under it. Unlike a cover,
+    /// this one sits on the page rather than on artwork, so in light mode the
+    /// rim's white lobe has much less to bite on and what travels around the
+    /// circle is mostly its shaded half. How much less now depends on the
+    /// album: the page carries the cover's colour, and a saturated one gives
+    /// the highlight more to work against than bare white ever did.
     ///
     /// Play is the outer one, hard against the tracklist's right edge, with
     /// shuffle inboard of it: the primary action gets the corner, where the
@@ -499,6 +559,21 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(ImprintButtonStyle())
         }
+    }
+
+    /// The cover's top and bottom edges as fractions of the screen's height —
+    /// the span the colour wash dissolves across. `nil` until the cover has
+    /// been laid out, or once it has scrolled off the top, where a wash keyed
+    /// to something off screen would just be a band floating on its own.
+    private func coverWashSpan(_ anchor: Anchor<CGRect>?, in proxy: GeometryProxy) -> ClosedRange<CGFloat>? {
+        guard Self.usesCoverWash, let anchor else { return nil }
+        let rect = proxy[anchor]
+        let height = proxy.size.height
+        guard height > 0, rect.maxY > 0 else { return nil }
+        let start = max(0, rect.minY / height)
+        let end = min(1, rect.maxY / height)
+        guard end > start else { return nil }
+        return start...end
     }
 
     /// Side of the play/shuffle hit targets, and the ring's diameter.
@@ -697,7 +772,7 @@ struct AlbumDetailView: View {
             Button {
                 showAccessSheet = true
             } label: {
-                Label("Access", systemImage: "person.2")
+                MenuIcon.access.label("Access", fallback: "person.2")
             }
 
             // The link on its own, for when access is already sorted and you
@@ -714,7 +789,7 @@ struct AlbumDetailView: View {
                 Button {
                     offerShareLink(track: nil)
                 } label: {
-                    Label("Share Link", systemImage: "link")
+                    MenuIcon.shareLink.label("Share Link", fallback: "link")
                 }
             }
 
@@ -724,7 +799,7 @@ struct AlbumDetailView: View {
                 Button {
                     navigateToChat = true
                 } label: {
-                    Label("Chat", systemImage: "bubble.left")
+                    MenuIcon.chat.label("Chat", fallback: "bubble.left")
                 }
             }
         }
@@ -732,17 +807,16 @@ struct AlbumDetailView: View {
         Button {
             enterEditMode()
         } label: {
-            Label("Edit", systemImage: "pencil")
+            MenuIcon.edit.label("Edit", fallback: "pencil")
         }
 
         if !album.isLocal {
             Button {
                 toggleAllCache()
             } label: {
-                Label(
-                    allTracksCached ? "Remove Offline Access" : "Make Available Offline",
-                    systemImage: allTracksCached ? "xmark.circle" : "arrow.down.circle"
-                )
+                allTracksCached
+                    ? MenuIcon.removeDownload.label("Remove Offline Access", fallback: "xmark.circle")
+                    : MenuIcon.download.label("Make Available Offline", fallback: "arrow.down.circle")
             }
         }
 
@@ -751,15 +825,16 @@ struct AlbumDetailView: View {
                 withAnimation { album.showHiddenTracks.toggle() }
                 try? modelContext.save()
             } label: {
-                Label(album.showHiddenTracks ? "Hide Hidden Tracks" : "Show Hidden Tracks",
-                      systemImage: album.showHiddenTracks ? "eye.slash" : "eye")
+                album.showHiddenTracks
+                    ? MenuIcon.eyeSlash.label("Hide Hidden Tracks", fallback: "eye.slash")
+                    : MenuIcon.eye.label("Show Hidden Tracks", fallback: "eye")
             }
         }
 
         Button {
             Task { await exportAlbum() }
         } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
+            MenuIcon.export.label("Export", fallback: "square.and.arrow.up")
         }
 
         Menu {
@@ -771,7 +846,7 @@ struct AlbumDetailView: View {
                     Button {
                         duplicateTarget = provider
                     } label: {
-                        Label(provider.displayName, systemImage: "icloud.and.arrow.up")
+                        provider.menuIcon.label(provider.displayName, fallback: "icloud.and.arrow.up")
                     }
                 }
             }
@@ -783,11 +858,11 @@ struct AlbumDetailView: View {
                 Button {
                     Task { await saveToLocalLibrary() }
                 } label: {
-                    Label("Local Library", systemImage: "iphone")
+                    MenuIcon.slabMark.label("Local Library", fallback: "iphone")
                 }
             }
         } label: {
-            Label("Duplicate to…", systemImage: "plus.square.on.square")
+            MenuIcon.duplicate.label("Duplicate to…", fallback: "plus.square.on.square")
         }
     }
 
@@ -821,6 +896,7 @@ struct AlbumDetailView: View {
             }
         )
         .listRowInsets(EdgeInsets(top: 3, leading: Self.trackRowLeadingInset, bottom: 3, trailing: Self.trackRowTrailingInset))
+        .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] - Self.separatorTrailingPull }
         .listRowBackground(Color.clear)
         .contentShape(Rectangle())
         .onTapGesture {
@@ -1059,8 +1135,15 @@ struct AlbumDetailView: View {
                 }
             }
         }
-        .appBackground()
-        .staticTopFade()
+        .backgroundPreferenceValue(CoverBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                Color.clear
+                    .appBackground(tint: coverTint, fadingOver: coverWashSpan(anchor, in: proxy))
+            }
+            .ignoresSafeArea()
+        }
+        .appBackground(tint: coverTint, fadingOver: nil)
+        .staticTopFade(tint: coverTint)
         .listStyle(.plain)
         .listSectionSpacing(0)
         // Plain has no default top margin to cancel, so the header's own
@@ -1317,6 +1400,7 @@ struct AlbumDetailView: View {
                 seedDisplayItems()
             }
             refreshCachedState()
+            refreshCoverAccent()
         }
         .task {
             await initialLoad()
@@ -1360,12 +1444,36 @@ struct AlbumDetailView: View {
                 }
                 albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
             }
+            refreshCoverAccent()
         }
+        .onChange(of: colorScheme) { _, _ in refreshCoverTint() }
         .safeAreaInset(edge: .bottom) {
             if playerService.currentTrack != nil {
                 Color.clear.frame(height: 64)
             }
         }
+    }
+
+    // MARK: - Cover tint
+
+    /// Re-read the cover's colour and the wash derived from it.
+    ///
+    /// Called from the two places `albumImage` is settled — `onAppear`, which
+    /// picks up already-cached art before the first frame, and the artwork
+    /// task, which is where a cold album's cover actually lands. Cheap enough
+    /// to call on art that hasn't changed: `CoverColor` is a pass over a 32×32
+    /// resample.
+    private func refreshCoverAccent() {
+        guard Self.usesCoverWash else { return }
+        coverAccent = albumImage.flatMap(CoverColor.accent(from:))
+        refreshCoverTint()
+    }
+
+    /// The extracted colour outlives a scheme flip; only the wash derived from
+    /// it has to be redone.
+    private func refreshCoverTint() {
+        guard Self.usesCoverWash else { return }
+        coverTint = coverAccent?.asAppBackgroundTint(colorScheme)
     }
 
     // MARK: - Cache
@@ -1777,3 +1885,11 @@ struct AlbumDetailView: View {
     }
 }
 
+/// Where the album cover sits, so the page's colour wash can end exactly where
+/// the art does.
+private struct CoverBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
+    }
+}

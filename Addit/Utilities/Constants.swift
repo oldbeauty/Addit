@@ -31,6 +31,14 @@ enum Constants {
     static let microsoftScopes = "Files.ReadWrite.All User.Read offline_access"
     static let graphAPIBase = "https://graph.microsoft.com/v1.0"
 
+    // MARK: - Legal
+    // The two policy pages, published with the website rather than bundled in
+    // the app: App Store Connect requires the privacy URL to be reachable on
+    // its own, and a wording fix shouldn't need a build. Source lives in
+    // `HollowpointTv/addit/{privacy,terms}/`. Both are linked from Settings.
+    static let privacyPolicyURL = URL(string: "https://hollowpoint.tv/addit/privacy/")!
+    static let termsOfUseURL = URL(string: "https://hollowpoint.tv/addit/terms/")!
+
     static let audioMimeTypes = [
         "audio/mpeg",
         "audio/mp4",
@@ -56,4 +64,9 @@ enum AppStorageKey {
     /// `AccountContainerView` (which store to hand out) and `ContentView`
     /// (whether to show the library or the sign-in screen).
     static let usesLocalOnly = "usesLocalOnly"
+
+    /// The first-run intro has been read to its last card. Written by
+    /// `ContentView`, which presents it; cleared by the debug-only replay row
+    /// in `SettingsView`.
+    static let hasSeenWelcomeIntro = "hasSeenWelcomeIntro"
 }

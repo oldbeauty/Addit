@@ -16,12 +16,26 @@ struct ContentView: View {
     /// cloud session. Sticky, so a relaunch doesn't dump the user back on the
     /// sign-in screen; the account menu is still how you sign in later.
     @AppStorage(AppStorageKey.usesLocalOnly) private var usesLocalOnly = false
+    /// The first-run intro has been read through to its last card.
+    @AppStorage(AppStorageKey.hasSeenWelcomeIntro) private var hasSeenWelcomeIntro = false
+    @State private var showWelcomeIntro = false
+
+    /// Whether the library — as opposed to the splash or the sign-in screen —
+    /// is the branch on screen. Named rather than inlined because the intro's
+    /// trigger has to agree with `body` about this exactly: a copy of the
+    /// condition would eventually drift, and the failure it drifts into is the
+    /// intro appearing over the loading splash.
+    private var isShowingLibrary: Bool {
+        !authService.isRestoringSession
+            && !authService.isSwitchingAccount
+            && (authService.isSignedIn || usesLocalOnly)
+    }
 
     var body: some View {
         Group {
             if authService.isRestoringSession || authService.isSwitchingAccount {
                 LoadingSplashView()
-            } else if authService.isSignedIn || usesLocalOnly {
+            } else if isShowingLibrary {
                 ZStack(alignment: .bottom) {
                     NavigationStack(path: $libraryPath) {
                         LibraryView(libraryPath: $libraryPath)
@@ -83,11 +97,22 @@ struct ContentView: View {
                 PreparingLinkOverlay()
             }
         }
+        // First run. Attached here with the other overlays and above `.tint`
+        // so the card's accent button reads the themed tint, not the system's.
+        .welcomeIntro(isPresented: $showWelcomeIntro) { hasSeenWelcomeIntro = true }
+        // Watches the whole condition, not just arrival at the library, so
+        // clearing the flag from Settings brings the intro back without a
+        // relaunch. `initial: true` covers the launch that restores a session,
+        // where the library can be the first branch drawn with no change to
+        // observe.
+        .onChange(of: isShowingLibrary && !hasSeenWelcomeIntro, initial: true) { _, due in
+            if due { showWelcomeIntro = true }
+        }
         .tint(themeService.accentColor)
         // Default UI font for any text without an explicit .font() — routes
         // through the same appFamily knob as the ui* tokens (Phosphor.swift).
         .environment(\.font, .uiBody)
-        .preferredColorScheme(themeService.appearanceMode.colorScheme)
+        .preferredColorScheme(themeService.effectiveColorScheme)
         // Bridge SwiftUI's effective colorScheme into ThemeService so
         // its `accentColor` computed property knows which per-scheme
         // hex to return. Run on first appearance (so the very first

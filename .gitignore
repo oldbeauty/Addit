@@ -35,3 +35,6 @@ Secrets.swift
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Icon preview contact sheets — regenerate with tools/iconpreview/preview.sh
+tools/iconpreview/*.png

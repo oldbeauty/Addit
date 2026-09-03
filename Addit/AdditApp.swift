@@ -118,6 +118,7 @@ struct AdditApp: App {
 /// Wrapper view that creates the shared ModelContainer and manages account context
 struct AccountContainerView: View {
     @Environment(CloudAuthCoordinator.self) private var authService
+    @Environment(ThemeService.self) private var themeService
     @Environment(AudioCacheService.self) private var cacheService
     @Environment(AlbumArtService.self) private var albumArtService
     /// Set once the user chooses "Use without an account" on the sign-in
@@ -167,6 +168,10 @@ struct AccountContainerView: View {
                     .modelContainer(Self.signedOutContainer)
             }
         }
+        // Also here, not just on `ContentView`: the restoring-session splash
+        // above is drawn by *this* view, so without it the first frame of a
+        // cold launch renders in the system's scheme and then flips.
+        .preferredColorScheme(themeService.effectiveColorScheme)
     }
 
     // MARK: - Shared Container (single store for all accounts)

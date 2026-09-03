@@ -179,6 +179,17 @@ enum AccountProvider: String, Codable, Identifiable, CaseIterable {
         case .microsoft: return "OneDrive"
         }
     }
+
+    /// This provider's brand mark, for a menu row. The same glass marks the
+    /// library selector wears (`GlassLogo.metal`), rendered still — so a
+    /// "Duplicate to…" row names its destination with the mark the user
+    /// already picks that library by, rather than with a generic cloud.
+    var menuIcon: MenuIcon {
+        switch self {
+        case .google: return .driveMark
+        case .microsoft: return .cloudMark
+        }
+    }
 }
 
 extension StorageSource {

@@ -90,6 +90,22 @@ Signing check (device builds): append
   orientation from the offset. Brand marks *rock*, they don't spin —
   `AccessIcons.metal` (globe / hazard plate / chrome chain, on the Access
   sheet) follows that too, the turning globe being the deliberate exception.
+- **3D ornaments instead of glyphs** is the house style, and it comes in two
+  deliveries. *Live* (a shader view under `TimelineView`) wherever the app
+  draws the surface itself — the Access sheet. *Still* wherever UIKit draws it:
+  a `Menu` becomes a `UIMenu`, whose icons are `UIImage`s with no SwiftUI host
+  to run a `colorEffect`, so a live shader in a menu is impossible, not merely
+  slow. `MenuIcons.metal` + `MenuIconRenderer` are that second path — one
+  compute kernel, rendered offscreen 3×3-supersampled into a `UIImage` the
+  first time any icon is asked for, all thirteen in one command buffer. Being
+  still buys the pose: each model is turned to the one angle that names it.
+  Two rules when extending the set: give `MenuIcon.label` the SF Symbol you
+  replaced as its `fallback` (it is what a device with no render shows), and
+  mark menu images `.alwaysOriginal` or `UIMenu` template-tints them flat.
+  Provider rows reuse `GlassLogo.metal`'s real brand marks through that file's
+  own `glassLogoKernel` — never model a second cloud. `tools/iconpreview` runs
+  both kernels on macOS and writes a contact sheet, including a row at the true
+  20pt delivered size, which is the only row that decides whether a model works.
 - **Share links**: `AlbumShareLink` owns the URL format
   (`https://hollowpoint.tv/a/<g|m>/<folderId>?n=`); those provider codes are a
   published format and must not follow enum renames. `.onOpenURL` in `AdditApp`

@@ -261,20 +261,21 @@ static float3 logoRoom(float3 d, int shape) {
     return col;
 }
 
-// MARK: - Entry point
+// MARK: - Render
 
-[[ stitchable ]] half4 glassLogo(float2 position,
-                                 half4 currentColor,
-                                 float2 size,
-                                 float yaw,
-                                 float pitch,
-                                 float twist,
-                                 float shapeId) {
-    int shape = int(shapeId + 0.5);
-
-    float2 uv = (position - size * 0.5) / (min(size.x, size.y) * 0.5);
-    uv.y = -uv.y;                       // SwiftUI is y-down; the mark is y-up.
-
+/// The mark, for a square canvas `pixelSpan` pixels across.
+///
+/// Split out of the entry point below so the offscreen kernel at the bottom of
+/// this file can share it verbatim. The album menu's "Duplicate to..." rows are
+/// these same three marks, and the alternative — modelling a second, menu-sized
+/// cloud and slab somewhere else — would have two sets of brand geometry
+/// drifting apart from the first release that touched either.
+static half4 renderGlassLogo(float2 uv,
+                             float yaw,
+                             float pitch,
+                             float twist,
+                             int shape,
+                             float pixelSpan) {
     float3 ro = float3(0.0, 0.0, 3.0);
     float3 rd = normalize(float3(uv * 0.38, -1.0));
 
@@ -299,7 +300,7 @@ static float3 logoRoom(float3 d, int shape) {
     // dropped: that is the whole antialiasing scheme, and it is what keeps a
     // triangle's corners and a slab's straight edges clean at this size
     // without supersampling.
-    float aa = 0.6 * (2.0 * 0.38 * 2.6) / min(size.x, size.y);
+    float aa = 0.6 * (2.0 * 0.38 * 2.6) / pixelSpan;
     float alpha = 1.0 - smoothstep(0.0, aa, closest);
     if (alpha <= 0.002) { return half4(0.0h); }
 
@@ -351,4 +352,55 @@ static float3 logoRoom(float3 d, int shape) {
     col = glassTonemap(col, 1.25, 1.55);
 
     return half4(half3(col) * half(alpha), half(alpha));
+}
+
+// MARK: - Entry points
+
+[[ stitchable ]] half4 glassLogo(float2 position,
+                                 half4 currentColor,
+                                 float2 size,
+                                 float yaw,
+                                 float pitch,
+                                 float twist,
+                                 float shapeId) {
+    float2 uv = (position - size * 0.5) / (min(size.x, size.y) * 0.5);
+    uv.y = -uv.y;                       // SwiftUI is y-down; the mark is y-up.
+    return renderGlassLogo(uv, yaw, pitch, twist, int(shapeId + 0.5), min(size.x, size.y));
+}
+
+/// Samples per axis for the offscreen render. Matches `MenuIcons.metal` — the
+/// two kernels' output sits in one menu and has to be equally crisp.
+constant int kLogoSamples = 3;
+
+/// Offscreen twin of the above, for `MenuIconRenderer`.
+///
+/// Posed nearly face-on, unlike the library selector's, which rocks with the
+/// scroll. A mark in a menu row has one job — to be recognised as Drive or
+/// OneDrive or this phone — and the small fixed turn here is only enough to
+/// show the glass has thickness. Turned any further, the silhouette stops
+/// being the flat logo, which is the thing being recognised.
+kernel void glassLogoKernel(texture2d<half, access::write> out [[texture(0)]],
+                            constant int &shape [[buffer(0)]],
+                            uint2 gid [[thread_position_in_grid]]) {
+    uint w = out.get_width();
+    uint h = out.get_height();
+    if (gid.x >= w || gid.y >= h) { return; }
+
+    float2 size = float2(w, h);
+    float halfExtent = min(size.x, size.y) * 0.5;
+
+    half4 sum = half4(0.0h);
+    for (int sy = 0; sy < kLogoSamples; sy++) {
+        for (int sx = 0; sx < kLogoSamples; sx++) {
+            float2 pos = float2(gid) + (float2(sx, sy) + 0.5) / float(kLogoSamples);
+            float2 uv = (pos - size * 0.5) / halfExtent;
+            uv.y = -uv.y;
+            // The span passed is the supersampled one, so the closest-approach
+            // edge is computed at the finer spacing this kernel actually walks.
+            sum += renderGlassLogo(uv, 0.30, 0.12, 0.10, shape,
+                                   min(size.x, size.y) * float(kLogoSamples));
+        }
+    }
+
+    out.write(sum / half(kLogoSamples * kLogoSamples), gid);
 }

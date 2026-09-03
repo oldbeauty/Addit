@@ -21,7 +21,7 @@
                                 <nil key="highlightedColor"/>
                             </label>
                         </subviews>
-                        <color key="backgroundColor" xcode11CocoaTouchSystemColor="systemBackgroundColor" cocoaTouchSystemColor="whiteColor"/>
+                        <color key="backgroundColor" red="0.07058823529411765" green="0.07058823529411765" blue="0.07058823529411765" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                         <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
                         <constraints>
                             <constraint firstItem="GKd-B3-x4T" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="pRf-4x-T8Y"/>

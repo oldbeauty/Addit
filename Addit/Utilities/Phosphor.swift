@@ -48,8 +48,12 @@ extension Font {
     ///   resolves to the nearest cut rather than a drawn one.
     /// - `"BDO Grotesk"` — neo-grotesque. Regular/Medium/DemiBold/Bold, so it
     ///   does have a real semibold-weight cut.
-    /// - `"Geist"` — the previous default. Regular/Medium/SemiBold/Bold.
-    static let appFamily: String? = "Geist"
+    /// - `"Geist"` — Regular/Medium/SemiBold/Bold.
+    /// - `"Inter"` — the current default. Regular/Medium/SemiBold/Bold, the
+    ///   static cuts from the upstream 4.1 release rather than Google Fonts',
+    ///   whose statics are named per optical size (`Inter 18pt`) and would not
+    ///   answer to this family string.
+    static let appFamily: String? = "Inter"
 
     /// Fixed-size UI font in the app family.
     static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
@@ -255,53 +259,113 @@ final class MotionShine {
     }
 }
 
-/// The "glass edge" hairline for floating artwork/panels in dark mode: a
-/// barely-there light rim (so covers with dark edges separate from the
-/// dark background) plus a specular highlight that slides around the rim
-/// with device tilt — the light source stays fixed overhead in world space
-/// while the phone moves under it, the way Apple's app icons shine.
+/// The "glass edge" hairline for floating artwork and panels: a barely-there
+/// rim (so covers with dark edges separate from the background) plus a
+/// specular highlight that slides around that rim with device tilt — the
+/// light source stays fixed overhead in world space while the phone moves
+/// under it, the way Apple's app icons shine.
 ///
-/// In light mode it degrades to a plain sub-visible dark hairline (a bright
-/// specular on white reads as dirt, and covers don't melt into white).
+/// Every rim gets the moving lobe, in both schemes, but the two schemes are
+/// lit differently and it is worth knowing which half does the work. Dark
+/// mode is carried by the bright lobe, and puts a second, weaker one opposite
+/// it — glow wrapping around the far edge of a lit object floating in the
+/// dark. Light mode replaces that far-edge glow with a soft *occlusion*: on a
+/// bright ground the far edge turns away from the light rather than catching
+/// it, and drawing the wrap-around there would flatten the bevel it is meant
+/// to describe.
+///
+/// That occlusion is also what keeps the effect alive over a pale ground. The
+/// white lobe needs something mid-toned under it to register, which artwork
+/// supplies and the near-white page does not — so on the play button in light
+/// mode it is the travelling *shadow*, not the highlight, that you actually
+/// see going round. The rim was originally written to sit out light mode
+/// entirely for that reason; the shaded half is the part that survives there,
+/// and it turns out to be enough.
 struct GlassRim<S: InsettableShape>: View {
     var shape: S
     var lineWidth: CGFloat = 1
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var subscribed = false
     private let motion = MotionShine.shared
 
     var body: some View {
-        if scheme == .dark {
-            ZStack {
-                // Base hairline — the always-there thin border.
-                shape.strokeBorder(Color.white.opacity(0.12), lineWidth: lineWidth)
-                // Specular lobe, rotated to stay under the world's light.
+        ZStack {
+            // Base hairline — the always-there thin border.
+            shape.strokeBorder(
+                scheme == .dark
+                    ? Color.white.opacity(0.12)
+                    : Color.black.opacity(0.07),
+                lineWidth: lineWidth
+            )
+
+            // Specular lobe, rotated to stay under the world's light.
+            shape.strokeBorder(
+                AngularGradient(
+                    stops: scheme == .dark ? darkStops : lightStops,
+                    center: .center,
+                    angle: shineAngle
+                ),
+                lineWidth: lineWidth
+            )
+
+            // Light mode only: the edge rolling away from the light.
+            if scheme != .dark {
                 shape.strokeBorder(
                     AngularGradient(
-                        stops: [
-                            .init(color: .white.opacity(0.55), location: 0),
-                            .init(color: .white.opacity(0.06), location: 0.18),
-                            .init(color: .white.opacity(0.02), location: 0.36),
-                            .init(color: .white.opacity(0.18), location: 0.5),
-                            .init(color: .white.opacity(0.02), location: 0.64),
-                            .init(color: .white.opacity(0.06), location: 0.82),
-                            .init(color: .white.opacity(0.55), location: 1),
-                        ],
+                        stops: occlusionStops,
                         center: .center,
                         angle: shineAngle
                     ),
                     lineWidth: lineWidth
                 )
             }
-            .allowsHitTesting(false)
-            .onAppear { if !reduceMotion { motion.addConsumer() } }
-            .onDisappear { if !reduceMotion { motion.removeConsumer() } }
-        } else {
-            shape
-                .strokeBorder(Color.black.opacity(0.07), lineWidth: lineWidth)
-                .allowsHitTesting(false)
         }
+        .allowsHitTesting(false)
+        .onAppear { syncMotion(to: true) }
+        .onDisappear { syncMotion(to: false) }
+    }
+
+    /// Dark mode: a bright lobe under the light and a weaker one wrapping to
+    /// the far edge, with the rim nearly extinguished on the two flanks.
+    private var darkStops: [Gradient.Stop] {
+        [
+            .init(color: .white.opacity(0.55), location: 0),
+            .init(color: .white.opacity(0.06), location: 0.18),
+            .init(color: .white.opacity(0.02), location: 0.36),
+            .init(color: .white.opacity(0.18), location: 0.5),
+            .init(color: .white.opacity(0.02), location: 0.64),
+            .init(color: .white.opacity(0.06), location: 0.82),
+            .init(color: .white.opacity(0.55), location: 1),
+        ]
+    }
+
+    /// Light mode: a brighter, tighter lobe that falls to nothing well before
+    /// the flanks. It has to out-run a pale ground to register at all, and
+    /// keeping it narrow is what stops the leftovers reading as grime on the
+    /// parts of the rim the light isn't hitting.
+    private var lightStops: [Gradient.Stop] {
+        [
+            .init(color: .white.opacity(0.70), location: 0),
+            .init(color: .white.opacity(0.16), location: 0.12),
+            .init(color: .white.opacity(0), location: 0.28),
+            .init(color: .white.opacity(0), location: 0.72),
+            .init(color: .white.opacity(0.16), location: 0.88),
+            .init(color: .white.opacity(0.70), location: 1),
+        ]
+    }
+
+    /// The shaded half, opposite the lobe: a wide, shallow darkening that
+    /// deepens the base hairline where the edge faces away. Drawn as its own
+    /// pass rather than as black stops in `lightStops`, because interpolating
+    /// white through `.clear` to black dirties the falloff between them.
+    private var occlusionStops: [Gradient.Stop] {
+        [
+            .init(color: .black.opacity(0), location: 0.22),
+            .init(color: .black.opacity(0.08), location: 0.5),
+            .init(color: .black.opacity(0), location: 0.78),
+        ]
     }
 
     /// Angular position of the bright lobe. The gradient's 0-location sits
@@ -311,6 +375,19 @@ struct GlassRim<S: InsettableShape>: View {
     private var shineAngle: Angle {
         if reduceMotion { return .degrees(-90) }
         return .degrees(-90) + .radians(atan2(-motion.gravityX, -motion.gravityY))
+    }
+
+    /// Hold a gyro subscription exactly while this rim is on screen. Routed
+    /// through one funnel with its own flag rather than calling the shared
+    /// counter directly, so a repeated `onAppear` — or an `onDisappear` for a
+    /// subscription Reduce Motion meant we never took — can't leak a consumer
+    /// or release one twice, either of which desyncs that counter and stops
+    /// the shine for every other rim on screen.
+    private func syncMotion(to want: Bool) {
+        let want = want && !reduceMotion
+        guard want != subscribed else { return }
+        subscribed = want
+        if want { motion.addConsumer() } else { motion.removeConsumer() }
     }
 }
 

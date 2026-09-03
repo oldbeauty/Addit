@@ -1504,7 +1504,7 @@ struct AlbumArtworkThumbnail: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             // Glass edge: hairline + gyro specular so covers with dark
-            // borders separate from the dark background (Phosphor kit).
+            // borders separate from the background (Phosphor kit).
             .overlay(GlassRim(cornerRadius: 12))
             .onAppear {
                 if album.isLocal {

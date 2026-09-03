@@ -45,6 +45,21 @@ final class ThemeService {
     private let legacyHexKey = "selectedAccentHex"
     private let lightHexKey = "selectedAccentHexLight"
     private let darkHexKey = "selectedAccentHexDark"
+    /// Dark only, for now.
+    ///
+    /// The light and system paths are all still here and still correct —
+    /// `AppearanceMode`, the per-scheme accent hexes, the Settings picker.
+    /// This is the one switch that turns them back on: flip it to `false` and
+    /// the app honours `appearanceMode` again, with nothing else to undo.
+    static let forcesDark = true
+
+    /// What the app should actually render as. Everything that sets
+    /// `.preferredColorScheme` reads this rather than `appearanceMode`, so
+    /// the override lives in exactly one place.
+    var effectiveColorScheme: ColorScheme? {
+        Self.forcesDark ? .dark : appearanceMode.colorScheme
+    }
+
     private let appearanceModeKey = "appearanceMode"
     /// What a fresh install starts on, per scheme: charcoal reads as ink on
     /// the light background, white as light on the dark one — so the accent
@@ -87,7 +102,10 @@ final class ThemeService {
     /// The accent-color computed property reads this to decide which
     /// per-scheme hex to return, so every call site that already says
     /// `themeService.accentColor` keeps working unchanged.
-    var currentScheme: ColorScheme = .light
+    /// Seeded to whatever the app will actually render as, so the very first
+    /// frame reads the right per-scheme accent instead of the light one and
+    /// then correcting itself.
+    var currentScheme: ColorScheme = ThemeService.forcesDark ? .dark : .light
 
     var appearanceMode: AppearanceMode {
         didSet {

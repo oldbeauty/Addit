@@ -39,6 +39,14 @@
 	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Select album cover images from your photo library.</string>
+	<!-- Dark only, matching `ThemeService.forcesDark`. SwiftUI's
+	     `preferredColorScheme` cannot reach anything drawn before it exists —
+	     the launch storyboard most visibly, which was flashing white on a
+	     light-mode phone. Keep this in step with that flag: turning light and
+	     system back on means removing this key too, or UIKit stays dark while
+	     SwiftUI switches. -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>DepartureMono-Regular.otf</string>
@@ -53,6 +61,10 @@
 		<string>BDOGrotesk-Medium.otf</string>
 		<string>BDOGrotesk-DemiBold.otf</string>
 		<string>BDOGrotesk-Bold.otf</string>
+		<string>Inter-Regular.otf</string>
+		<string>Inter-Medium.otf</string>
+		<string>Inter-SemiBold.otf</string>
+		<string>Inter-Bold.otf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

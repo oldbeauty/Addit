@@ -13,20 +13,30 @@ struct SettingsView: View {
     /// replaced by the bug reporter. `false` is icon/grid, and it is the
     /// default for a fresh install.
     @AppStorage("libraryViewMode") private var isListMode = false
+    #if DEBUG
+    /// Debug only, so the once-ever intro can be looked at more than once
+    /// while its copy is still being written.
+    @AppStorage(AppStorageKey.hasSeenWelcomeIntro) private var hasSeenWelcomeIntro = false
+    #endif
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Appearance", selection: Binding(
-                        get: { themeService.appearanceMode },
-                        set: { themeService.appearanceMode = $0 }
-                    )) {
-                        ForEach(AppearanceMode.allCases, id: \.self) { mode in
-                            Text(mode.label).tag(mode)
+                // Hidden while the app is pinned to dark — a picker that
+                // changes nothing is worse than no picker. The control is
+                // otherwise untouched and comes back with `forcesDark`.
+                if !ThemeService.forcesDark {
+                    Section {
+                        Picker("Appearance", selection: Binding(
+                            get: { themeService.appearanceMode },
+                            set: { themeService.appearanceMode = $0 }
+                        )) {
+                            ForEach(AppearanceMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
                 }
 
                 Section("Library") {
@@ -46,11 +56,28 @@ struct SettingsView: View {
                     accentRow(label: "Dark Mode", scheme: .dark)
                 }
 
+                Section {
+                    legalLink("Terms of Use", url: Constants.termsOfUseURL)
+                    legalLink("Privacy Policy", url: Constants.privacyPolicyURL)
+                } header: {
+                    Text("Legal")
+                } footer: {
+                    // The short version, readable with no network. The pages
+                    // themselves are the agreement; this is the sentence a
+                    // user should not have to open a browser to find.
+                    Text("Addit plays music from your own cloud storage and hosts nothing itself. You are responsible for holding the rights to what you add, play and share. Who can open a shared album is decided by your cloud provider's permissions, not by Addit.")
+                }
+
                 #if DEBUG
                 Section("Developer") {
                     NavigationLink("Cache Inspector") {
                         CacheInspectorView()
                     }
+                    Button("Replay Welcome Intro") {
+                        hasSeenWelcomeIntro = false
+                        dismiss()
+                    }
+                    .disabled(!hasSeenWelcomeIntro)
                 }
                 #endif
             }
@@ -69,6 +96,22 @@ struct SettingsView: View {
             )) { identifier in
                 AccentColorPickerSheet(scheme: identifier.scheme)
             }
+        }
+    }
+
+    /// A row that leaves the app. Marked with the standard outward arrow
+    /// rather than a disclosure chevron, which would promise a push.
+    private func legalLink(_ title: String, url: URL) -> some View {
+        Link(destination: url) {
+            HStack {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.uiFootnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
         }
     }
 
