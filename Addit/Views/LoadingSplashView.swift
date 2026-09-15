@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// The screen between launch and the library: the chrome wordmark over a field
-/// of pixels rippling like water.
+/// The screen between launch and the library: the wordmark over a field of
+/// pixels rippling like water.
 ///
-/// The mark is `ChromeWordmark`, the same one the sign-in screen carries — so
+/// The mark is `AdditWordmark`, the same one the sign-in screen carries — so
 /// the first two screens of a cold launch show the app under one identity
-/// instead of two, and the chrome half of chrome-and-aqua arrives on the very
-/// first frame the app draws for itself.
+/// instead of two, and the app's name arrives in full on the very first frame
+/// it draws for itself.
 ///
 /// Rendered from two places — `AccountContainerView` shows it while the session
 /// restores (before `ContentView` exists at all), and `ContentView` shows it
@@ -57,6 +57,16 @@ struct LoadingSplashView: View {
     /// at any particular moment.
     var isBlackedOut: Bool = false
 
+    /// The plaque the wordmark stands on: raked to the letters' own angle, so
+    /// the mark reads as one object with a plinth rather than as an italic logo
+    /// dropped on an upright pill.
+    ///
+    /// Apple's glass takes any `Shape` for its outline, which is the whole
+    /// reason this is a shape and not a transform — a sheared *view* would
+    /// carry the mark and its hit region with it, and `.glassEffect` lenses
+    /// whatever outline it is handed. Nothing here is hand-rolled glass.
+    private let plaque = SlantedPlaque(cornerRadius: 30)
+
     var body: some View {
         ZStack {
             // The floor the fade lands on. True black rather than the panel's
@@ -73,23 +83,58 @@ struct LoadingSplashView: View {
                 // into layers going dark at different rates.
                 .opacity(isBlackedOut ? 0 : 1)
 
-            ChromeWordmark(lift: 0.30)
-                // The field runs from near-black to ice, so the mark can't
-                // rely on contrast with any one part of it — this is what keeps
-                // it off the surface when a crest passes underneath. Chrome is
-                // a reflection of a room, and against a lit ripple its own
-                // midtones are close enough to the water to sit *in* it. The
-                // `lift` is the other half of that: the face carries more light
-                // here than it does on the sign-in screen, which has only a
-                // flat background to stand out from.
+            AdditWordmark(size: 46, lift: 0.30)
+                // Smaller than the sign-in screen's 51, which is not the
+                // obvious way round: that screen has more on it, but all of it
+                // is small, where this one is a full-bleed panel the mark has
+                // to hold its own against rather than sit quietly on.
                 //
-                // The halo is applied out here rather than inside
-                // `ChromeWordmark`, whose own drop shadow sets the letters on a
-                // plain background: this is a shadow the sign-in screen has no
-                // field to need. Outside the fade too, so it stays with the
-                // mark once the water has gone.
-                .shadow(color: .black.opacity(0.55), radius: 18)
-                .shadow(color: .black.opacity(0.35), radius: 5)
+                // No `.shadow` on it any more, and that is not an oversight:
+                // the mark carries its own contact shadow and its own halo out
+                // of `Wordmark.metal`, where both are computed from the
+                // letters' distance field. A SwiftUI shadow here would be
+                // taken from the *rendered* alpha — halo included — and blur a
+                // dark copy of the glow out underneath the glow.
+                //
+                // What the shadow used to be for still matters: the field
+                // runs from near-black to a blown-out crest, so the mark can't
+                // rely on contrast with any one part of it. The halo does that
+                // job now, and does it better — it's the mark's own light
+                // rather than a dark smear behind it, it's the colorway's own
+                // light too (`Colorways.h`), and it sits outside the fade, so
+                // it stays once the water has gone.
+                // 38 rather than the 32 this is asking for, because the
+                // plaque is raked and the mark's box already contains its own
+                // lean: shearing inside the padded box spends
+                // `slant × (plaqueHeight − markHeight) / 2` — about 6pt — of
+                // the horizontal padding on the lean itself. The gap ends up
+                // uniform down both edges either way, since the plaque's sides
+                // are parallel to the letters'; this is only what that uniform
+                // gap measures.
+                .padding(.horizontal, 38)
+                .padding(.vertical, 22)
+                .background {
+                    // Liquid Glass, sampling the water running underneath it.
+                    // The mark used to hold the screen on its own light alone,
+                    // which worked against the field's dark body and lost
+                    // against a crest passing under it; a plaque gives it one
+                    // ground that travels with whatever the water is doing.
+                    //
+                    // No `GlassRim` over it, which is the kit's rule rather
+                    // than an omission: the edge-lit hairline is for floating
+                    // surfaces we draw ourselves out of a material, and real
+                    // Liquid Glass brings its own specular edge. Two edges on
+                    // one plaque reads as a sticker of a button.
+                    //
+                    // It fades with the field and not with the mark. Glass is
+                    // only the water seen through something, so a plaque that
+                    // outlived the ripples would be a grey slab sitting on
+                    // black — and the beat this screen ends on is the app's
+                    // name alone.
+                    Color.clear
+                        .glassEffect(.clear, in: plaque)
+                        .opacity(isBlackedOut ? 0 : 1)
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()

@@ -62,18 +62,28 @@ struct SignInView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 20)
 
-            DiscoHouse(side: 150)
+            DiscoHouse(side: 225)
 
             VStack(spacing: 10) {
-                ChromeWordmark()
+                // The house and the mark carry the screen at 1.5×; the
+                // tagline and the buttons stayed where they were. Scaling
+                // everything just made a bigger version of the same picture —
+                // holding the small parts small is what makes the pair above
+                // them read as the subject and the rest as apparatus.
+                AdditWordmark(size: 51)
                 Text("The cloud music library")
                     .font(.uiSubheadline)
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 18)
 
-            // The gap between the title block and the buttons, explicit rather
-            // than whatever a Spacer felt like giving it.
+            // The one real division on the screen, and deliberately much
+            // bigger than any gap inside the lockup above it: house to mark
+            // measures 13–35pt as the house turns, mark to tagline 5, so a
+            // separator has to clear 35 by enough to not read as more of the
+            // same rhythm. At the 34 it was, every gap on the screen was
+            // roughly every other gap and the five elements read as five
+            // things evenly scattered rather than two groups.
             VStack(spacing: 12) {
                 HStack(spacing: 12) {
                     providerButton(
@@ -107,10 +117,19 @@ struct SignInView: View {
                 }
             }
             .padding(.horizontal, 40)
-            .padding(.top, 34)
+            .padding(.top, 60)
 
             Spacer(minLength: 20)
         }
+        // Pulls the picture up ~30pt (both Spacers shrink by half of it) to
+        // sit at optical centre. It hangs low without this because
+        // `DiscoHouse`'s square is not its drawing: the roof apex leaves ~50pt
+        // of empty sky inside the top of that box at 225, against 3–25pt below
+        // the lawn, so centring the *boxes* centres something 25–47pt lower
+        // than what you can see. Measured off screenshots rather than reasoned
+        // about — the dead margin is a property of the model and the camera in
+        // `DiscoHouse.metal`, not of anything visible here.
+        .padding(.bottom, 60)
         .alert("Sign-In Failed", isPresented: Binding(
             get: { authService.signInError != nil },
             set: { if !$0 { authService.signInError = nil } }

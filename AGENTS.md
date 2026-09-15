@@ -82,6 +82,74 @@ Signing check (device builds): append
   `Track.localFileURL` / `Album.resolvedLocalCoverPath`.
 - **Track ordering / disc markers**: `.addit-data` JSON in the Drive folder
   (collaborative) or `Album.cachedTracklist` (local). Schema in `AdditMetadata`.
+- **The wordmark is geometry, not type, and false colour, not a material.**
+  `Wordmark.metal` draws "ADDIT" as hand-authored polygons — the coordinates
+  *are* the typeface, terminals all flat at cap and baseline — extruded along a
+  sheared axis and raymarched; `AdditWordmark.swift` only sizes it and supplies
+  the clock. The surface is a **readout** — each point's reflected elevation
+  looked up in a palette — and which palette is `kMarkPalettes` picked by
+  `kMarkColorway`, in three structures: `kModeZones` measures (three colours
+  keyed to elevation with black between them, so the *gaps* draw the
+  letterforms), `kModeRoom` lights (borrowing `GlassRoom.h`'s rig, which makes
+  the mark one of the glass ornaments instead of an instrument — this file
+  pointedly used not to include that header), and `kModeRamp` borrows the
+  launch field's own `spectrum`. **7 · field** ships, which is the last of
+  those: the letters and the water end up on one palette by construction
+  rather than by eye, and changing `kColorway` moves both. Its **halo** is the
+  one part that was never the mark's own — those two colours come from
+  `Colorways.h`, below. Two things are load-bearing and were each got wrong
+  first. The
+  face is a **dome with a circular cross-section**, because a flat face
+  measures one direction across a whole letter and comes back as a plate of one
+  colour, and a smoothstep dome is flat at *both* ends so it only bends in a
+  ring near the edge. And every perturbation — texture especially — has to stay
+  small against the palette's bands: a tilt lands twice over in the reflection,
+  so anything moving elevation further than a band is wide drags the zones over
+  each other and the mark turns to mush. Detail reads because the sweep is
+  steep, not because the texture is strong. Turn the ramp up, not the flaws.
+- **The launch screen's colour is a table.** `Shaders/Colorways.h` holds nine
+  palettes — six ramp stops for the water, the rim light on its leading edges,
+  and the wordmark halo's two colours — and `kColorway` picks the one that
+  ships (**1, Readout**: blue → green → amber → red, the wordmark's own signal
+  palette run along the water's height, so both surfaces say elevation is
+  colour). One table across both shaders because the mark sits *on* the field
+  and the halo is what makes them look lit by one light; split up, they drift.
+  Three things constrain a new one. The breakpoints in `spectrum()` are shared
+  tuning, not part of a colorway — `level` is bent down hard, so the first two
+  stops are most of the screen most of the time and have to stay near-black.
+  The rim lands on calm cells as well as crests, so it has to be a colour that
+  survives being faint: white is *grey* at a tenth strength and speckles the
+  dark half of the field with what look like dead pixels. And `kBackdrop`
+  deliberately isn't per-colorway, because `LoadingSplashView` carries the same
+  value in Swift. The glow is a **thresholded second pass** of the same surface
+  sampled per pixel instead of per cell (`kBleed`, `kBleedFloor`) — which is
+  what lets light cross cell boundaries, where a falloff inside one cell only
+  squares off against its neighbours. The threshold is load-bearing: `kWaveNumber`
+  puts more ripples across the screen than there are cells, so an unthresholded
+  bloom is a *second picture* of the water at a finer scale than the grid can
+  show, and the field comes back as a bright wash with smooth arcs crossing the
+  dots out of register. Only crests glow, so the body stays near-black and the
+  bloom's fine detail only ever lands where the dots are already big enough to
+  hide it.
+- **The wordmark stands on a `.clear` Liquid Glass plaque** on the splash (not
+  on the sign-in screen, which has a flat panel to stand out from). It is
+  **raked to the letters' angle by handing Apple's glass a sheared `Shape`**
+  (`SlantedPlaque`, in `AdditWordmark.swift`, whose `slant` must match
+  `kSlant`) — `.glassEffect(_:in:)` lenses whatever outline it is given, so
+  there is no reason to transform the view or to hand-roll a lookalike glass.
+  `.clear`
+  rather than the `.regular` the rest of the app uses: over a field this dark
+  `.regular`'s frost lightens the plaque into a grey slab, where clear glass
+  stays a lens and the water visibly refracts through it. It fades with the
+  **field**, not with the mark — glass is only the water seen through
+  something, so a plaque outliving the ripples is a slab on black, and the beat
+  this screen ends on is the app's name alone. And no `GlassRim` on it: that
+  hairline is for floating surfaces the kit draws itself out of a material, and
+  real glass brings its own specular edge. Compare them with `tools/ripplepreview`, which `#include`s
+  both shipping shaders and draws the real launch screen at the phone's own
+  size — `renderRipple` and `renderWordmark` exist as plain functions beside
+  their `[[stitchable]]` entry points so a tool can pass a colorway where the
+  app passes a constant.
 - **Raymarched glass** (`Shaders/`, auto-added by the synchronized file group):
   `PlasmaOrb.metal` (toolbar bauble) and `GlassLogo.metal` (the three library
   marks) share the lighting rig in `GlassRoom.h` — keep the room, film and tone
