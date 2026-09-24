@@ -6,6 +6,14 @@ struct SignInView: View {
     /// Flipping this is the whole action — `ContentView` watches the same key
     /// and swaps this screen for the library.
     @AppStorage(AppStorageKey.usesLocalOnly) private var usesLocalOnly = false
+    /// Which library the library screen opens on. Written here so that
+    /// signing in lands you in the cloud you just signed into: this screen
+    /// is reachable with the key already reading `localStorage` (signing out
+    /// of the last account leaves it there), and the library's own fallback
+    /// can't undo that — Local is a library it CAN render, so it has no
+    /// reason to move you off it.
+    @AppStorage(AppStorageKey.viewedLibrary) private var viewedLibrary =
+        StorageSource.googleDrive.rawValue
 
     /// Side of each provider tile.
     private static let providerTile: CGFloat = 80
@@ -90,7 +98,11 @@ struct SignInView: View {
                         asset: "GoogleDriveLogo",
                         title: "Google Drive"
                     ) {
-                        Task { await authService.signInGoogle() }
+                        Task {
+                            if await authService.signInGoogle() {
+                                viewedLibrary = StorageSource.googleDrive.rawValue
+                            }
+                        }
                     }
 
                     providerButton(
@@ -98,7 +110,11 @@ struct SignInView: View {
                         title: "OneDrive",
                         markScale: 0.45
                     ) {
-                        Task { await authService.signInMicrosoft() }
+                        Task {
+                            if await authService.signInMicrosoft() {
+                                viewedLibrary = StorageSource.oneDrive.rawValue
+                            }
+                        }
                     }
                 }
 

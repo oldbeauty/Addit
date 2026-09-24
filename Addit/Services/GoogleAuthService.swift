@@ -42,11 +42,15 @@ final class GoogleAuthService {
         }
     }
 
-    func signIn() async {
+    /// Returns whether a session was actually established — a cancel and a
+    /// failure both read as `false`, so a caller can decline to act on a
+    /// sign-in that never happened.
+    @discardableResult
+    func signIn() async -> Bool {
         signInError = nil
         guard let presenter = topViewController() else {
             signInError = "Couldn't find a window to present sign-in from. Try again."
-            return
+            return false
         }
         do {
             let result = try await GIDSignIn.sharedInstance.signIn(
@@ -56,6 +60,7 @@ final class GoogleAuthService {
             )
             currentUser = result.user
             registerCurrentUser()
+            return true
         } catch {
             #if DEBUG
             print("Google Sign-In error: \(error)")
@@ -68,6 +73,7 @@ final class GoogleAuthService {
             if !Self.isCancellation(error) {
                 signInError = error.localizedDescription
             }
+            return false
         }
     }
 
@@ -80,9 +86,11 @@ final class GoogleAuthService {
             && error.code == GIDSignInError.canceled.rawValue
     }
 
-    /// Add a new account without losing existing account data
-    func addAccount() async {
-        guard let presenter = topViewController() else { return }
+    /// Add a new account without losing existing account data. Returns
+    /// whether one was actually added; see `signIn()`.
+    @discardableResult
+    func addAccount() async -> Bool {
+        guard let presenter = topViewController() else { return false }
         do {
             let result = try await GIDSignIn.sharedInstance.signIn(
                 withPresenting: presenter,
@@ -91,8 +99,10 @@ final class GoogleAuthService {
             )
             currentUser = result.user
             registerCurrentUser()
+            return true
         } catch {
             // User cancelled — nothing changed, current account stays as-is
+            return false
         }
     }
 

@@ -58,7 +58,8 @@ struct LibraryView: View {
     /// ornaments read it themselves, so a scroll frame invalidates them and not
     /// the whole library.
     @State private var scrollOffset = ScrollOffsetBox()
-    @AppStorage("storageSource") private var storageSource: String = StorageSource.googleDrive.rawValue
+    @AppStorage(AppStorageKey.viewedLibrary) private var storageSource: String =
+        StorageSource.googleDrive.rawValue
     @State private var showLocalImporter = false
     @State private var isImportingLocal = false
     @State private var importProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
@@ -99,17 +100,21 @@ struct LibraryView: View {
     // Flipping libraries is synchronous: both providers' sessions stay
     // live in parallel, so viewing a different cloud is just a state
     // change — no auth call, no spinner. The only async case is picking a
-    // cloud you have no account for, which prompts sign-in (and snaps
-    // back to Local if cancelled).
+    // cloud you have no account for, which prompts sign-in and moves only
+    // if it succeeds; a cancel leaves you in the library you were already in.
 
     private func selectCloudLibrary(_ provider: AccountProvider) {
-        storageSource = provider.storageSource.rawValue
-        if !authService.selectProvider(provider) {
+        if authService.selectProvider(provider) {
+            storageSource = provider.storageSource.rawValue
+        } else {
+            // No account for that cloud yet — offer sign-in, and only move
+            // once there's something to show. Moving first and retreating on
+            // cancel looked equivalent but wasn't: the retreat went to Local,
+            // so backing out of "OneDrive" while viewing Google Drive dumped
+            // you in a third library you never asked for.
             Task {
-                await authService.addAccount(provider: provider)
-                if authService.accountManager.activeEmail(for: provider) == nil {
-                    // Sign-in cancelled — show a library that can render.
-                    storageSource = StorageSource.localStorage.rawValue
+                if await authService.addAccount(provider: provider) {
+                    storageSource = provider.storageSource.rawValue
                 }
             }
         }
@@ -117,6 +122,22 @@ struct LibraryView: View {
 
     private func selectLocalLibrary() {
         storageSource = StorageSource.localStorage.rawValue
+    }
+
+    /// Sign into an additional cloud account and show its library.
+    ///
+    /// The second half is the point. Signing in is how you say which cloud
+    /// you want to see, and leaving the selection alone stranded a new
+    /// account behind whichever library was already up — for the case that
+    /// matters most, an unfamiliar user adding their first cloud from the
+    /// Local library, that meant signing into Google Drive and being shown
+    /// the empty local shelf. A cancel still changes nothing.
+    private func addCloudAccount(_ provider: AccountProvider) {
+        Task {
+            if await authService.addAccount(provider: provider) {
+                storageSource = provider.storageSource.rawValue
+            }
+        }
     }
 
     /// Switch to a specific account (from the account switcher) and show
@@ -811,13 +832,17 @@ struct LibraryView: View {
 
                         Section {
                             Menu {
+                                // Both go through `addCloudAccount`, which
+                                // takes you to the library you just signed
+                                // into. Adding an account from the Local
+                                // library used to leave you sitting in it.
                                 Button {
-                                    Task { await authService.addAccount(provider: .google) }
+                                    addCloudAccount(.google)
                                 } label: {
                                     Label("Google Account", systemImage: "person.crop.circle")
                                 }
                                 Button {
-                                    Task { await authService.addAccount(provider: .microsoft) }
+                                    addCloudAccount(.microsoft)
                                 } label: {
                                     Label("Microsoft Account", systemImage: "cloud")
                                 }

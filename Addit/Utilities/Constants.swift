@@ -69,4 +69,15 @@ enum AppStorageKey {
     /// `ContentView`, which presents it; cleared by the debug-only replay row
     /// in `SettingsView`.
     static let hasSeenWelcomeIntro = "hasSeenWelcomeIntro"
+
+    /// Which of the three parallel libraries is on screen — a
+    /// `StorageSource.rawValue`. `LibraryView` owns it, but every sign-in
+    /// entry point writes it, because signing into a cloud is a request to
+    /// *see* that cloud. `SignInView` is one of those entry points and can't
+    /// reach `LibraryView`, which is what puts the key here.
+    ///
+    /// The value stays `"storageSource"`: it is a live user selection in
+    /// everybody's `UserDefaults`, and renaming the key would silently reset
+    /// every installed app to Google Drive.
+    static let viewedLibrary = "storageSource"
 }

@@ -92,24 +92,33 @@ final class CloudAuthCoordinator {
     }
 
     /// First-time sign-in buttons on SignInView.
-    func signInGoogle() async {
+    ///
+    /// These report success because the caller has somewhere to take you: an
+    /// interactive sign-in is a request to see that provider's library, and
+    /// cancelling it must leave the viewed library where it was. A `Void`
+    /// return left every call site guessing from `accountManager`, which
+    /// can't tell "cancelled" from "that account was already signed in".
+    @discardableResult
+    func signInGoogle() async -> Bool {
         await google.signIn()
     }
 
-    func signInMicrosoft() async {
-        _ = await microsoft.signIn()
+    @discardableResult
+    func signInMicrosoft() async -> Bool {
+        await microsoft.signIn() != nil
     }
 
     /// Add another account of the given provider without dropping data for
     /// existing accounts. The newly added account becomes active. The other
     /// provider's session is left untouched — sessions coexist; libraries
     /// are parallel, not mutually exclusive.
-    func addAccount(provider: AccountProvider) async {
+    @discardableResult
+    func addAccount(provider: AccountProvider) async -> Bool {
         switch provider {
         case .google:
-            await google.addAccount()
+            return await google.addAccount()
         case .microsoft:
-            _ = await microsoft.signIn(promptSelectAccount: true)
+            return await microsoft.signIn(promptSelectAccount: true) != nil
         }
     }
 
