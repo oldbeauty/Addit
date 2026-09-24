@@ -1,5 +1,64 @@
 import SwiftUI
 
+/// The card both popups wear: title, optional message, whatever the popup
+/// puts between them, and the hairline-split Cancel/confirm row.
+///
+/// Extracted when the wheel popup arrived rather than copied into it. The
+/// alert-lookalike is the whole point of this file — a second hand-built
+/// version of the same card is the thing most likely to drift a corner radius
+/// or a padding away from the first and make one of the two read as not quite
+/// a system alert.
+///
+/// `PromptButtonStyle` is what the row is really for; see its own comment.
+private struct PromptCard<Content: View>: View {
+    let title: String
+    let message: String?
+    let saveTitle: String
+    let onSave: () -> Void
+    let dismiss: () -> Void
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.uiHeadline)
+                    .multilineTextAlignment(.center)
+
+                if let message {
+                    Text(message)
+                        .font(.uiFootnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                content()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 19)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            HStack(spacing: 0) {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PromptButtonStyle())
+                Divider()
+                Button(saveTitle) { onSave() }
+                    .buttonStyle(PromptButtonStyle(weight: .semibold))
+            }
+            .frame(height: 44)
+        }
+        .frame(width: 270)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.30), radius: 24, y: 8)
+    }
+}
+
 /// A text-entry popup shaped like a system alert — the app's rename and
 /// description prompts.
 ///
@@ -30,43 +89,9 @@ private struct PromptPopup<Subject>: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                Text(title)
-                    .font(.uiHeadline)
-                    .multilineTextAlignment(.center)
-
-                if let message {
-                    Text(message)
-                        .font(.uiFootnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-
-                field
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 19)
-            .padding(.bottom, 16)
-
-            Divider()
-
-            HStack(spacing: 0) {
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(PromptButtonStyle())
-                Divider()
-                Button(saveTitle) { save() }
-                    .buttonStyle(PromptButtonStyle(weight: .semibold))
-            }
-            .frame(height: 44)
+        PromptCard(title: title, message: message, saveTitle: saveTitle, onSave: save, dismiss: dismiss) {
+            field
         }
-        .frame(width: 270)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.30), radius: 24, y: 8)
         // Single-line fields come up highlighted, ready to overtype. A
         // description doesn't: prose is usually amended, not replaced, and
         // arriving with the whole thing selected makes the next keystroke
@@ -204,6 +229,137 @@ extension View {
             text: text,
             multiline: multiline,
             saveTitle: saveTitle,
+            onSave: onSave
+        ))
+    }
+}
+
+// MARK: - Number wheel
+
+/// The same card with a wheel in place of the text field, for a prompt whose
+/// answer is a count rather than a string.
+///
+/// A wheel rather than a stepper or a typed number: the useful range is small
+/// and every value in it is one flick away, where a stepper makes 12 mean
+/// twelve taps and a keypad puts a keyboard over the card to ask for two
+/// digits. What a wheel can't do is tell you what you're choosing — "8" is not
+/// a thing anyone can picture against their own track names — which is what
+/// `preview` is for.
+private struct WheelPromptPopup: View {
+    let title: String
+    let message: String?
+    let range: ClosedRange<Int>
+    let saveTitle: String
+    /// Before and after for one representative subject, recomputed as the
+    /// wheel turns. `nil` when there's nothing to show.
+    let preview: (Int) -> (before: String, after: String)?
+    @Binding var value: Int
+    let onSave: (Int) -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        PromptCard(
+            title: title,
+            message: message,
+            saveTitle: saveTitle,
+            onSave: { onSave(value); dismiss() },
+            dismiss: dismiss
+        ) {
+            VStack(spacing: 6) {
+                Picker(title, selection: $value) {
+                    ForEach(Array(range), id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.wheel)
+                // Tall enough to show the neighbours either side — a wheel
+                // cropped to one row reads as a stuck text field — and short
+                // enough that the card stays a card.
+                .frame(height: 110)
+
+                if let preview = preview(value) {
+                    // The answer in the user's own words: the first track as
+                    // it stands, struck through, over what this count leaves
+                    // of it. One line each, because the point is the shape of
+                    // the change and not the whole name.
+                    VStack(spacing: 2) {
+                        Text(preview.before)
+                            .strikethrough()
+                            .foregroundStyle(.tertiary)
+                        Text(preview.after)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.uiFootnote)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity)
+                    .animation(.none, value: value)
+                }
+            }
+        }
+    }
+}
+
+private struct WheelPromptModifier: ViewModifier {
+    let title: String
+    @Binding var isPresented: Bool
+    let message: String?
+    let range: ClosedRange<Int>
+    let saveTitle: String
+    let preview: (Int) -> (before: String, after: String)?
+    @Binding var value: Int
+    let onSave: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            ZStack {
+                if isPresented {
+                    Color.black.opacity(0.25)
+                        .ignoresSafeArea()
+                        .onTapGesture {}
+
+                    WheelPromptPopup(
+                        title: title,
+                        message: message,
+                        range: range,
+                        saveTitle: saveTitle,
+                        preview: preview,
+                        value: $value,
+                        onSave: onSave,
+                        dismiss: { isPresented = false }
+                    )
+                }
+            }
+            .animation(.snappy(duration: 0.2), value: isPresented)
+        }
+    }
+}
+
+extension View {
+    /// Presents a popup whose answer is a number chosen from a wheel.
+    ///
+    /// Sibling of `prompt(_:isPresented:presenting:)` and there for the same
+    /// reason: it draws its own buttons, so a finger that drags onto one
+    /// doesn't fire it. See `PromptPopup`.
+    func wheelPrompt(
+        _ title: String,
+        isPresented: Binding<Bool>,
+        message: String? = nil,
+        range: ClosedRange<Int>,
+        value: Binding<Int>,
+        saveTitle: String = "Remove",
+        preview: @escaping (Int) -> (before: String, after: String)? = { _ in nil },
+        onSave: @escaping (Int) -> Void
+    ) -> some View {
+        modifier(WheelPromptModifier(
+            title: title,
+            isPresented: isPresented,
+            message: message,
+            range: range,
+            saveTitle: saveTitle,
+            preview: preview,
+            value: value,
             onSave: onSave
         ))
     }

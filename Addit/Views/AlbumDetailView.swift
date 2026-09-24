@@ -27,7 +27,8 @@ struct AlbumDetailView: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("storageSource") var storageSource: String = StorageSource.googleDrive.rawValue
+    @AppStorage(AppStorageKey.viewedLibrary) var storageSource: String =
+        StorageSource.googleDrive.rawValue
     @State private var isSyncing = true
     @State var cachedTrackIds: Set<String> = []
     @State private var syncError: String?
@@ -114,10 +115,17 @@ struct AlbumDetailView: View {
     @State var editErrorMessage: String?
     @State var editAdditDataFileId: String?
     @State var editAdditDataOwnedByMe = true
-    @State private var selectedCoverPhoto: PhotosPickerItem?
+    /// The two bulk-rename popups `editMoreMenu` drives. Internal, like the
+    /// rest of the edit session's state, because the menu and the popups both
+    /// live in `AlbumDetailView+EditMode.swift`.
+    @State var showRemovePrefixPrompt = false
+    @State var removePrefixText = ""
+    @State var showRemoveLeadingPrompt = false
+    @State var removeLeadingCount = 1
+    @State var selectedCoverPhoto: PhotosPickerItem?
     @State var isUploadingCover = false
     @State var coverUploadErrorMessage: String?
-    @State private var imageToCrop: CoverCropItem?
+    @State var imageToCrop: CoverCropItem?
     @State var showEditDocumentPicker = false
     /// Which cloud edit mode's "add tracks" is browsing. Non-nil presents the
     /// picker; the value travels with it so the download reads the same drive
@@ -347,70 +355,140 @@ struct AlbumDetailView: View {
         )
     }
 
-    /// The tappable artwork itself (pixel-sort interaction preserved),
-    /// clipped to its rounded rect. No shadows here — the mount adds those.
-    private var coverArtwork: some View {
-        coverBox { side in
-            RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                .fill(coverPlaceholderFill)
-                .overlay {
-                    if let albumImage {
-                        // Tap to kick off a luminance-based pixel-sort
-                        // animation; tap again at the sorted state to replay
-                        // the log in reverse back to the original.
-                        PixelSortCoverView(
-                            image: albumImage,
-                            size: side,
-                            cornerRadius: coverCorner
-                        )
-                    } else {
-                        Image(systemName: "music.note")
-                            .font(.ui(48))
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
-                // Same glass edge the library's covers wear: hairline plus a
-                // gyro-driven specular, so a cover with dark borders separates
-                // from the background instead of bleeding into it.
-                .overlay(GlassRim(cornerRadius: coverCorner))
+    /// The artwork plate: the cover clipped to its rounded rect, with
+    /// whatever edge the current mode wears. No shadows here — the slot adds
+    /// those.
+    ///
+    /// One plate serves both modes. What edit mode changes about the cover is
+    /// four points of inset and which edge is drawn, and neither of those is
+    /// a reason for a second view to exist.
+    private func coverPlate(side: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+            .fill(coverPlaceholderFill)
+            .overlay { coverFace(side: side) }
+            .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
+            // Same glass edge the library's covers wear: hairline plus a
+            // gyro-driven specular, so a cover with dark borders separates
+            // from the background instead of bleeding into it. It gives way
+            // to the dashed ring in edit mode — two edges on one cover reads
+            // as a mistake — and fades rather than switching, so the handover
+            // happens over the same beat the inset moves in.
+            .overlay(GlassRim(cornerRadius: coverCorner).opacity(isEditing ? 0 : 1))
+    }
+
+    /// What's drawn on the plate — the one thing that genuinely differs
+    /// between the modes.
+    ///
+    /// View mode's face is tappable: `PixelSortCoverView` owns the
+    /// luminance-sort interaction. Edit mode's is a still, because the tap
+    /// belongs to the picker over it. At rest the two draw the identical
+    /// thing — `PixelSortCoverView` idle *is* `Image(uiImage:).scaledToFill()`
+    /// — so the cross-fade between them has nothing to travel and nothing to
+    /// redraw, which is what lets it happen under a moving inset without
+    /// being seen.
+    @ViewBuilder
+    private func coverFace(side: CGFloat) -> some View {
+        if let albumImage {
+            if isEditing {
+                Image(uiImage: albumImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                // Tap to kick off a luminance-based pixel-sort animation;
+                // tap again at the sorted state to replay the log in reverse
+                // back to the original.
+                PixelSortCoverView(
+                    image: albumImage,
+                    size: side,
+                    cornerRadius: coverCorner
+                )
+            }
+        } else {
+            Image(systemName: "music.note")
+                .font(.ui(48))
+                .foregroundStyle(.white.opacity(0.8))
         }
     }
 
-    /// The cover, flat.
+    /// Edit mode's tap target: the picker as a clear plate *over* the
+    /// artwork, rather than a wrapper around it.
     ///
-    /// It used to be a raised part in a debossed "crater" plate — inner
-    /// shadows carving a well, a drop shadow and contact shadow lifting the
-    /// artwork out of it, a rim highlight on the top edge. All of it is gone;
-    /// the artwork is just the artwork. That also hands the header back the
-    /// 44pt the plate's surround was occupying.
-    private var albumCover: some View {
-        coverArtwork
-            // The wash below fades across exactly this rectangle, so it is
-            // measured rather than derived from the header's paddings — those
-            // are three separate constants and a nav bar away from here.
-            .anchorPreference(key: CoverBoundsKey.self, value: .bounds) { $0 }
-            // Faint, and two layers: a soft ambient one for the lift and a
-            // tight contact one right under the edge, which is what actually
-            // reads as "propped up" rather than "floating". Much lighter than
-            // the pair the crater plate used to need — there is no recess to
-            // climb out of any more, so the same weights would look like the
-            // moulding coming back.
-            .shadow(color: .black.opacity(0.34), radius: 20, x: 0, y: 12)
-            .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 3)
+    /// Wrapping is what used to make the cover two different views. A picker
+    /// that only covers the artwork leaves the artwork itself untouched by
+    /// the mode change, which is the whole reason the inset can animate.
+    @ViewBuilder
+    private var coverPickerOverlay: some View {
+        if isEditing {
+            PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
+                Color.clear
+                    .contentShape(
+                        RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(isUploadingCover)
+        }
     }
 
-    /// The cover's slot. Both variants are the same square (`coverBox` sees to
-    /// that), so this `ZStack` never changes size — the swap is a pure
-    /// cross-fade with no layout movement at all.
+    /// The cover's slot — one cover, in two poses.
+    ///
+    /// It used to be two covers in a `ZStack`, swapped on `isEditing`. That
+    /// was already the second attempt: branching the whole header stack laid
+    /// the incoming cover out *beneath* the outgoing one, and the slot was
+    /// meant to stop that. It didn't, because a slot still makes the change
+    /// a removal and an insertion — the pair only cross-fades cleanly if
+    /// SwiftUI happens to hold both in place, and on the way out of edit
+    /// mode it doesn't: the read-only cover arrives from below and slides up
+    /// over the dashed one. Entering never showed it because the menu that
+    /// triggers edit mode is dismissing over the top at that moment, which is
+    /// why only one direction ever looked wrong.
+    ///
+    /// So neither half is a separate view any more. There is one square, and
+    /// inside it the plate steps in by `editCoverBorderInset` while the ring
+    /// fades up to fill the square it left. Leaving is that run backwards —
+    /// the ring fades and the plate expands into it — which is the only thing
+    /// "the reverse of entering" can mean when there is a single thing
+    /// moving. Nothing is inserted, so nothing can arrive from anywhere.
     private var coverSlot: some View {
-        ZStack {
-            if isEditing {
-                editableAlbumCover
-            } else {
-                albumCover
+        coverBox { side in
+            ZStack {
+                coverPlate(side: side)
+                    .padding(isEditing ? Self.editCoverBorderInset : 0)
+
+                // Drawn at the full square the plate just stepped out of, so
+                // the cover keeps exactly the footprint it had — entering
+                // edit mode moves nothing in the header below it.
+                RoundedRectangle(cornerRadius: coverCorner + 2, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                    .foregroundStyle(.secondary.opacity(0.6))
+                    .opacity(isEditing ? 1 : 0)
+
+                if isUploadingCover {
+                    RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .padding(isEditing ? Self.editCoverBorderInset : 0)
+                    LoadingIndicator()
+                }
             }
         }
+        // The wash below fades across exactly this rectangle, so it is
+        // measured rather than derived from the header's paddings — those
+        // are three separate constants and a nav bar away from here.
+        .anchorPreference(key: CoverBoundsKey.self, value: .bounds) { $0 }
+        // Faint, and two layers: a soft ambient one for the lift and a
+        // tight contact one right under the edge, which is what actually
+        // reads as "propped up" rather than "floating". Much lighter than
+        // the pair the crater plate used to need — there is no recess to
+        // climb out of any more, so the same weights would look like the
+        // moulding coming back.
+        //
+        // Both fade out for edit mode, where the cover is a control rather
+        // than a thing propped on the page. Animated through the colour
+        // rather than dropped, or the lift would vanish a frame before the
+        // inset starts moving.
+        .shadow(color: .black.opacity(isEditing ? 0 : 0.34), radius: 20, x: 0, y: 12)
+        .shadow(color: .black.opacity(isEditing ? 0 : 0.22), radius: 4, x: 0, y: 3)
+        .overlay { coverPickerOverlay }
     }
 
     /// Title and artist. Both variants are the same row with the same
@@ -430,13 +508,16 @@ struct AlbumDetailView: View {
     /// album that has a description keeps one steady slot and cross-fades the
     /// text inside it rather than removing one block and inserting another.
     ///
-    /// An album with no description still gains a row on entering edit mode —
-    /// there has to be somewhere to tap to write the first one, and view mode
-    /// can't reserve blank space for a blurb that doesn't exist. That is the
-    /// one presence change left in the header.
+    /// Edit mode used to force the slot open on an album with no blurb, to put
+    /// a greyed-out "Description" there as somewhere to tap. That is a label
+    /// for an empty field sitting in the middle of the header, which reads as
+    /// a thing the album has rather than an invitation — so writing the first
+    /// one moved into `editAddMenu`, where "add" already lives, and the slot
+    /// now stays shut until there is prose to put in it. The header is the
+    /// same height in both modes again as a result.
     @ViewBuilder
     private var descriptionSlot: some View {
-        if isEditing || hasAlbumDescription {
+        if hasDescriptionToShow {
             ZStack {
                 if isEditing {
                     editDescriptionRow
@@ -445,6 +526,21 @@ struct AlbumDetailView: View {
                 }
             }
         }
+    }
+
+    /// Whether the slot has anything to draw *in the mode currently on
+    /// screen*. Edit mode asks the working copy, not the album: typing the
+    /// first blurb has to open the slot before a save, and clearing one has to
+    /// close it.
+    var hasDescriptionToShow: Bool {
+        isEditing ? !editedDescriptionIsEmpty : hasAlbumDescription
+    }
+
+    /// The blurb field of the edit session, trimmed — the test both the slot
+    /// and the add menu key off, so they can't disagree about what "empty"
+    /// means.
+    var editedDescriptionIsEmpty: Bool {
+        editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Whether there's a blurb to draw — the same test `descriptionBlock`
@@ -804,13 +900,13 @@ struct AlbumDetailView: View {
     /// moves nothing on this line.
     private var editTitleRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            // Edit mode has no shuffle, but it has to hold shuffle's place:
-            // the text between the two slots is centered by *being* the middle,
-            // so a missing left slot would slide the title sideways on entering
-            // edit mode. Clear, not a `Spacer` — a spacer would take the slack
-            // that keeps the text block centered.
-            Color.clear
-                .frame(width: Self.playControlSize)
+            // Shuffle's place, holding the same 56pt slot — the text between
+            // the two is centered by *being* the middle, so the left slot has
+            // to stay occupied or the title slides sideways on entering edit
+            // mode. It used to be `Color.clear` doing nothing but hold the
+            // width; it now holds the bulk-rename menu at the same size.
+            editMoreMenu
+                .frame(width: Self.playControlSize, alignment: .leading)
             editTitleBlock
             editAddMenu
                 .frame(width: Self.playControlSize, alignment: .trailing)
@@ -820,15 +916,16 @@ struct AlbumDetailView: View {
     }
 
     /// Edit-mode counterpart of `descriptionBlock`, under the row that stands
-    /// in for the transport buttons. Always present, unlike the read-only one:
-    /// with no blurb yet it's the placeholder that gives you somewhere to tap.
+    /// in for the transport buttons. Drawn on the same terms as the read-only
+    /// one — only when there's a blurb — so there is no placeholder state to
+    /// style. Writing the first blurb is `editAddMenu`'s job.
     private var editDescriptionRow: some View {
         Button {
             beginEditRename(.description)
         } label: {
-            Text(editedDescription.isEmpty ? "Description" : editedDescription)
+            Text(editedDescription)
                 .font(.uiBody)
-                .foregroundStyle(editedDescription.isEmpty ? .tertiary : .secondary)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 // Follows the read-only block rather than always capping at 4.
                 // A blurb the user had expanded shows every line; capping here
@@ -841,104 +938,25 @@ struct AlbumDetailView: View {
         .buttonStyle(.plain)
     }
 
-    /// Edit-mode cover: the artwork is a PhotosPicker with the sheet's dashed
-    /// "tap to replace" ring. The pixel-sort tap interaction is swapped out so
-    /// the tap goes to the picker.
-    private var editableAlbumCover: some View {
-        PhotosPicker(selection: $selectedCoverPhoto, matching: .images) {
-            editCoverArtwork
-        }
-        .buttonStyle(.plain)
-        .disabled(isUploadingCover)
-        .onChange(of: selectedCoverPhoto) { _, newValue in
-            guard let newValue else { return }
-            Task {
-                guard let data = try? await newValue.loadTransferable(type: Data.self),
-                      let loaded = UIImage(data: data) else {
-                    coverUploadErrorMessage = "The selected photo couldn't be loaded."
-                    selectedCoverPhoto = nil
-                    return
-                }
-                selectedCoverPhoto = nil
-                imageToCrop = CoverCropItem(image: loaded)
-            }
-        }
-        .alert(
-            "Couldn't Change Album Cover",
-            isPresented: Binding(
-                get: { coverUploadErrorMessage != nil },
-                set: { if !$0 { coverUploadErrorMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(coverUploadErrorMessage ?? "")
-        }
-        .fullScreenCover(item: $imageToCrop) { item in
-            ImageCropperView(
-                image: item.image,
-                onCropped: { croppedImage in
-                    imageToCrop = nil
-                    Task { await uploadEditCroppedCover(croppedImage) }
-                },
-                onCancelled: {
-                    imageToCrop = nil
-                }
-            )
-        }
-    }
-
-    /// Edit mode's cover: the same square, with the artwork inset inside a
-    /// dashed border rather than the border hung outside the artwork.
-    ///
-    /// That inversion matters. The border used to be an `.overlay` on a
-    /// `.padding(4)`, which made this variant 8pt wider than the read-only
-    /// one — invisible while both were a fixed 256, and a hung screen once
-    /// the cover started deriving its width from the row. Insetting the
-    /// artwork instead keeps the two headers exactly the same size, which
-    /// is what `editTitleBlock` has always claimed about the text and is
-    /// now true of the cover too: entering edit mode moves nothing.
-    private var editCoverArtwork: some View {
-        coverBox { side in
-            ZStack {
-                RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                    .fill(coverPlaceholderFill)
-                    .overlay {
-                        if let albumImage {
-                            Image(uiImage: albumImage)
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            Image(systemName: "music.note")
-                                .font(.ui(48))
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: coverCorner, style: .continuous))
-                    .padding(Self.editCoverBorderInset)
-
-                RoundedRectangle(cornerRadius: coverCorner + 2, style: .continuous)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-                    .foregroundStyle(.secondary.opacity(0.6))
-
-                if isUploadingCover {
-                    RoundedRectangle(cornerRadius: coverCorner, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .padding(Self.editCoverBorderInset)
-                    LoadingIndicator()
-                }
-            }
-        }
-    }
-
     /// Track list + album duration footer. Extracted from the List body
     /// for type-checker budget (see `trackRowCell`).
     var tracksSection: some View {
-        Section {
+        // The rule beneath the last track is the *total's* — the line a sum
+        // sits under — not something the tracklist owes its own last row. An
+        // album whose durations haven't been measured yet (nothing cached)
+        // has no total, and the rule was left hanging under the final track
+        // with nothing beneath it to underline.
+        let showsTotal = albumDurationSeconds > 0
+        let lastItemIndex = filteredDisplayItems.count - 1
+        return Section {
             ForEach(Array(filteredDisplayItems.enumerated()), id: \.element.id) { index, item in
                 switch item {
                 case .track(let track):
                     trackRowCell(for: track)
+                        .listRowSeparator(
+                            !showsTotal && index == lastItemIndex ? .hidden : .automatic,
+                            edges: .bottom
+                        )
                 case .discMarker(_, let label):
                     let discSeconds = discDurationSeconds(forMarkerAt: index)
                     DiscMarkerRow(
@@ -1676,9 +1694,18 @@ struct AlbumDetailView: View {
             refreshCoverAccent()
         }
         .onChange(of: colorScheme) { _, _ in refreshCoverTint() }
+        // Reserve what the mini player actually occupies, so scrolling to the
+        // end puts the last track — or the album total under it — above the
+        // pill instead of behind it. Read from the pill rather than guessed:
+        // this was a hardcoded 64 against a card that stands 100pt off the
+        // safe area, so the bottom of the list sat under it by 36pt. Same
+        // condition `ContentView` shows the pill on, so the band is reserved
+        // exactly when there's something there to clear.
         .safeAreaInset(edge: .bottom) {
-            if playerService.currentTrack != nil {
-                Color.clear.frame(height: 64)
+            if playerService.currentTrack != nil && !playerService.hideNowPlayingBar {
+                Color.clear
+                    .frame(height: NowPlayingPill.overlayHeight)
+                    .allowsHitTesting(false)
             }
         }
     }

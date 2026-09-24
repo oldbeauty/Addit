@@ -2,6 +2,9 @@ import SwiftUI
 import SwiftData
 import UIKit
 import UniformTypeIdentifiers
+// `PhotosPickerItem.loadTransferable` — the cover picker's presentations
+// moved into this file, and the member is only visible with the module.
+import PhotosUI
 
 // AlbumDetailView's inline edit mode — subviews, lifecycle, and the
 // immediate actions (delete / add / cover) whose behavior is inherited
@@ -207,7 +210,7 @@ extension AlbumDetailView {
     /// and it is still a real constraint on this view.
     @ViewBuilder
     func editModePresentations(_ content: some View) -> some View {
-        content
+        bulkRenamePresentations(coverPresentations(content))
             // `presenting:` hands the target to the action. Reading
             // `editRenameTarget` inside the button instead is a race: dismissal
             // clears the binding, and if that lands first the rename is
@@ -270,6 +273,136 @@ extension AlbumDetailView {
             }
     }
 
+    // MARK: Bulk renaming
+
+    /// "More", at the left end of the edit row — the slot shuffle occupies in
+    /// view mode.
+    ///
+    /// Wears play's `GlassRim` rather than shuffle's bare glyph. The ring
+    /// marks the one control on a row that does something rather than naming
+    /// something, and in edit mode that is this and the add menu opposite it —
+    /// shuffle's ringless treatment is about *not* competing with play, and
+    /// there is no play here to lose to.
+    ///
+    /// Everything in it rewrites every track's name at once, which is why it
+    /// isn't in the add menu: that one adds things, this one edits what is
+    /// already there, and a destructive bulk action buried under a "+" is a
+    /// place nobody would look for it or expect to find it.
+    var editMoreMenu: some View {
+        Menu {
+            Button {
+                removePrefixText = ""
+                showRemovePrefixPrompt = true
+            } label: {
+                Label("Remove Prefix…", systemImage: "textformat")
+            }
+            Button {
+                removeLeadingCount = 1
+                showRemoveLeadingPrompt = true
+            } label: {
+                Label("Remove First Characters…", systemImage: "delete.left")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.ui(20, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(
+                    width: AlbumDetailView.playControlSize,
+                    height: AlbumDetailView.playControlSize
+                )
+                .overlay { GlassRim(shape: Circle()) }
+                .contentShape(Circle())
+        }
+        // Nothing to rewrite, so the ring would open onto two dead rows.
+        .disabled(editTracks.isEmpty)
+    }
+
+    /// Every track in the running order, markers dropped — what the bulk
+    /// operations act on, and what decides whether the menu has anything to do.
+    var editTracks: [Track] {
+        editItems.compactMap(\.asTrack)
+    }
+
+    /// The name a track carries *in this session*: the pending rename if it
+    /// has one, otherwise the name it arrived with. Extension-free, because
+    /// that is what the rename popup edits and what the tracklist draws —
+    /// `renameChangedEditTracks` puts the extension back on the way out.
+    func editingName(for track: Track) -> String {
+        editedTrackNames[track.googleFileId] ?? track.displayName
+    }
+
+    /// Stage a rewritten name, or leave the track alone.
+    ///
+    /// Both operations only ever *remove* characters, so the one thing they
+    /// can produce that a rename can't is nothing at all. A track whose name
+    /// would be emptied is skipped rather than renamed to a placeholder: the
+    /// count is chosen for the album, not per track, and one short name in a
+    /// hundred shouldn't be silently turned into "Untitled".
+    ///
+    /// The result still goes through `sanitizedFileName`, which is what stops
+    /// a cut landing mid-name from leaving a leading dot — a name that starts
+    /// with one is a hidden file on disk.
+    private func stageBulkRename(_ candidate: String, for track: Track) {
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let safe = TrackSplitEngine.sanitizedFileName(trimmed)
+        guard !safe.isEmpty else { return }
+        editedTrackNames[track.googleFileId] = safe
+    }
+
+    /// Drop `prefix` from the front of every track name that starts with it.
+    ///
+    /// Case-insensitive, because the prefix is being *removed* — matching
+    /// "the " against "The Sun" is what the user meant, and making them match
+    /// the album's own capitalisation is a rule with no upside. Tracks that
+    /// don't start with it are untouched, so a prefix that only half the album
+    /// carries does the right thing on the half that has it.
+    ///
+    /// The prefix is used exactly as typed, including trailing spaces: typing
+    /// "01 " and typing "01" are different requests, and trimming the field
+    /// would collapse them into the one that leaves a space behind.
+    func removeEditPrefix(_ prefix: String, from tracks: [Track]) {
+        guard !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        withAnimation {
+            for track in tracks {
+                let current = editingName(for: track)
+                guard current.lowercased().hasPrefix(prefix.lowercased()) else { continue }
+                stageBulkRename(String(current.dropFirst(prefix.count)), for: track)
+            }
+        }
+    }
+
+    /// Drop the first `count` characters from every track name.
+    func removeEditLeadingCharacters(_ count: Int, from tracks: [Track]) {
+        guard count > 0 else { return }
+        withAnimation {
+            for track in tracks {
+                let current = editingName(for: track)
+                guard current.count > count else { continue }
+                stageBulkRename(String(current.dropFirst(count)), for: track)
+            }
+        }
+    }
+
+    /// Before and after for the first track a given count would actually
+    /// change — the line under the wheel.
+    ///
+    /// The *first changed* track rather than the first track: on an album
+    /// where track one is the short one, previewing it would show a row that
+    /// doesn't move while every other name did, which reads as the control
+    /// being broken.
+    func removeLeadingPreview(_ count: Int) -> (before: String, after: String)? {
+        for track in editTracks {
+            let current = editingName(for: track)
+            guard current.count > count else { continue }
+            let after = String(current.dropFirst(count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !after.isEmpty else { continue }
+            return (current, after)
+        }
+        return nil
+    }
+
     /// Edit mode's counterpart to `playButton`, riding in the same slot on the
     /// same line: one ⊕ holding everything you can add to the album.
     ///
@@ -298,41 +431,71 @@ extension AlbumDetailView {
                     )
             } else if album.canEdit {
                 Menu {
-                    // A cloud album can only take files from its own drive, so
-                    // there's nothing to choose. A local album can pull from
-                    // either — and used to silently use whichever account was
-                    // active, with no way to reach the other.
-                    if let albumProvider = album.storageSource.provider {
+                    // "Add Tracks" opens a second menu rather than spelling
+                    // every source out on the first one. There are up to three
+                    // of them for a local album, and as flat rows they read as
+                    // three unrelated actions that happen to share a verb —
+                    // the choice is *where from*, so the verb is asked once and
+                    // the sources answer it.
+                    Menu {
                         Button {
-                            editDriveSource = albumProvider
+                            showEditDocumentPicker = true
                         } label: {
-                            Label("Add from \(cloudLabel)", systemImage: "cloud")
+                            Label("From iPhone", systemImage: "iphone")
                         }
-                    } else {
-                        ForEach(editSourceProviders) { provider in
+                        // A cloud album can only take files from its own drive,
+                        // so there's nothing to choose. A local album can pull
+                        // from either — and used to silently use whichever
+                        // account was active, with no way to reach the other.
+                        if let albumProvider = album.storageSource.provider {
                             Button {
-                                editDriveSource = provider
+                                editDriveSource = albumProvider
                             } label: {
-                                Label("Add from \(provider.displayName)", systemImage: "cloud")
+                                Label("From \(cloudLabel)", systemImage: "cloud")
+                            }
+                        } else {
+                            ForEach(editSourceProviders) { provider in
+                                Button {
+                                    editDriveSource = provider
+                                } label: {
+                                    Label("From \(provider.displayName)", systemImage: "cloud")
+                                }
                             }
                         }
-                    }
-                    Button {
-                        showEditDocumentPicker = true
                     } label: {
-                        Label("Add from iPhone", systemImage: "iphone")
+                        Label("Add Tracks", systemImage: "music.note")
                     }
 
-                    // Only once there is a running order to divide — a disc
-                    // marker above an empty album has nothing to mark.
-                    if !editItems.isEmpty {
+                    // Everything below the rule adds something that isn't a
+                    // track. Drawn only when there's something under it to
+                    // separate — a disc marker needs a running order to divide,
+                    // and an album that already has a blurb has nothing here.
+                    if !editItems.isEmpty || editedDescriptionIsEmpty {
                         Divider()
-                        Button {
-                            addEditDiscMarker()
-                        } label: {
-                            Label("Add Disc Marker", systemImage: "opticaldisc")
+
+                        if !editItems.isEmpty {
+                            Button {
+                                addEditDiscMarker()
+                            } label: {
+                                Label("Add Disc Marker", systemImage: "opticaldisc")
+                            }
+                            .disabled(editItems.filter(\.isDiscMarker).count >= 100)
                         }
-                        .disabled(editItems.filter(\.isDiscMarker).count >= 100)
+
+                        // Writing the *first* blurb lives here rather than in
+                        // the header, which used to hold a greyed-out
+                        // "Description" for the purpose. Only when there isn't
+                        // one: once the album has prose the header draws it,
+                        // and tapping that is how you edit it — an "add" that
+                        // means "edit" would be the second way to reach the
+                        // same popup.
+                        if editedDescriptionIsEmpty {
+                            Button {
+                                beginEditRename(.description)
+                            } label: {
+                                Label("Add Description", systemImage: "text.alignleft")
+                            }
+                        }
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -347,6 +510,106 @@ extension AlbumDetailView {
                 }
             }
         }
+    }
+
+    /// `editMoreMenu`'s two popups.
+    ///
+    /// Up here rather than on the menu for the reason this whole group exists:
+    /// the menu is in `headerSection`, which is a row in a `List`. Scroll it
+    /// off — which a bulk rename invites, since the point is to go and look at
+    /// what it did to the tracklist — and a popup attached to it goes with it
+    /// while the `@State` that presents it stays true, leaving the flag stuck
+    /// on and the popup unreachable.
+    ///
+    /// Its own function, chained rather than called, for the type-checker
+    /// budget `editModePresentations` is already up against.
+    ///
+    /// The prefix popup takes its tracks through `presenting:`, for the race
+    /// `editModePresentations` describes — dismissal clears the binding, and a
+    /// rename that read the target when it fired would be dropped if that
+    /// landed first. The wheel has no such parameter, so its closure reads
+    /// `editTracks` directly; nothing can reorder the album while a modal
+    /// popup is up over it.
+    @ViewBuilder
+    private func bulkRenamePresentations(_ content: some View) -> some View {
+        content
+            .prompt(
+                "Remove Prefix",
+                isPresented: $showRemovePrefixPrompt,
+                presenting: editTracks,
+                message: "Removes this from the start of every track name that has it.",
+                placeholder: "Prefix",
+                text: $removePrefixText,
+                saveTitle: "Remove"
+            ) { tracks in
+                removeEditPrefix(removePrefixText, from: tracks)
+            }
+            .wheelPrompt(
+                "Remove First Characters",
+                isPresented: $showRemoveLeadingPrompt,
+                message: "Trims this many characters off the start of every track name.",
+                // 20 is past anything anyone counts by eye, and the preview
+                // below the wheel is what makes a number mean something. Names
+                // too short for the count are left alone rather than emptied.
+                range: 1...20,
+                value: $removeLeadingCount,
+                preview: removeLeadingPreview
+            ) { count in
+                removeEditLeadingCharacters(count, from: editTracks)
+            }
+    }
+
+    /// The cover picker's two presentations, and the change that feeds them.
+    ///
+    /// Split out of `editModePresentations` for the budget that function's own
+    /// comment is about — three more modifiers on that chain tipped it past
+    /// "unable to type-check this expression in reasonable time". Chained from
+    /// it rather than called separately, so the body still grows by one call.
+    ///
+    /// Up here at all for the same reason as everything else in that function:
+    /// the picker lives on the cover, the cover is in `headerSection`, and
+    /// `headerSection` is a row in a `List` — scroll it away mid-edit and a
+    /// crop sheet attached to it goes with it while `imageToCrop` stays set,
+    /// wedging the binding exactly the way the rename popup used to wedge.
+    @ViewBuilder
+    private func coverPresentations(_ content: some View) -> some View {
+        content
+            .onChange(of: selectedCoverPhoto) { _, newValue in
+                guard let newValue else { return }
+                Task {
+                    guard let data = try? await newValue.loadTransferable(type: Data.self),
+                          let loaded = UIImage(data: data) else {
+                        coverUploadErrorMessage = "The selected photo couldn't be loaded."
+                        selectedCoverPhoto = nil
+                        return
+                    }
+                    selectedCoverPhoto = nil
+                    imageToCrop = CoverCropItem(image: loaded)
+                }
+            }
+            .alert(
+                "Couldn't Change Album Cover",
+                isPresented: Binding(
+                    get: { coverUploadErrorMessage != nil },
+                    set: { if !$0 { coverUploadErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(coverUploadErrorMessage ?? "")
+            }
+            .fullScreenCover(item: $imageToCrop) { item in
+                ImageCropperView(
+                    image: item.image,
+                    onCropped: { croppedImage in
+                        imageToCrop = nil
+                        Task { await uploadEditCroppedCover(croppedImage) }
+                    },
+                    onCancelled: {
+                        imageToCrop = nil
+                    }
+                )
+            }
     }
 
     private var deleteEditTrackMessage: String {
@@ -398,14 +661,27 @@ extension AlbumDetailView {
     private func applyEditRename(to target: EditRenameTarget) {
         let trimmed = editRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
         switch target {
+        // Title and track name both become a *file* name — the album's folder
+        // and the track's file — so a typed slash is swapped for the wide one
+        // here (`sanitizedFileName` covers which character and why), at the
+        // one point typed text becomes a name the app keeps. Doing it
+        // further down would mean doing it in three places (the local move,
+        // Drive's rename, `.addit-data`) and they would disagree the first
+        // time one of them was missed.
+        //
+        // Artist and description are not file names. The artist rides in
+        // `.addit-data`'s JSON and the description is the cloud folder's own
+        // `description` field; both take a slash as typed.
         case .title:
-            if !trimmed.isEmpty { editedTitle = trimmed }
+            if !trimmed.isEmpty { editedTitle = TrackSplitEngine.sanitizedFileName(trimmed) }
         case .artist:
             editedArtist = trimmed
         case .description:
             editedDescription = trimmed
         case .track(let track):
-            if !trimmed.isEmpty { editedTrackNames[track.googleFileId] = trimmed }
+            if !trimmed.isEmpty {
+                editedTrackNames[track.googleFileId] = TrackSplitEngine.sanitizedFileName(trimmed)
+            }
         }
     }
 

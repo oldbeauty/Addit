@@ -266,11 +266,32 @@ enum TrackSplitEngine {
             : String(format: "%02d:%02d", minutes, secs)
     }
 
-    /// Makes a segment name safe as a file name on-device and in Drive.
-    /// Colons are legal on both; slashes and leading dots are not.
+    /// Makes a name safe as a file name on-device, in Drive and in OneDrive.
+    /// Colons are legal on all three; slashes, NULs and leading dots are not.
+    ///
+    /// A slash becomes **U+FF0F FULLWIDTH SOLIDUS**. It can't be kept as
+    /// typed: an ASCII slash is the path separator on disk, it is what
+    /// `appendingPathComponent` splits a name in two on, and it is what
+    /// Graph's `{parent}:/{name}:/content` addressing is delimited by — so the
+    /// character has to go, and the only question is what it leaves behind.
+    ///
+    /// U+FF0F is the conventional stand-in, and conspicuously *is* one: being
+    /// fullwidth it draws about twice the width of a real slash, so it reads
+    /// as a slash without ever being mistaken for a path separator by a human
+    /// or a parser. "AC/DC" comes back as "AC／DC".
+    ///
+    /// Written as an escape rather than pasted as a literal on purpose — a
+    /// wide slash sitting in source looks enough like `/` that someone would
+    /// eventually "fix" it back into one.
+    ///
+    /// Earlier attempts, for anyone tempted to revisit: a hyphen, which reads
+    /// as a range or a subtitle rather than a join; U+2215 DIVISION SLASH,
+    /// which is the right width but indistinguishable from `/` on screen, so
+    /// nothing tells you the name was altered; and a plus, which is typeable
+    /// but says something the name doesn't.
     static func sanitizedFileName(_ name: String) -> String {
         var cleaned = name
-            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "/", with: "\u{FF0F}")
             .replacingOccurrences(of: "\0", with: "")
         while cleaned.hasPrefix(".") { cleaned.removeFirst() }
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
