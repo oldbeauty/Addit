@@ -131,6 +131,71 @@ Signing check (device builds): append
   dots out of register. Only crests glow, so the body stays near-black and the
   bloom's fine detail only ever lands where the dots are already big enough to
   hide it.
+- **The launch screen is being watched.** Over the water sits a
+  pattern-recognition overlay — reticles, track IDs, a correlation graph, a
+  fitted epicentre, readouts — and the whole claim of it is that none of it is
+  staged. `Shaders/RippleSurface.h` holds the height field so
+  `PixelRipple.metal`, which draws it, and `FieldAnalysis.metal`, which samples
+  it once per cell, cannot be working from different water. The sampler reads
+  the **displayed**, palette-quantised level, so the analysis is looking at the
+  *screen* rather than at the wave underneath it — which is also what makes its
+  boxes land on dot boundaries and visibly contain whole emitters.
+  `Utilities/FieldAnalysis.swift` is the pipeline, and it is the ordinary one:
+  adaptive z-score threshold (floored, or the slow swell registers as
+  structure), 8-connected components, weighted moments and a 2×2 covariance
+  eigensolve for the orientation and the class label, greedy gated association
+  plus an alpha-beta filter for the tracks, Pearson correlation between track
+  level-histories for the graph's edges, and a Kåsa circle fit for the model.
+  **Two measured numbers are the point**: `v̂` regresses the fitted radius
+  against time and `λ̂` transforms the radial profile about the epicentre, and
+  they land on `kWaveSpeed` (0.42) and `kWaveNumber` (7.32 cycles/width) — the
+  constants that generated the water — having never been told either. They are
+  no longer *shown*: the screen is now only the marks that sit on the water,
+  so `tools/fieldprobe` — which compiles the shipping pipeline against the
+  shipping kernel and prints every tick of a launch — is the only place they
+  can be read, and the place to check they still land. Four things are load-bearing and were each got wrong
+  first. Morphological closing before labelling bridges arcs belonging to
+  *different* drops (one 245-cell blob across half the screen), so the detector
+  uses raw connectivity. The speed regression has to reset on a gap, or the
+  ticks where no crest was actually followed average in and the wave reads at
+  half speed. The published hypothesis has to prefer a still-*advancing* front,
+  because a spent ring goes on collecting fits from its inner crests and
+  otherwise pins the crosshair to the first drop forever. And the row DFT this
+  started with came back 40% low: a row crosses a ring obliquely and the wave
+  is barely one and a half cycles wide inside its envelope, so what it measured
+  was the envelope — radially there is no obliquity. It runs at **12 Hz against
+  the field's 60** and nothing in it is animated or interpolated; that mismatch
+  is what reads as inference instead of ornament, and smoothing the labels'
+  travel is the one change that would make the whole thing look fake. Drawn in
+  `Phosphor.lit` with one **neon green** accent for state, deliberately off
+  `Colorways.h`: the palette lights the water and the mark as one surface, and
+  this layer is the *other* system in the picture. The accent has to stay a
+  *lime* green — the water's ramp climbs through an emerald at `high`, and an
+  accent near that hue stops reading as the instrument. **Nothing on this
+  layer is chrome.** It was a header block and a footer block once — status
+  line, counters, τ/μ/σ, a level histogram, the model line — and all of it is
+  gone: what is left is only what a measurement puts somewhere, so every mark
+  on screen is anchored to a number and there is no fixed furniture for the
+  eye to file as decoration. Deleting the histogram took its palette read-back
+  with it (`fieldPaletteKernel`, `FieldPalette`, and the runner's copy), since
+  colouring those bars in the field's own ramp was the only thing any of it
+  ever did. Everything is in cell units until `FieldAnalysisOverlay` draws it;
+  only labels are clamped on screen, never geometry — the band is the safe
+  area now that there are no readout blocks to collide with — and the whole
+  layer gets one dark shadow pass because a 9pt number lands on a blown-out
+  crest sooner or later.
+- **Every launch is a different field.** `surfaceAt` takes a `seed` that offsets
+  the placement hash, so the eight drops land somewhere new each run while the
+  choreography — the timing, the speed, the ripple pitch, the shape of the
+  fill — stays exactly as tuned. `PixelRippleField.seed` owns the one copy and
+  gives it to **both** the shader and the analysis; different seeds there and
+  the overlay is measuring water that isn't on screen. It is kept under 4096 for
+  a precision reason spelled out at `surfaceAt`: as a `float`, a seed near 1e8
+  makes `cycle + 1` unrepresentable and every slot stops recycling. Both tools
+  pass **0**, the field this was tuned on — `ripplepreview`'s contact sheet has
+  to vary only the colorway, and `fieldprobe` takes a seed argument so the
+  measurements can be checked on fields nobody tuned against (across five, v̂
+  lands within −17%…+1% and λ̂ within −7%…−2%).
 - **The wordmark stands on a `.clear` Liquid Glass plaque** on the splash (not
   on the sign-in screen, which has a flat panel to stand out from). It is
   **raked to the letters' angle by handing Apple's glass a sheared `Shape`**
@@ -265,7 +330,9 @@ Signing check (device builds): append
 Use `search` + targeted ranges: `Services/AudioPlayerService.swift` (~70KB),
 `Views/LibraryView.swift` (~51KB), `Views/AlbumDetailView.swift` (~54KB),
 `Views/AlbumDetailView+EditMode.swift` (~56KB — inline edit mode lives here
-as an `extension AlbumDetailView`; its `@State` stays in the main file).
+as an `extension AlbumDetailView`; its `@State` stays in the main file),
+`Utilities/FieldAnalysis.swift` (~48KB — the launch overlay's pipeline; the
+stages are separable, so read the one you need).
 
 ## Docs layout
 

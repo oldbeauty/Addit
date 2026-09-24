@@ -1,6 +1,7 @@
 #include <metal_stdlib>
 #include <SwiftUI/SwiftUI_Metal.h>
 #include "Colorways.h"
+#include "RippleSurface.h"
 
 using namespace metal;
 
@@ -24,9 +25,12 @@ using namespace metal;
 //
 // What colour any of it is comes from `Colorways.h`, which the wordmark drawn
 // on top of this shares — the field and the mark have to be lit by one light,
-// and that only holds if one table says so. Everything in this file is the
-// *shape* of the effect: where the water is, how high, and how big a dot that
-// makes.
+// and that only holds if one table says so. Where the water *is* comes from
+// `RippleSurface.h`, which the launch screen's analysis overlay shares for the
+// same kind of reason: the overlay draws boxes on the dots this file draws, so
+// the two cannot be working from separate copies of the wave. Everything left
+// in this file is the halftone — how big a dot a given height makes, and what
+// light comes off it.
 //
 // `PixelEQGrid` is the app's other pixel grid and stays square-ish and fixed:
 // it's a readout you're meant to count, and a cell that changes size can't be
@@ -35,23 +39,6 @@ using namespace metal;
 // Called from `PixelRippleField.swift` via `.colorEffect`.
 
 // MARK: - Tuning
-
-/// Wavefronts in flight. Each one owns a staggered slot in `kDropPeriod`, so
-/// this is also what sets the patter: a new drop lands every
-/// `kDropPeriod / kDrops` seconds.
-constant int kDrops = 8;
-/// Seconds from a drop landing to its slot recycling somewhere else. Long
-/// enough that a ring crosses the screen and dies before its slot is reused,
-/// so slots never visibly "jump".
-///
-/// Also the full length of the fill, and so the length of the launch: every
-/// slot has fired exactly once by the time this is up. Keep it in step with
-/// `LoadingSplashView.launchHold`.
-constant float kDropPeriod = 2.4;
-/// Wavefront speed, in screen widths per second.
-constant float kWaveSpeed = 0.42;
-/// Ripples per screen width. High enough for several rings inside one front.
-constant float kWaveNumber = 46.0;
 
 /// Clearance between two neighbouring dots at full brightness, as a fraction
 /// of the cell. The grid's limit: a dot never grows past this, so even a screen
@@ -72,26 +59,6 @@ constant float kMinRadius = 0.055;
 /// out of the shader to keep those two in step, for a colour that is within a
 /// hair of black in every direction anyway.
 constant float3 kBackdrop = float3(0.006, 0.004, 0.021);
-
-/// Palette steps. The field is continuous; this is what makes it look
-/// *indexed* — flat bands of colour stepping into each other the way a 256
-/// colour display would have done it. Lower is chunkier.
-///
-/// Applied to the dots and *not* to the bloom below, which is the one place
-/// the two disagree on purpose: the panel is indexed, and the light coming off
-/// it into the air isn't. That is also what a real LED sign does behind haze.
-constant float kPaletteSteps = 26.0;
-
-/// Where the resting surface sits in the ramp: higher bends the midtones
-/// further down.
-///
-/// This is the field's contrast control, and the reason it isn't higher is the
-/// bloom. Without one, most of the screen is undisturbed water and lands
-/// mid-ramp, so the whole field comes back as one flat wash with the ripples
-/// barely brighter than it — which is what a hard bend was fixing. The bloom
-/// separates the calm from the disturbed by *light* instead, so the bend can
-/// come back up a little and let some colour into the body of the water.
-constant float kMidBend = 1.60;
 
 /// How hard the light between the dots is driven.
 ///
@@ -137,85 +104,6 @@ constant float kVibrance = 1.30;
 
 // MARK: - Helpers
 
-/// Hoskins' hash: two uncorrelated values in 0…1 from an integer pair.
-/// Used for drop placement, so `(slot, cycle)` in gives a different point on
-/// screen every time a slot comes round.
-static float2 hash22(float2 p) {
-    float3 p3 = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
-}
-
-/// The water at `uv`: its height, and its quadrature — the same wave a quarter
-/// period ahead, which peaks where the surface is climbing fastest and is what
-/// the rim light is drawn from.
-///
-/// Called twice per pixel, at the cell's centre for the dots and at the pixel
-/// itself for the bloom. One function rather than two because the two have to
-/// be the *same* water: a bloom that disagrees with the dots it sits under
-/// reads as a badly registered second print of the picture.
-static float2 surfaceAt(float2 uv, float aspect, float time) {
-    float height = 0.0;
-    float lead = 0.0;
-
-    for (int i = 0; i < kDrops; i++) {
-        float slot = float(i);
-        // Slot `i` first fires `i` intervals in, and `local` is the time since
-        // then. Negative means its first drop hasn't landed yet, and that slot
-        // contributes nothing at all.
-        //
-        // That guard is what gives the launch a shape. Without it the slots
-        // are simply periodic, and any stagger — forwards or backwards — just
-        // relabels which slot is which: t = 0 always lands mid-storm. Cutting
-        // off everything before zero instead means the field starts empty and
-        // fills one ring at a time, and by `kDropPeriod` every slot has fired
-        // exactly once. That is the whole animation, and it is why the splash
-        // is held for exactly that long — see `LoadingSplashView.launchHold`.
-        float local = time - slot * (kDropPeriod / float(kDrops));
-        if (local < 0.0) { continue; }
-        float cycle = floor(local / kDropPeriod);
-        float age = local - cycle * kDropPeriod;
-
-        float2 rnd = hash22(float2(slot, cycle));
-        float2 origin = float2(rnd.x, rnd.y * aspect);
-
-        float dist = distance(uv, origin);
-        // Distance behind the wavefront. Negative outside the ring, positive
-        // inside it, zero exactly on it.
-        float front = dist - kWaveSpeed * age;
-
-        // The ring widens as it travels — a front of constant width reads as a
-        // hard expanding circle, an object rather than a disturbance.
-        float width = 0.13 + 0.075 * age;
-        float envelope = exp(-(front * front) / (width * width));
-        // Energy leaves with time, and spreads out over a growing circumference.
-        // The floor in the denominator is what keeps a fresh drop from
-        // clipping to a white square at its own centre — without it the
-        // amplitude runs away as `dist` goes to zero and the impact point
-        // blows out instead of reading as the hottest part of the ripple.
-        float decay = exp(-1.25 * age) / (0.62 + 3.0 * dist);
-
-        float phase = kWaveNumber * front;
-        height += sin(phase) * envelope * decay;
-        lead += cos(phase) * envelope * decay;
-    }
-
-    // A slow swell under everything, so the field is never completely flat
-    // between drops. Two incommensurate sheets, so it doesn't loop visibly.
-    height += 0.075 * sin(uv.x * 6.3 + time * 0.55) * sin(uv.y * 4.7 - time * 0.41);
-
-    return float2(height, lead);
-}
-
-/// Height → where that lands in the ramp, 0…1.
-///
-/// Ripples are small and signed; this centres them so the resting surface sits
-/// low in the ramp and crests climb out of it. `tanh` rather than a clamp: two
-/// fronts crossing shouldn't flatten into a plate.
-static float rampLevel(float height) {
-    return pow(0.5 + 0.5 * tanh(height * 2.6), kMidBend);
-}
-
 /// Push `c` away from its own luminance. Clamped at zero because the palette
 /// runs to near-primaries and pushing a saturated blue further takes its red
 /// and green negative.
@@ -247,7 +135,8 @@ static float3 waterColour(float2 surface, float level, Colorway palette) {
 /// Split out from the stitchable entry point below only so
 /// `tools/ripplepreview` can sweep `way` at runtime and put every colorway on
 /// one sheet. The app always passes `kColorway`, where it folds to a constant.
-static half4 renderRipple(float2 position, float2 size, float cell, float time, int way) {
+static half4 renderRipple(float2 position, float2 size, float cell,
+                          float time, float seed, int way) {
     Colorway palette = colorwayAt(way);
 
     // Normalise by width alone so a cell stays square: y runs 0…aspect, not
@@ -260,16 +149,12 @@ static half4 renderRipple(float2 position, float2 size, float cell, float time, 
     // the water is smooth and continuous, and quantising it onto a grid is
     // what makes it read as a low-resolution display showing a fluid.
     float2 cellUV = (floor(position / cell) + 0.5) * cell / size.x;
-    float2 cellSurface = surfaceAt(cellUV, aspect, time);
-    // Quantise the ramp parameter rather than the final colour, so the bands
-    // land on the same values everywhere on screen and read as a palette
-    // rather than as banding artefacts.
-    float cellLevel = rampLevel(cellSurface.x);
-    cellLevel = round(cellLevel * (kPaletteSteps - 1.0)) / (kPaletteSteps - 1.0);
+    float2 cellSurface = surfaceAt(cellUV, aspect, time, seed);
+    float cellLevel = quantiseLevel(rampLevel(cellSurface.x));
     float3 dotCol = waterColour(cellSurface, cellLevel, palette);
 
     // --- The light above it, sampled per pixel and left continuous.
-    float2 bloomSurface = surfaceAt(position / size.x, aspect, time);
+    float2 bloomSurface = surfaceAt(position / size.x, aspect, time, seed);
     float bloomLevel = rampLevel(bloomSurface.x);
     float3 bloom = waterColour(bloomSurface, bloomLevel, palette) * kBleed
                  * smoothstep(kBleedFloor, 0.85, bloomLevel);
@@ -310,6 +195,7 @@ static half4 renderRipple(float2 position, float2 size, float cell, float time, 
                                    half4 currentColor,
                                    float2 size,
                                    float cell,
-                                   float time) {
-    return renderRipple(position, size, cell, time, kColorway);
+                                   float time,
+                                   float seed) {
+    return renderRipple(position, size, cell, time, seed, kColorway);
 }

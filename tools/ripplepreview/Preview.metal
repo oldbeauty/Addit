@@ -45,8 +45,12 @@ kernel void ripplePreviewKernel(texture2d<float, access::write> out [[texture(0)
                                 uint2 gid [[thread_position_in_grid]]) {
     float2 position = args.origin + (float2(gid) + 0.5) / args.scale;
 
+    // Seed 0 — the field this screen was tuned on. The app draws a random
+    // one per launch (`PixelRippleField.seed`), which is exactly what a
+    // contact sheet must not do: every cell of it has to be the same water so
+    // that the only thing varying across the sheet is the colorway.
     float3 col = float3(renderRipple(position, args.size, args.cell,
-                                     args.time, args.way).rgb);
+                                     args.time, 0.0, args.way).rgb);
 
     // The mark, centred, composited premultiplied — which is what SwiftUI does
     // with the `ZStack` in `LoadingSplashView` and why `renderWordmark`

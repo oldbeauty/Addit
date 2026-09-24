@@ -14,10 +14,11 @@ using namespace metal;
 // each other.
 //
 // Nothing here knows about shape, motion, or the halftone grid: this is the
-// palette and only the palette. `PixelRipple.metal` owns how the ramp is
-// sampled (and quantises it — see `kPaletteSteps` there, which is what makes
-// these stops read as an indexed palette rather than as a gradient);
-// `Wordmark.metal` owns the halo's falloffs. Both include this.
+// palette and only the palette. `RippleSurface.h` owns the ramp these stops
+// are sampled along, and quantises it — see `kPaletteSteps` there, which is
+// what makes them read as an indexed palette rather than as a gradient;
+// `PixelRipple.metal` owns the halftone; `Wordmark.metal` owns the halo's
+// falloffs. All of them include this.
 //
 // What the stops are *for*, which is the thing to know before editing one: the
 // field's ramp is bent down hard (`pow(level, 1.75)`) so the undisturbed water
