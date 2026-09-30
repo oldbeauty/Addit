@@ -95,6 +95,7 @@ struct SettingsView: View {
                 set: { editingScheme = $0?.scheme }
             )) { identifier in
                 AccentColorPickerSheet(scheme: identifier.scheme)
+                    .scrollIndicators(.hidden)
             }
         }
     }

@@ -75,6 +75,14 @@ struct AdditApp: App {
     var body: some Scene {
         WindowGroup {
             AccountContainerView()
+                // A design decision, app-wide: no scroll bars. It travels down
+                // the environment into every `ScrollView`, `List` and `Form`
+                // below — but not across a presentation: a sheet or a
+                // full-screen cover starts a fresh environment for this, so
+                // each one's content repeats the modifier. (A
+                // `UIScrollView.appearance()` default doesn't help either;
+                // SwiftUI sets the indicators on its own scroll views.)
+                .scrollIndicators(.hidden)
                 .environment(authCoordinator)
                 .environment(driveService)
                 .environment(cloudRouter)

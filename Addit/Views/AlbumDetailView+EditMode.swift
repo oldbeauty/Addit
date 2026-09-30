@@ -270,6 +270,7 @@ extension AlbumDetailView {
                     },
                     provider: provider
                 )
+                .scrollIndicators(.hidden)
             }
     }
 
@@ -423,13 +424,9 @@ extension AlbumDetailView {
     /// reads worse than either on its own.
     var editAddMenu: some View {
         Group {
-            if isUploadingTracks {
-                LoadingIndicator(size: .small)
-                    .frame(
-                        width: AlbumDetailView.playControlSize,
-                        height: AlbumDetailView.playControlSize
-                    )
-            } else if album.canEdit {
+            // Never a spinner: adding runs in the background and fills the
+            // toolbar's ring, so + stays usable for adding more meanwhile.
+            if album.canEdit {
                 Menu {
                     // "Add Tracks" opens a second menu rather than spelling
                     // every source out on the first one. There are up to three
@@ -609,14 +606,19 @@ extension AlbumDetailView {
                         imageToCrop = nil
                     }
                 )
+                .scrollIndicators(.hidden)
             }
     }
 
     private var deleteEditTrackMessage: String {
         let trackName = editTrackToDelete?.name ?? ""
+        // Cloud deletes go to the provider's trash, not away for good — say
+        // so, since that's where to look for it after a slip.
         return album.isLocal
             ? "This will delete \"\(trackName)\" from \"\(album.name)\" on this iPhone."
-            : "This will delete \"\(trackName)\" from \"\(album.name)\" in \(cloudLabel)."
+            : album.isOneDrive
+                ? "This will move \"\(trackName)\" from \"\(album.name)\" to the OneDrive recycle bin."
+                : "This will move \"\(trackName)\" from \"\(album.name)\" to the trash in Google Drive."
     }
 
     // MARK: Edit-mode rename popup
@@ -996,9 +998,42 @@ extension AlbumDetailView {
     private func handleEditPickedFiles(_ result: Result<[URL], Error>) async {
         guard case .success(let urls) = result, !urls.isEmpty else { return }
 
-        isUploadingTracks = true
-        defer { isUploadingTracks = false }
+        if album.isLocal {
+            addPickedFilesToLocalAlbum(urls)
+            return
+        }
 
+        // A cloud album's files go up in the background — see
+        // `TransferService+AddTracks.swift`. Everything the job needs is
+        // copied out of the view first: it outlives this page, and must never
+        // reach back into its state.
+        let album = self.album
+        let service = editDriveService
+        let context = modelContext
+        let pending = urls.map { url in
+            let mimeType = mimeTypeForExtension(url.pathExtension)
+            return TransferService.PendingTrack(
+                name: url.lastPathComponent,
+                bytes: Self.fileSize(of: url)
+            ) { progress in
+                let data = try await Self.readPickedFile(url)
+                let item = try await service.createFile(
+                    name: url.lastPathComponent,
+                    mimeType: mimeType,
+                    inFolder: album.googleFolderId,
+                    data: data,
+                    onProgress: progress
+                )
+                return album.addUploadedTrack(item, bytes: Int64(data.count), context: context)
+            }
+        }
+        transfers.addTracks(pending, to: album)
+    }
+
+    /// A local album's "upload" is a file copy into its folder — instant, so
+    /// it stays inline rather than becoming a job with a ring nobody would
+    /// see move.
+    private func addPickedFilesToLocalAlbum(_ urls: [URL]) {
         for url in urls {
             guard url.startAccessingSecurityScopedResource() else { continue }
             defer { url.stopAccessingSecurityScopedResource() }
@@ -1006,73 +1041,71 @@ extension AlbumDetailView {
             do {
                 let data = try Data(contentsOf: url)
                 let fileName = url.lastPathComponent
-                let mimeType = mimeTypeForExtension(url.pathExtension)
+                let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
+                let fm = FileManager.default
+                let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("LocalAlbums", isDirectory: true)
+                    .appendingPathComponent(albumId, isDirectory: true)
+                try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
 
-                if album.isLocal {
-                    // Save file locally
-                    let albumId = album.googleFolderId.replacingOccurrences(of: "local_", with: "")
-                    let fm = FileManager.default
-                    let albumDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                        .appendingPathComponent("LocalAlbums", isDirectory: true)
-                        .appendingPathComponent(albumId, isDirectory: true)
-                    try? fm.createDirectory(at: albumDir, withIntermediateDirectories: true)
+                let destURL = albumDir.appendingPathComponent(fileName)
+                try data.write(to: destURL)
 
-                    let destURL = albumDir.appendingPathComponent(fileName)
-                    try data.write(to: destURL)
-
-                    let track = Track(
-                        googleFileId: "local_\(UUID().uuidString)",
-                        name: fileName,
-                        album: album,
-                        mimeType: mimeType,
-                        fileSize: Int64(data.count),
-                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
-                        localFilePath: "LocalAlbums/\(albumId)/\(fileName)"
-                    )
-                    modelContext.insert(track)
-                    editItems.append(.track(track))
-                    album.trackCount += 1
-                } else {
-                    let driveItem = try await editDriveService.createFile(
-                        name: fileName,
-                        mimeType: mimeType,
-                        inFolder: album.googleFolderId,
-                        data: data
-                    )
-
-                    let track = Track(
-                        googleFileId: driveItem.id,
-                        name: driveItem.name,
-                        album: album,
-                        mimeType: driveItem.mimeType,
-                        fileSize: driveItem.fileSizeBytes,
-                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
-                        modifiedTime: driveItem.modifiedTime
-                    )
-                    modelContext.insert(track)
-                    editItems.append(.track(track))
-                    album.trackCount += 1
-                }
+                let track = Track(
+                    googleFileId: "local_\(UUID().uuidString)",
+                    name: fileName,
+                    album: album,
+                    mimeType: mimeTypeForExtension(url.pathExtension),
+                    fileSize: Int64(data.count),
+                    trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                    localFilePath: "LocalAlbums/\(albumId)/\(fileName)"
+                )
+                modelContext.insert(track)
+                editItems.append(.track(track))
+                album.trackCount += 1
             } catch {
-                editErrorMessage = "Upload failed: \(error.localizedDescription)"
+                editErrorMessage = "Couldn't add \(url.lastPathComponent): \(error.localizedDescription)"
             }
         }
         try? modelContext.save()
+    }
+
+    /// Size on disk, for the ring's weighting. Zero if it can't be read, which
+    /// only makes that file move the ring all at once.
+    private static func fileSize(of url: URL) -> Int64 {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+    }
+
+    /// Reads a file the picker handed over, off the main thread — a big one
+    /// read inline stalls every frame until it's in memory.
+    private static func readPickedFile(_ url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try Data(contentsOf: url)
+        }.value
     }
 
     /// `provider` is the cloud the files were *browsed* from, which for a local
     /// album is whichever one the user picked — not necessarily the active
     /// account. Reading through `editDriveService` here would download the
     /// picked IDs from the wrong drive.
+    ///
+    /// A background job like an upload, for the same reasons; the ring moves a
+    /// file at a time, since neither a server-side copy nor a download here
+    /// reports its bytes.
     private func handleEditDriveFilesAdded(
         _ files: [DriveItem], from provider: AccountProvider
     ) async {
-        isUploadingTracks = true
-        defer { isUploadingTracks = false }
+        let album = self.album
+        let context = modelContext
         let sourceService = cloudRouter.service(for: provider.storageSource)
+        let targetService = editDriveService
 
-        for file in files {
-            do {
+        let pending = files.map { file in
+            TransferService.PendingTrack(name: file.name, bytes: 0) { _ in
                 if album.isLocal {
                     // Download from the cloud and save locally
                     let data = try await sourceService.downloadFileData(fileId: file.id)
@@ -1092,36 +1125,23 @@ extension AlbumDetailView {
                         album: album,
                         mimeType: file.mimeType,
                         fileSize: Int64(data.count),
-                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
+                        trackNumber: album.trackCount + 1,
                         localFilePath: "LocalAlbums/\(albumId)/\(file.name)"
                     )
-                    modelContext.insert(track)
-                    editItems.append(.track(track))
+                    context.insert(track)
                     album.trackCount += 1
+                    try? context.save()
+                    return track
                 } else {
-                    let copiedItem = try await editDriveService.copyFile(
+                    let copiedItem = try await targetService.copyFile(
                         fileId: file.id,
                         toFolder: album.googleFolderId
                     )
-
-                    let track = Track(
-                        googleFileId: copiedItem.id,
-                        name: copiedItem.name,
-                        album: album,
-                        mimeType: copiedItem.mimeType,
-                        fileSize: copiedItem.fileSizeBytes,
-                        trackNumber: editItems.compactMap(\.asTrack).count + 1,
-                        modifiedTime: copiedItem.modifiedTime
-                    )
-                    modelContext.insert(track)
-                    editItems.append(.track(track))
-                    album.trackCount += 1
+                    return album.addUploadedTrack(copiedItem, bytes: file.fileSizeBytes, context: context)
                 }
-            } catch {
-                editErrorMessage = "Copy failed: \(error.localizedDescription)"
             }
         }
-        try? modelContext.save()
+        transfers.addTracks(pending, to: album)
     }
 
     private func mimeTypeForExtension(_ ext: String) -> String {

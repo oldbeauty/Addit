@@ -131,7 +131,6 @@ struct AlbumDetailView: View {
     /// picker; the value travels with it so the download reads the same drive
     /// that was browsed.
     @State var editDriveSource: AccountProvider?
-    @State var isUploadingTracks = false
 
     /// What the rename popup is editing — album title, artist, description,
     /// or one track.
@@ -1394,6 +1393,12 @@ struct AlbumDetailView: View {
                     Button("Cancel") { cancelEdits() }
                         .disabled(isSavingEdits)
                 }
+                // The same ring as outside edit mode: an add's upload shows
+                // here while you keep editing, and moves to beside the
+                // ellipsis if you save before it's done.
+                ToolbarItem(placement: .primaryAction) {
+                    ActivityRing(albumFolderId: album.googleFolderId)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     if isSavingEdits {
                         LoadingIndicator(size: .small)
@@ -1483,6 +1488,7 @@ struct AlbumDetailView: View {
         }
         .sheet(isPresented: $showAccessSheet) {
             AccessSheet(album: album)
+                .scrollIndicators(.hidden)
         }
         .sheet(item: $duplicateTarget) { provider in
             ChooseDriveFolderSheet(provider: provider) { parentId, markStarred in
@@ -1491,6 +1497,7 @@ struct AlbumDetailView: View {
             }
             .environment(cloudRouter)
             .environment(authService)
+            .scrollIndicators(.hidden)
         }
         .alert(saveToDriveErrorTitle, isPresented: Binding(
             get: { saveToDriveError != nil },
@@ -1532,6 +1539,16 @@ struct AlbumDetailView: View {
         } message: {
             Text(exportError ?? "")
         }
+        // Read off the transfer service, not the page: an add that fails
+        // after you've left the album is still waiting here when you're back.
+        .alert("Couldn't Add Tracks", isPresented: Binding(
+            get: { transfers.failures[album.googleFolderId] != nil },
+            set: { if !$0 { transfers.failures[album.googleFolderId] = nil } }
+        )) {
+            Button("OK") { transfers.failures[album.googleFolderId] = nil }
+        } message: {
+            Text(transfers.failures[album.googleFolderId] ?? "")
+        }
         .navigationDestination(isPresented: $navigateToChat) {
             ChatView(album: album)
         }
@@ -1570,6 +1587,7 @@ struct AlbumDetailView: View {
                 .environment(cacheService)
                 .environment(themeService)
                 .environment(playerService)
+                .scrollIndicators(.hidden)
         }
     }
 
@@ -1660,6 +1678,22 @@ struct AlbumDetailView: View {
         }
         .onChange(of: playerService.currentTrack?.googleFileId) {
             refreshCachedState()
+        }
+        // A background add landed a track — possibly started by an earlier
+        // instance of this page, since the job outlives it. Mid-edit it joins
+        // the working copy, so Save writes it into the running order; otherwise
+        // the list is rebuilt, and a track the saved order doesn't know about
+        // yet goes on the end, which is where it was added.
+        .onReceive(NotificationCenter.default.publisher(for: .albumTrackAdded)) { note in
+            guard let track = note.userInfo?["track"] as? Track,
+                  track.album?.persistentModelID == album.persistentModelID else { return }
+            if isEditing {
+                if !editItems.contains(where: { $0.asTrack?.googleFileId == track.googleFileId }) {
+                    withAnimation { editItems.append(.track(track)) }
+                }
+            } else {
+                seedDisplayItems()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .audioCacheDidChange)) { _ in
             refreshCachedState()
@@ -1862,17 +1896,30 @@ struct AlbumDetailView: View {
                 album.albumDescription = folderInfo.description
             }
 
+            // What was here before the listing was asked for. A background
+            // add can land a track while the request is out, and a listing
+            // taken before its file existed would otherwise read that brand
+            // new track as deleted upstream and remove it.
+            let knownBeforeListing = Set(fetchAllTracks().map(\.googleFileId))
+
             let response = try await driveService.listAudioFiles(inFolder: album.googleFolderId)
             let driveFiles = response.files
             let driveIds = Set(driveFiles.map(\.id))
+            // Read again after the listing, from the store rather than the
+            // relationship, for the same reason in the other direction: a
+            // track added meanwhile whose file *is* in the listing must not be
+            // inserted a second time.
             let localIds = Set(album.tracks.map(\.googleFileId))
+                .union(fetchAllTracks().map(\.googleFileId))
 
             // Remove tracks that no longer exist on Drive. Their offline copies
             // go with them — the file they mirror is gone upstream, so the
             // cache entry could never be reached or refreshed again — and so
             // does any reference the player still holds, which would otherwise
             // be a detached model it traps on.
-            let vanished = album.tracks.filter { !driveIds.contains($0.googleFileId) }
+            let vanished = album.tracks.filter {
+                knownBeforeListing.contains($0.googleFileId) && !driveIds.contains($0.googleFileId)
+            }
             playerService.forget(trackIds: Set(vanished.map(\.googleFileId)))
             for track in vanished {
                 LibraryCleanup.purge(track, cache: cacheService)

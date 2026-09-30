@@ -100,6 +100,11 @@ struct ContentView: View {
         // First run. Attached here with the other overlays and above `.tint`
         // so the card's accent button reads the themed tint, not the system's.
         .welcomeIntro(isPresented: $showWelcomeIntro) { hasSeenWelcomeIntro = true }
+        // After the intro, so it lands on top of it: a Google sign-in with the
+        // Drive box unticked is the more urgent of the two. Here rather than
+        // on the sign-in screen because the box can be missed from the
+        // library too — adding an account, switching, or a relaunch.
+        .driveAccessPrompt()
         // Watches the whole condition, not just arrival at the library, so
         // clearing the flag from Settings brings the intro back without a
         // relaunch. `initial: true` covers the launch that restores a session,

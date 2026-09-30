@@ -18,13 +18,23 @@ final class TransferService {
     enum Kind: Equatable {
         case duplicate(providerName: String)
         case saveToDevice
+        /// Tracks added to an album from edit mode's + menu — see
+        /// `TransferService+AddTracks.swift`.
+        case addTracks
 
         var verb: String {
             switch self {
             case .duplicate(let name): return "Copying to \(name)"
             case .saveToDevice: return "Saving to iPhone"
+            case .addTracks: return "Adding tracks"
             }
         }
+
+        /// Whether a second request for the same album is a repeat to drop.
+        /// Adding tracks never is: each pick is different files, and picking
+        /// more while the first batch uploads is exactly what running this in
+        /// the background is for. They queue instead.
+        var dropsRepeats: Bool { self != .addTracks }
     }
 
     struct Job: Identifiable {
@@ -47,6 +57,12 @@ final class TransferService {
     /// Head of the list is the one actually running; the rest are waiting.
     private(set) var jobs: [Job] = []
 
+    /// What went wrong in a background job, by album folder id, for that
+    /// album's page to say. Kept here rather than in the page because the job
+    /// outlives it: an upload that fails after you've left the album is
+    /// reported when you come back, instead of into a view that's gone.
+    var failures: [String: String] = [:]
+
     var active: Job? { jobs.first }
     var isBusy: Bool { !jobs.isEmpty }
 
@@ -62,7 +78,8 @@ final class TransferService {
     /// now that it isn't, this is the thing standing between an impatient
     /// double-tap and two copies of the same album.
     func begin(albumId: String, albumName: String, kind: Kind) async -> UUID? {
-        guard !jobs.contains(where: { $0.albumId == albumId && $0.kind == kind }) else {
+        guard !kind.dropsRepeats
+                || !jobs.contains(where: { $0.albumId == albumId && $0.kind == kind }) else {
             return nil
         }
         let job = Job(albumId: albumId, albumName: albumName, kind: kind)
@@ -80,6 +97,15 @@ final class TransferService {
         jobs[index].current = current
         jobs[index].total = total
         jobs[index].detail = detail
+    }
+
+    /// Moves a job's progress forward, never back. Upload progress arrives
+    /// from the network on its own schedule, and a report that lands after its
+    /// file has finished would otherwise pull the ring backwards.
+    func advance(_ id: UUID, to current: Int) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              current > jobs[index].current else { return }
+        jobs[index].current = current
     }
 
     func finish(_ id: UUID) {

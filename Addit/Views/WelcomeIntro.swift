@@ -148,8 +148,10 @@ private struct WelcomeIntroPopup: View {
 
 /// Accent-filled advance button. The label takes `legibleForeground` rather
 /// than a fixed white, so a pale accent from the palette gets black text
-/// instead of a glyph that vanishes into its own pill.
-private struct WelcomeAdvanceStyle: ButtonStyle {
+/// instead of a glyph that vanishes into its own pill. Shared with the
+/// Drive-access card, which is the same kind of card asking the same kind of
+/// "go on" question.
+struct WelcomeAdvanceStyle: ButtonStyle {
     let accent: Color
 
     func makeBody(configuration: Configuration) -> some View {

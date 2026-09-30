@@ -120,6 +120,7 @@ struct ChatView: View {
             AccessSheet(album: album)
                 .environment(cloudRouter)
                 .environment(authService)
+                .scrollIndicators(.hidden)
         }
         .task {
             async let msgs: () = loadMessages()

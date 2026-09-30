@@ -42,6 +42,19 @@ final class CloudAuthCoordinator {
         }
     }
 
+    /// A Google sign-in that came back without Drive — see
+    /// `GoogleAuthService.driveAccessRequest`. Google-only: Microsoft's consent
+    /// is all or nothing, so a OneDrive sign-in either has files or failed.
+    var driveAccessRequest: GoogleAuthService.DriveAccessRequest? { google.driveAccessRequest }
+
+    func grantDriveAccess() async -> GoogleAuthService.DriveAccessOutcome {
+        await google.grantDriveAccess()
+    }
+
+    func dismissDriveAccessRequest() {
+        google.dismissDriveAccessRequest()
+    }
+
     var activeAccount: Account? { accountManager.activeAccount }
 
     var activeProvider: AccountProvider { activeAccount?.provider ?? .google }

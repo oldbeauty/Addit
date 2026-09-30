@@ -43,11 +43,21 @@ protocol CloudDriveService {
     /// the same text the folder shows in Drive's or OneDrive's own UI.
     func setDescription(_ description: String, fileId: String) async throws
     func removeFileFromFolder(fileId: String, folderId: String) async throws
+    /// Moves the item to the provider's trash — Drive's trash, OneDrive's
+    /// recycle bin — never a permanent delete. Graph's `DELETE` already
+    /// recycles; Drive's would erase, so Google trashes explicitly.
     func deleteFile(fileId: String) async throws
     func copyFile(fileId: String, toFolder folderId: String) async throws -> DriveItem
     func createFolder(name: String, inParent parentId: String) async throws -> DriveItem
     func findOrCreateFolder(named name: String, inParent parentId: String) async throws -> DriveItem
     func createFile(name: String, mimeType: String, inFolder parentId: String, data: Data) async throws -> DriveItem
+    /// `createFile`, reporting bytes sent so far as it goes — for an upload
+    /// someone is watching a ring fill for. A provider that can't see its own
+    /// progress reports once, at the end, and the ring moves a file at a time.
+    func createFile(
+        name: String, mimeType: String, inFolder parentId: String, data: Data,
+        onProgress: @escaping @Sendable (Int64) -> Void
+    ) async throws -> DriveItem
     func setStarred(fileId: String, starred: Bool) async throws
     func updateFileData(fileId: String, data: Data, mimeType: String) async throws
     func downloadFileData(fileId: String) async throws -> Data

@@ -27,7 +27,7 @@ final class OneDriveService: CloudDriveService {
     let supportsStarred = false
     let supportsCommenterRole = false
 
-    private let session = URLSession.shared
+    private let session = CloudSession()
     private let baseURL = Constants.graphAPIBase
 
     enum OneDriveError: LocalizedError {
@@ -310,6 +310,17 @@ final class OneDriveService: CloudDriveService {
     /// 5 GB free. The simple PUT has never failed in any of those runs — it is
     /// what puts `.addit-data` and `cover.jpg` up every time.
     private static let simpleUploadLimit = 250 * 1024 * 1024
+
+    /// Graph's uploads go through `authorizedRequest`, which has no progress
+    /// hook, so this reports the whole file once it's up.
+    func createFile(
+        name: String, mimeType: String, inFolder parentId: String, data: Data,
+        onProgress: @escaping @Sendable (Int64) -> Void
+    ) async throws -> DriveItem {
+        let item = try await createFile(name: name, mimeType: mimeType, inFolder: parentId, data: data)
+        onProgress(Int64(data.count))
+        return item
+    }
 
     func createFile(name: String, mimeType: String, inFolder parentId: String, data: Data) async throws -> DriveItem {
         let safeName = Self.sanitizedName(name)

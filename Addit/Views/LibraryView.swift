@@ -892,11 +892,13 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showAddAlbum) {
             AddAlbumView()
+                .scrollIndicators(.hidden)
         }
         .sheet(isPresented: $showCreateAlbum) {
             CreateAlbumView { newAlbum in
                 openForEditing(newAlbum)
             }
+            .scrollIndicators(.hidden)
         }
         .sheet(item: $addFromProvider) { provider in
             DriveAudioPickerView(
@@ -906,6 +908,7 @@ struct LibraryView: View {
                 },
                 provider: provider
             )
+            .scrollIndicators(.hidden)
         }
         .sheet(item: $copyFromProvider) { provider in
             CopyAlbumFromDriveView(
@@ -918,12 +921,15 @@ struct LibraryView: View {
                 },
                 provider: provider
             )
+            .scrollIndicators(.hidden)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+                .scrollIndicators(.hidden)
         }
         .sheet(isPresented: $showFeedback) {
             FeedbackSheet()
+                .scrollIndicators(.hidden)
         }
         // Adding an account from this menu could fail silently — the alert on
         // SignInView only covers the signed-out screen, so a failed "Add
