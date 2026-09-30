@@ -15,8 +15,10 @@ xcuserdata/
 .build/
 Packages/
 
-# Claude Code
-.claude/
+# Claude Code — local settings stay out; the skills link is shared, so the
+# project's skills (.omp/skills) load in every clone and every worktree.
+.claude/*
+!.claude/skills
 
 # App secrets — never commit
 *.xcconfig

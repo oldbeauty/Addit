@@ -1,12 +1,24 @@
 # AGENTS.md — Addit
 
-Always-on working context for this repo. Human setup/feature docs live in
-`README.md` (not auto-loaded — length is free there). **Deep playback internals
-live in `skill://audio-playback`; read it before touching playback, queue,
-gapless, or now-playing UI — those invariants are subtle and easy to revert.**
+Always-on working context: the rules that matter on any task. Depth on each
+subsystem lives in a skill, loaded on demand — `skill://<name>` is
+`.omp/skills/<name>/SKILL.md`. **Read the matching skill before touching its
+area**; the invariants in them are subtle and easy to revert. Human
+setup/feature docs live in `README.md`.
 
 Native iOS music player (iOS 26+, Xcode 26+, SwiftUI + SwiftData) backed by
 Google Drive + OneDrive + local iPhone storage.
+
+## Skills — read before touching
+
+| Area | Skill |
+|---|---|
+| Playback, queue, gapless, now-playing UI | `skill://audio-playback` |
+| Launch screen: wordmark, ripple field, colorways, analysis overlay, plaque | `skill://launch-screen` |
+| Glass ornaments, menu icons, anything reading the scroll offset | `skill://glass-ornaments` |
+| Library: folders, arrange mode, folder zoom, Sort by Color, cover thumbnails | `skill://library-screen` |
+| Share links, the site handshake, link previews | `skill://share-links` |
+| Sign-in, drive requests and uploads, background transfers, album sync | `skill://cloud-services` |
 
 ## Build & verify
 
@@ -34,6 +46,10 @@ Signing check (device builds): append
 - OAuth uses the **full `drive` scope** (settled — collaborative editing of
   shared folders needs it; not `drive.file`). App Store/external distribution
   needs a CASA Tier 2 assessment; internal TestFlight does not.
+- **A Google session is adopted only through `GoogleAuthService.adopt(_:)`**,
+  which requires the `drive` scope — never assign `currentUser` directly.
+  Consent shows Drive as an unticked checkbox, and a session without it is a
+  library where nothing plays.
 - Microsoft auth is **hand-rolled PKCE over ASWebAuthenticationSession**
   (`MicrosoftAuthService`), NOT MSAL — fixed redirect `addit-msauth://callback`
   works for every contributor's bundle ID with one Azure registration. No
@@ -43,15 +59,14 @@ Signing check (device builds): append
   opaque. The `|` is also the provider discriminator in
   `CloudServiceRouter.service(forFileId:)` — Google IDs can never contain it.
 - Background audio depends on `UIBackgroundModes: audio` in `Info.plist` — keep it.
-- **Album share links are a two-sided handshake.** `Addit.entitlements`
+- **Album share links are a two-sided handshake**: `Addit.entitlements`
   (`applinks:hollowpoint.tv`) and `~/HollowpointTv/.well-known/apple-app-site-association`
-  (`WU764N7X65.tv.hollowpoint.addit`) must agree — neither half does anything
-  alone, and a mismatch fails silently by opening Safari. The AASA has **no file
-  extension**, so `deploy.sh`'s rsync allow-list needs its explicit `--include`.
-  iOS fetches it at *install*, so publish the site before shipping a build.
-  The `addit://` scheme in `Info.plist` is a Simulator testing shim only —
-  Messages doesn't linkify custom schemes, which is the whole reason the
-  shipping format is `https`.
+  must agree, or links silently open Safari. iOS fetches the AASA at install,
+  so publish the site before shipping a build.
+- **Drive services talk through `CloudSession`, and Drive uploads stay
+  resumable** — never `URLSession.shared` in a drive service, never
+  `uploadType=multipart`. Both are what keep a flaky network from stalling
+  every request after one dead connection.
 
 ## Architecture (one-liners)
 
@@ -71,7 +86,7 @@ Signing check (device builds): append
   (`supportsComments`/`supportsStarred`/`supportsCommenterRole`), not provider
   checks in views. Chat is Google-only: `ChatView` keeps the concrete
   `GoogleDriveService`.
-- **SwiftData**: models `Album`, `Track`. **One shared `ModelContainer`**
+- **SwiftData**: models `Album`, `Track`, `LibraryFolder`. **One shared `ModelContainer`**
   (`AccountContainerView.sharedContainer`, defined inside `AdditApp.swift`);
   per-account isolation is via `Album.accountId`, not separate stores. The audio
   **cache** directory *is* per-account.
@@ -82,231 +97,23 @@ Signing check (device builds): append
   `Track.localFileURL` / `Album.resolvedLocalCoverPath`.
 - **Track ordering / disc markers**: `.addit-data` JSON in the Drive folder
   (collaborative) or `Album.cachedTracklist` (local). Schema in `AdditMetadata`.
-- **The wordmark is geometry, not type, and false colour, not a material.**
-  `Wordmark.metal` draws "ADDIT" as hand-authored polygons — the coordinates
-  *are* the typeface, terminals all flat at cap and baseline — extruded along a
-  sheared axis and raymarched; `AdditWordmark.swift` only sizes it and supplies
-  the clock. The surface is a **readout** — each point's reflected elevation
-  looked up in a palette — and which palette is `kMarkPalettes` picked by
-  `kMarkColorway`, in three structures: `kModeZones` measures (three colours
-  keyed to elevation with black between them, so the *gaps* draw the
-  letterforms), `kModeRoom` lights (borrowing `GlassRoom.h`'s rig, which makes
-  the mark one of the glass ornaments instead of an instrument — this file
-  pointedly used not to include that header), and `kModeRamp` borrows the
-  launch field's own `spectrum`. **7 · field** ships, which is the last of
-  those: the letters and the water end up on one palette by construction
-  rather than by eye, and changing `kColorway` moves both. Its **halo** is the
-  one part that was never the mark's own — those two colours come from
-  `Colorways.h`, below. Two things are load-bearing and were each got wrong
-  first. The
-  face is a **dome with a circular cross-section**, because a flat face
-  measures one direction across a whole letter and comes back as a plate of one
-  colour, and a smoothstep dome is flat at *both* ends so it only bends in a
-  ring near the edge. And every perturbation — texture especially — has to stay
-  small against the palette's bands: a tilt lands twice over in the reflection,
-  so anything moving elevation further than a band is wide drags the zones over
-  each other and the mark turns to mush. Detail reads because the sweep is
-  steep, not because the texture is strong. Turn the ramp up, not the flaws.
-- **The launch screen's colour is a table.** `Shaders/Colorways.h` holds nine
-  palettes — six ramp stops for the water, the rim light on its leading edges,
-  and the wordmark halo's two colours — and `kColorway` picks the one that
-  ships (**1, Readout**: blue → green → amber → red, the wordmark's own signal
-  palette run along the water's height, so both surfaces say elevation is
-  colour). One table across both shaders because the mark sits *on* the field
-  and the halo is what makes them look lit by one light; split up, they drift.
-  Three things constrain a new one. The breakpoints in `spectrum()` are shared
-  tuning, not part of a colorway — `level` is bent down hard, so the first two
-  stops are most of the screen most of the time and have to stay near-black.
-  The rim lands on calm cells as well as crests, so it has to be a colour that
-  survives being faint: white is *grey* at a tenth strength and speckles the
-  dark half of the field with what look like dead pixels. And `kBackdrop`
-  deliberately isn't per-colorway, because `LoadingSplashView` carries the same
-  value in Swift. The glow is a **thresholded second pass** of the same surface
-  sampled per pixel instead of per cell (`kBleed`, `kBleedFloor`) — which is
-  what lets light cross cell boundaries, where a falloff inside one cell only
-  squares off against its neighbours. The threshold is load-bearing: `kWaveNumber`
-  puts more ripples across the screen than there are cells, so an unthresholded
-  bloom is a *second picture* of the water at a finer scale than the grid can
-  show, and the field comes back as a bright wash with smooth arcs crossing the
-  dots out of register. Only crests glow, so the body stays near-black and the
-  bloom's fine detail only ever lands where the dots are already big enough to
-  hide it.
-- **The launch screen is being watched.** Over the water sits a
-  pattern-recognition overlay — reticles, track IDs, a correlation graph, a
-  fitted epicentre, readouts — and the whole claim of it is that none of it is
-  staged. `Shaders/RippleSurface.h` holds the height field so
-  `PixelRipple.metal`, which draws it, and `FieldAnalysis.metal`, which samples
-  it once per cell, cannot be working from different water. The sampler reads
-  the **displayed**, palette-quantised level, so the analysis is looking at the
-  *screen* rather than at the wave underneath it — which is also what makes its
-  boxes land on dot boundaries and visibly contain whole emitters.
-  `Utilities/FieldAnalysis.swift` is the pipeline, and it is the ordinary one:
-  adaptive z-score threshold (floored, or the slow swell registers as
-  structure), 8-connected components, weighted moments and a 2×2 covariance
-  eigensolve for the orientation and the class label, greedy gated association
-  plus an alpha-beta filter for the tracks, Pearson correlation between track
-  level-histories for the graph's edges, and a Kåsa circle fit for the model.
-  **Two measured numbers are the point**: `v̂` regresses the fitted radius
-  against time and `λ̂` transforms the radial profile about the epicentre, and
-  they land on `kWaveSpeed` (0.42) and `kWaveNumber` (7.32 cycles/width) — the
-  constants that generated the water — having never been told either. They are
-  no longer *shown*: the screen is now only the marks that sit on the water,
-  so `tools/fieldprobe` — which compiles the shipping pipeline against the
-  shipping kernel and prints every tick of a launch — is the only place they
-  can be read, and the place to check they still land. Four things are load-bearing and were each got wrong
-  first. Morphological closing before labelling bridges arcs belonging to
-  *different* drops (one 245-cell blob across half the screen), so the detector
-  uses raw connectivity. The speed regression has to reset on a gap, or the
-  ticks where no crest was actually followed average in and the wave reads at
-  half speed. The published hypothesis has to prefer a still-*advancing* front,
-  because a spent ring goes on collecting fits from its inner crests and
-  otherwise pins the crosshair to the first drop forever. And the row DFT this
-  started with came back 40% low: a row crosses a ring obliquely and the wave
-  is barely one and a half cycles wide inside its envelope, so what it measured
-  was the envelope — radially there is no obliquity. It runs at **12 Hz against
-  the field's 60** and nothing in it is animated or interpolated; that mismatch
-  is what reads as inference instead of ornament, and smoothing the labels'
-  travel is the one change that would make the whole thing look fake. Drawn in
-  `Phosphor.lit` with one **neon green** accent for state, deliberately off
-  `Colorways.h`: the palette lights the water and the mark as one surface, and
-  this layer is the *other* system in the picture. The accent has to stay a
-  *lime* green — the water's ramp climbs through an emerald at `high`, and an
-  accent near that hue stops reading as the instrument. **Nothing on this
-  layer is chrome.** It was a header block and a footer block once — status
-  line, counters, τ/μ/σ, a level histogram, the model line — and all of it is
-  gone: what is left is only what a measurement puts somewhere, so every mark
-  on screen is anchored to a number and there is no fixed furniture for the
-  eye to file as decoration. Deleting the histogram took its palette read-back
-  with it (`fieldPaletteKernel`, `FieldPalette`, and the runner's copy), since
-  colouring those bars in the field's own ramp was the only thing any of it
-  ever did. Everything is in cell units until `FieldAnalysisOverlay` draws it;
-  only labels are clamped on screen, never geometry — the band is the safe
-  area now that there are no readout blocks to collide with — and the whole
-  layer gets one dark shadow pass because a 9pt number lands on a blown-out
-  crest sooner or later.
-- **Every launch is a different field.** `surfaceAt` takes a `seed` that offsets
-  the placement hash, so the eight drops land somewhere new each run while the
-  choreography — the timing, the speed, the ripple pitch, the shape of the
-  fill — stays exactly as tuned. `PixelRippleField.seed` owns the one copy and
-  gives it to **both** the shader and the analysis; different seeds there and
-  the overlay is measuring water that isn't on screen. It is kept under 4096 for
-  a precision reason spelled out at `surfaceAt`: as a `float`, a seed near 1e8
-  makes `cycle + 1` unrepresentable and every slot stops recycling. Both tools
-  pass **0**, the field this was tuned on — `ripplepreview`'s contact sheet has
-  to vary only the colorway, and `fieldprobe` takes a seed argument so the
-  measurements can be checked on fields nobody tuned against (across five, v̂
-  lands within −17%…+1% and λ̂ within −7%…−2%).
-- **The wordmark stands on a `.clear` Liquid Glass plaque** on the splash (not
-  on the sign-in screen, which has a flat panel to stand out from). It is
-  **raked to the letters' angle by handing Apple's glass a sheared `Shape`**
-  (`SlantedPlaque`, in `AdditWordmark.swift`, whose `slant` must match
-  `kSlant`) — `.glassEffect(_:in:)` lenses whatever outline it is given, so
-  there is no reason to transform the view or to hand-roll a lookalike glass.
-  `.clear`
-  rather than the `.regular` the rest of the app uses: over a field this dark
-  `.regular`'s frost lightens the plaque into a grey slab, where clear glass
-  stays a lens and the water visibly refracts through it. It fades with the
-  **field**, not with the mark — glass is only the water seen through
-  something, so a plaque outliving the ripples is a slab on black, and the beat
-  this screen ends on is the app's name alone. And no `GlassRim` on it: that
-  hairline is for floating surfaces the kit draws itself out of a material, and
-  real glass brings its own specular edge. Compare them with `tools/ripplepreview`, which `#include`s
-  both shipping shaders and draws the real launch screen at the phone's own
-  size — `renderRipple` and `renderWordmark` exist as plain functions beside
-  their `[[stitchable]]` entry points so a tool can pass a colorway where the
-  app passes a constant.
-- **Raymarched glass** (`Shaders/`, auto-added by the synchronized file group):
-  `PlasmaOrb.metal` (toolbar bauble) and `GlassLogo.metal` (the three library
-  marks) share the lighting rig in `GlassRoom.h` — keep the room, film and tone
-  map there so the ornaments stay a set. Scroll-driven motion is shared too:
-  `ScrollTorque` owns the velocity-derived twist, each view derives its own
-  orientation from the offset. Brand marks *rock*, they don't spin —
-  `AccessIcons.metal` (globe / hazard plate / chrome chain, on the Access
-  sheet) follows that too, the turning globe being the deliberate exception.
-- **3D ornaments instead of glyphs** is the house style, and it comes in two
-  deliveries. *Live* (a shader view under `TimelineView`) wherever the app
-  draws the surface itself — the Access sheet. *Still* wherever UIKit draws it:
-  a `Menu` becomes a `UIMenu`, whose icons are `UIImage`s with no SwiftUI host
-  to run a `colorEffect`, so a live shader in a menu is impossible, not merely
-  slow. `MenuIcons.metal` + `MenuIconRenderer` are that second path — one
-  compute kernel, rendered offscreen 3×3-supersampled into a `UIImage` the
-  first time any icon is asked for, all thirteen in one command buffer. Being
-  still buys the pose: each model is turned to the one angle that names it.
-  Two rules when extending the set: give `MenuIcon.label` the SF Symbol you
-  replaced as its `fallback` (it is what a device with no render shows), and
-  mark menu images `.alwaysOriginal` or `UIMenu` template-tints them flat.
-  Provider rows reuse `GlassLogo.metal`'s real brand marks through that file's
-  own `glassLogoKernel` — never model a second cloud. `tools/iconpreview` runs
-  both kernels on macOS and writes a contact sheet, including a row at the true
-  20pt delivered size, which is the only row that decides whether a model works.
-- **Share links**: `AlbumShareLink` owns the URL format
-  (`https://hollowpoint.tv/a/<g|m>/<folderId>?n=`); those provider codes are a
-  published format and must not follow enum renames. `.onOpenURL` in `AdditApp`
-  branches share link vs Google OAuth callback — order matters, GIDSignIn
-  swallows what it's handed. A link parks in `ShareLinkService` until
-  `ContentView` has an account and a store to drain it into, which is what makes
-  tap-link → sign-in → album work. Both the picker and links import through
-  `AlbumImporter`; keep it that way or the two drift. A `?t=` on the same URL
-  makes it a *song* link — the album still travels, since a track is only
-  reachable through its folder, and `t` just says where to start. The preview card is
-  built twice on purpose: `AlbumLinkShareItem` (`LPLinkMetadata`) uses the
-  cover already in memory for the share sheet, and the site's `og:` tags +
-  `/cover/<id>` carry the card. Two non-obvious rules, both established by
-  rendering real `LPLinkView`s: the artist line comes from **`music:musician`**,
-  which Apple *fetches* and whose page `<title>` it shows — `og:description`,
-  `og:site_name` and `music:musician_description` are all ignored — and it only
-  does this when **`og:type` is `music.song`**. **Only song links take that
-  card.** Albums used to claim `music.song` for the same second line, but
-  iMessage reads the type literally and presented the album as a track, so an
-  album page is `music.album` and gets the plain title+domain card, with its
-  whole billing in `og:title`: `<name> - Album by <artist>`. Don't "fix" the
-  duplication by putting the artist back in an album's `og:description` — it is
-  ignored here and only doubles up on Slack. `LPLinkMetadata` has no subtitle
-  field, so a hand-built one can carry neither the artist nor the resolved
-  title; `AlbumLinkShareItem` therefore *fetches* the page's metadata for both
-  kinds of link and swaps only `imageProvider` for the on-device cover. That is
-  what gets both — the line Apple resolved, and art the unauthenticated fetcher
-  could never see inside a restricted folder (or on OneDrive at all). The
-  `?c=` Drive id and `/cover` only serve `og:image`, i.e. links someone *pastes*
-  elsewhere; `/cover` sits outside the AASA's `/a/*` claim deliberately.
-- **Background work**: album transfers (duplicate / save-to-device) run through
-  `TransferService` — serial, because two uploads to one account fight for the
-  same rate limit. Progress for those *and* for offline downloads
-  (`AudioCacheService.albumCacheProgress`) lives on the service, not the view,
-  and both draw through one `ActivityRing` placed in **both** the library's and
-  an album's toolbar. That second placement is the whole point: the work always
-  outlived the screen (unstructured `Task`s), but the ring used to exist only in
-  the album's toolbar, so leaving made a running job look stopped. Export is
-  deliberately still modal — it ends in a share sheet.
-- **Scroll-driven ornaments**: the library's toolbar orb and brand mark follow
-  the scroll through `ScrollOffsetBox` (`ScrollTorque.swift`), an `@Observable`
-  box, and **the screen that owns the box must never read `value`**. As a
-  `@State CGFloat` it made `LibraryView.body` — two filtering passes over every
-  album, each a SwiftData read — a dependency of the scroll, re-run every frame.
-  Reading it inside the ornaments puts that dependency where the value is used.
-  These two keep moving in Low Power Mode — settled; they're small, they're the
-  app's signature, and the box is what made them cheap. `GlassRim`'s gyro
-  highlight is the one that holds still there (`PowerState.shared.isLowPower`),
-  because it's on every cover on screen: it *doesn't read* the gravity in that
-  state, so it stops being invalidated rather than merely stopping moving.
-- **Covers are fetched at the size they're drawn**: `AlbumArtService` keeps a
-  second cache of `ImageIO` thumbnails (`thumbnail(for:pixelSize:)` /
-  `thumbnail(atPath:pixelSize:)`), built off the main thread straight out of the
-  file. Grid and list cells ask for their own drawn size; anything showing a
-  cover large asks for `AlbumArtService.displayPixels`. Never
-  `UIImage(contentsOfFile:)` on a view's `onAppear` — that's a full-resolution
-  decode on the frame a row appears. **The drawn size is part of the artwork
-  task's identity** (`AlbumArtworkThumbnail.artworkTaskID`): without it a cell
-  laid out before its width is known keeps the thumbnail it fetched for the
-  provisional size forever, and only scrolling it out of the grid and back ever
-  fixes it. Relatedly, `gridLayout(for:)` refuses a non-positive width rather
-  than clamping it to a 1pt cover — a `GeometryReader` reports zero on the pass
-  that builds it, which is every library switch. Local covers are rewritten *in place*, so
-  their cache identity carries the file's mtime and the edit path calls
-  `invalidateThumbnails(atPath:)` + `bumpRefreshToken`.
+- **Background work** is `TransferService` jobs (serial), drawn by one
+  `ActivityRing` in both the library's and an album's toolbar. A job outlives
+  the screen that started it, so it never touches view state. Export is the one
+  deliberately modal exception.
+- **Covers are fetched at the size they're drawn** — `AlbumArtService`
+  thumbnails, never `UIImage(contentsOfFile:)` in `onAppear`; the drawn size is
+  part of the artwork task's identity.
+- **Scroll offset** lives in a `ScrollOffsetBox`, and the screen that owns the
+  box never reads `value` (it made `LibraryView.body` re-run every frame).
+- **Ornaments, not glyphs**: raymarched glass shares `GlassRoom.h`'s rig; menu
+  icons are pre-rendered stills (`MenuIcons.metal`), since `UIMenu` can't host a
+  shader.
 - **Navigation**: `ContentView` is the auth gate → `LibraryView` in a
-  `NavigationStack`. `NowPlayingBar` mini-player overlays; `NowPlayingView` is a
-  sheet. Accent color is scheme-aware (bridged into `ThemeService.currentScheme`).
+  `NavigationStack`. `NowPlayingPill` overlays it and is both the mini player and
+  the full player — one glass card at two heights, no sheet; `NowPlayingView` is
+  its expanded content. Accent color is scheme-aware (bridged into
+  `ThemeService.currentScheme`).
 
 ## Conventions
 
@@ -314,6 +121,9 @@ Signing check (device builds): append
 - Unsupported audio formats convert via AVAssetExportSession/AVAssetReader in
   `AudioCacheService`; a hard failure surfaces through `playerService.failedTrack`
   (alert in `ContentView`). MIME allow-list in `Constants.audioMimeTypes`.
+- **No scroll bars**: `.scrollIndicators(.hidden)` on the app root *and* on the
+  content of every `.sheet` / `.fullScreenCover` — the environment doesn't
+  cross a presentation.
 - Text entry in a popup goes through `.prompt(...)` (`Views/PromptPopup.swift`),
   **never `.alert` with a `TextField`** — alert buttons fire for a finger that
   drags onto them, so selecting text and sliding out of the field hits Cancel.
@@ -327,9 +137,10 @@ Signing check (device builds): append
 
 ## Large files — never whole-read
 
-Use `search` + targeted ranges: `Services/AudioPlayerService.swift` (~70KB),
-`Views/LibraryView.swift` (~51KB), `Views/AlbumDetailView.swift` (~54KB),
-`Views/AlbumDetailView+EditMode.swift` (~56KB — inline edit mode lives here
+Use `search` + targeted ranges: `Services/AudioPlayerService.swift` (~97KB),
+`Views/AlbumDetailView.swift` (~96KB), `Views/NowPlayingView.swift` (~83KB),
+`Views/LibraryView.swift` (~79KB), `Views/LibraryArrange.swift` (~42KB),
+`Views/AlbumDetailView+EditMode.swift` (~83KB — inline edit mode lives here
 as an `extension AlbumDetailView`; its `@State` stays in the main file),
 `Utilities/FieldAnalysis.swift` (~48KB — the launch overlay's pipeline; the
 stages are separable, so read the one you need).
@@ -338,7 +149,8 @@ stages are separable, so read the one you need).
 
 - `README.md` — human-facing; base64-toggle via `./encode` / `./decode`
   (**README only — never encode `AGENTS.md`; it is auto-loaded every session**).
-- `AGENTS.md` (this file) — slim always-on context. Keep it terse.
+- `AGENTS.md` (this file) — slim always-on context. Keep it terse: rules and
+  pointers here, reasoning and history in a skill.
 - `CLAUDE.md` — symlink to this file (vanilla Claude Code compatibility).
-- `.omp/skills/audio-playback/SKILL.md` — deep playback internals, loaded on
-  demand via `skill://audio-playback`.
+- `.omp/skills/<name>/SKILL.md` — the skills in the table above, loaded on
+  demand via `skill://<name>`.
