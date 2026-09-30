@@ -8,13 +8,23 @@ struct LibraryView: View {
     /// library flows push an album programmatically, e.g. straight into
     /// edit mode after creating it.
     @Binding var libraryPath: [Album]
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
     @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AudioPlayerService.self) private var playerService
-    @Environment(AlbumArtService.self) private var albumArtService
+    @Environment(AlbumArtService.self) var albumArtService
     @Environment(AudioCacheService.self) private var cacheService
-    @Query(sort: \Album.displayOrder) private var albums: [Album]
+    @Query(sort: \Album.displayOrder) var albums: [Album]
+    @Query(sort: \LibraryFolder.displayOrder) var folders: [LibraryFolder]
+    /// Arrange mode, folders and the drag between them — see
+    /// `LibraryView+Arrange.swift`. An object rather than loose `@State` so the
+    /// cards and the lifted copy can each observe just the part they draw.
+    @State var arranger = LibraryArranger()
+    /// The album whose delete badge was tapped, awaiting confirmation.
+    @State var albumPendingRemoval: Album?
+    @State var folderBeingRenamed: LibraryFolder?
+    @State var folderNameDraft = ""
+    @State var showFolderRename = false
     @State private var showAddAlbum = false
     @State private var showFeedback = false
     @State private var showCreateAlbum = false
@@ -37,18 +47,17 @@ struct LibraryView: View {
     /// Push the album with inline edit mode armed — used by the context
     /// menus' Edit and by flows that create an album and immediately hand
     /// it to the user for filling in (create album, import).
-    private func openForEditing(_ album: Album) {
+    func openForEditing(_ album: Album) {
         pendingEditAlbumId = album.googleFolderId
         libraryPath.append(album)
     }
-    @State private var isArranging = false
-    @AppStorage("libraryViewMode") private var isListMode = false
+    @AppStorage("libraryViewMode") var isListMode = false
     @State private var accountToSignOut: String?
     @State private var showSignOutConfirmation = false
     @State private var showClearLocalConfirmation = false
-    @State private var searchText = ""
-    @State private var isSearchExpanded = false
-    @FocusState private var isSearchFocused: Bool
+    @State var searchText = ""
+    @State var isSearchExpanded = false
+    @FocusState var isSearchFocused: Bool
     /// Live content offset of whichever list or grid is on screen, feeding the
     /// toolbar orb's spin and the brand mark's rock. Not clamped or reset
     /// between the two layouts: neither ornament has a home position, so a jump
@@ -76,12 +85,12 @@ struct LibraryView: View {
     /// OneDrive, and Local are three parallel libraries; which one you're
     /// looking at is pure UI state, and the account backing each cloud
     /// library is tracked per-provider in AccountManager.
-    private var currentSource: StorageSource {
+    var currentSource: StorageSource {
         StorageSource(rawValue: storageSource) ?? .googleDrive
     }
 
     /// Display name of the VIEWED cloud library, for the title menu.
-    private var viewedCloudLabel: String {
+    var viewedCloudLabel: String {
         currentSource == .oneDrive ? "OneDrive" : "Google Drive"
     }
 
@@ -333,7 +342,9 @@ struct LibraryView: View {
     /// fills the remainder. 30 ≈ the old effective edge margin (16pt grid
     /// padding + the slack the fixed 148pt cards left in their adaptive
     /// columns) — that edge distance is the look being kept.
-    private static let gridGutter: CGFloat = 30
+    static let gridGutter: CGFloat = 30
+    /// Vertical gap between rows of cards, in the library and in a folder.
+    static let gridRowSpacing: CGFloat = 16
     /// Covers never target smaller than this; wider screens add columns.
     private static let minCoverSize: CGFloat = 150
 
@@ -363,7 +374,7 @@ struct LibraryView: View {
     /// Account whose albums the viewed library shows — resolved from the
     /// VIEWED library's provider (not the global active account), so the
     /// album list is correct the instant a library flip happens.
-    private var activeAccountId: String? {
+    var activeAccountId: String? {
         guard let provider = currentSource.provider,
               let email = authService.accountManager.activeEmail(for: provider) else { return nil }
         return AccountManager.storageIdentifier(for: email)
@@ -379,7 +390,7 @@ struct LibraryView: View {
     ///
     /// Local Library shows every local album regardless of account; a cloud
     /// library shows only the active account's albums for that provider.
-    private func currentLibraryFilter() -> (Album) -> Bool {
+    func currentLibraryFilter() -> (Album) -> Bool {
         let source = currentSource
         let accountId = activeAccountId
         return { album in
@@ -409,12 +420,6 @@ struct LibraryView: View {
             return album.name.lowercased().contains(query)
                 || (album.artistName?.lowercased().contains(query) ?? false)
         }
-    }
-
-    /// `sourceAlbums.isEmpty` without building the array — this is only ever
-    /// asked as a question, and the answer short-circuits on the first hit.
-    private var hasAlbumsInCurrentLibrary: Bool {
-        albums.contains(where: currentLibraryFilter())
     }
 
     // MARK: - Add button
@@ -562,6 +567,10 @@ struct LibraryView: View {
     }
 
     var body: some View {
+        // Once per body: what's in this library and where. Everything below —
+        // grid, list, open folder, the empty state — reads this one answer.
+        let arrangement = libraryArrangement()
+        let searchResults = searchText.isEmpty ? [] : filteredAlbums
         VStack(spacing: 0) {
             // One search field, above the branching — never inside it.
             //
@@ -574,9 +583,9 @@ struct LibraryView: View {
             // the content goes through.
             if isSearchExpanded { searchBar }
 
-            if !searchText.isEmpty && filteredAlbums.isEmpty {
+            if !searchText.isEmpty && searchResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
-            } else if !hasAlbumsInCurrentLibrary {
+            } else if arrangement.items.isEmpty {
                 ScrollView {
                     ContentUnavailableView(
                         "No Albums Yet",
@@ -587,133 +596,107 @@ struct LibraryView: View {
                     )
                     .padding(.top, 100)
                 }
-            } else if isArranging {
+            } else if isListMode && !arranger.isArranging {
+                // Arranging is always the grid, list layout or not: dragging
+                // covers onto each other to make folders is a grid idea, and
+                // the Home Screen it imitates has no list to do it in.
                 List {
-                    // Scoped to the library you're standing in, like the grid.
-                    // This used the raw query, so arranging showed every album
-                    // across all three storages and both accounts at once —
-                    // it predates the libraries being separate at all.
-                    //
-                    // `sourceAlbums`, not `filteredAlbums`: a search filter must
-                    // not narrow this. `onMove` renumbers by position, so
-                    // reordering a filtered subset would assign those indices
-                    // over albums that were hidden from view.
-                    ForEach(sourceAlbums) { album in
-                        HStack(spacing: 12) {
-                            AlbumArtworkThumbnail(album: album, size: 48)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(album.name)
-                                    .font(.uiBody.weight(.medium))
-                                    .fadingTruncation()
-                                Text(album.artistName ?? "Unknown Artist")
-                                    .font(.uiCaption)
-                                    .foregroundStyle(.secondary)
-                                    .fadingTruncation()
+                    if !searchText.isEmpty {
+                        ForEach(searchResults) { album in albumRow(album) }
+                    } else {
+                        ForEach(arrangement.items) { item in
+                            switch item {
+                            case .album(let album):
+                                albumRow(album)
+                            case .folder(let folder):
+                                folderRow(folder, albums: arrangement.contents[folder.folderID] ?? [])
                             }
                         }
-                    }
-                    .onMove { source, destination in
-                        // Renumbering within this library only. `displayOrder`
-                        // is compared solely among albums shown together, so
-                        // two libraries both running 0…n is fine — what matters
-                        // is that a move here can't renumber albums the user
-                        // isn't looking at.
-                        var ordered = sourceAlbums
-                        ordered.move(fromOffsets: source, toOffset: destination)
-                        for (index, album) in ordered.enumerated() {
-                            album.displayOrder = index
-                        }
-                    }
-                }
-                .environment(\.editMode, .constant(.active))
-            } else if isListMode {
-                List {
-                    ForEach(filteredAlbums) { album in
-                        NavigationLink(value: album) {
-                            HStack(spacing: 12) {
-                                AlbumArtworkThumbnail(album: album, size: 48)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(album.name)
-                                        .font(.uiBody.weight(.medium))
-                                        .fadingTruncation()
-                                    Text(album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? album.artistName! : "Unknown Artist")
-                                        .font(.uiCaption)
-                                        .foregroundStyle(.secondary)
-                                        .fadingTruncation()
-                                }
-                            }
-                        }
-                        .contextMenu {
-                            Button {
-                                openForEditing(album)
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            Button {
-                                isArranging = true
-                            } label: {
-                                Label("Arrange", systemImage: "arrow.up.arrow.down")
-                            }
-                            Button("Remove from Library", role: .destructive) {
-                                removeAlbum(album)
-                            }
-                        }
-                        .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.plain)
                 .tracksScrollOffset(into: scrollOffset)
+                .gesture(listHoldGesture())
             } else {
                 GeometryReader { geo in
                     let layout = gridLayout(for: geo.size.width)
+                    let searching = !searchText.isEmpty
                     ScrollView {
                         VStack(spacing: 0) {
-                            LazyVGrid(columns: layout.columns, spacing: 16) {
-                                ForEach(filteredAlbums) { album in
-                                    // A `Button`, not a `NavigationLink`: the
-                                    // link swallows the press state, so a
-                                    // custom `ButtonStyle` renders nothing on
-                                    // it. Pushing the path by hand is what the
-                                    // context menu's Edit already does.
-                                    Button {
-                                        libraryPath.append(album)
-                                    } label: {
-                                        AlbumCard(album: album, coverSize: layout.coverSize)
+                            LazyVGrid(columns: layout.columns, spacing: Self.gridRowSpacing) {
+                                if searching {
+                                    // Search looks through folders: a match is
+                                    // a match wherever it happens to be filed.
+                                    ForEach(searchResults) { album in
+                                        albumCell(album, coverSize: layout.coverSize)
                                     }
-                                    .buttonStyle(ImprintButtonStyle())
-                                    .contextMenu {
-                                        Button {
-                                            openForEditing(album)
-                                        } label: {
-                                            Label("Edit", systemImage: "pencil")
-                                        }
-                                        Button {
-                                            isArranging = true
-                                        } label: {
-                                            Label("Arrange", systemImage: "arrow.up.arrow.down")
-                                        }
-                                        Button("Remove from Library", role: .destructive) {
-                                            // Was a bare `modelContext.delete`,
-                                            // which stranded every file the
-                                            // album owned — an orphan the size
-                                            // of the album, every time.
-                                            removeAlbum(album)
+                                } else {
+                                    ForEach(arrangement.items) { item in
+                                        switch item {
+                                        case .album(let album):
+                                            albumCell(album, coverSize: layout.coverSize)
+                                        case .folder(let folder):
+                                            folderCell(
+                                                folder,
+                                                albums: arrangement.contents[folder.folderID] ?? [],
+                                                coverSize: layout.coverSize
+                                            )
                                         }
                                     }
                                 }
                             }
+                            .onGeometryChange(for: CGPoint.self) { proxy in
+                                proxy.frame(in: LibraryArranger.coordinateSpace).origin
+                            } action: { origin in
+                                arranger.grid.origin = origin
+                            }
                             .padding(.horizontal, Self.gridGutter)
                             .padding(.vertical, 16)
                         }
+                        // At least a screen tall, so the whole empty stretch
+                        // under a short library is somewhere to tap "done".
+                        .frame(minHeight: geo.size.height, alignment: .top)
+                        .background {
+                            // Tapping away from every card ends arranging, as
+                            // tapping the wallpaper does on the Home Screen.
+                            // Behind the cards, so it only gets the taps
+                            // they don't.
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { endArranging() }
+                                .allowsHitTesting(arranger.isArranging)
+                        }
+                        .background(alignment: .topLeading) {
+                            EnclosingScrollViewReader { arranger.gridScrollView = $0 }
+                                .frame(width: 1, height: 1)
+                        }
                     }
                     .tracksScrollOffset(into: scrollOffset)
+                    // Belt to the recognizer's braces: it already refuses to
+                    // share the touch with the scroll, but nothing should be
+                    // able to scroll the grid out from under a card in hand.
+                    .scrollDisabled(arranger.draggedItem != nil)
+                    .gesture(holdGesture(
+                        for: .grid,
+                        count: searching ? searchResults.count : arrangement.items.count
+                    ))
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        proxy.frame(in: LibraryArranger.coordinateSpace)
+                    } action: { frame in
+                        arranger.gridViewport = frame
+                    }
+                    .onChange(of: layout.coverSize, initial: true) {
+                        arranger.grid.columns = layout.columns.count
+                        arranger.grid.cover = layout.coverSize
+                        arranger.grid.columnSpacing = Self.gridGutter
+                        arranger.grid.rowSpacing = Self.gridRowSpacing
+                    }
                 }
             }
         }
         .appBackground()
         .staticTopFade()
-        .navigationTitle(isArranging ? "Arrange Library" : "")
+        .navigationTitle(arranger.isArranging ? "Arrange Library" : "")
         .onAppear {
             // Self-heal: a cloud library whose provider has no account
             // (e.g. its last account was signed out) can't render — fall
@@ -729,7 +712,14 @@ struct LibraryView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isArranging {
+            // An open folder takes the screen, as on the Home Screen: the bar
+            // keeps only what arranging needs. Keyed on the folder being up,
+            // not on its expansion: the bar is slow to change — the better
+            // part of a frame budget several times over — so it changes as
+            // the folder is put up and after it's taken down, the two moments
+            // nothing is moving. Changed on the spring's first frame, it
+            // stalled the folder there, both ways.
+            if !arranger.isArranging && arranger.openFolderID == nil {
                 ToolbarItem(placement: .principal) {
                     Menu {
                         Button {
@@ -772,6 +762,14 @@ struct LibraryView: View {
                         .glassEffect(.regular.interactive(), in: .capsule)
                     }
                 }
+            } else if !arranger.isArranging {
+                // Something, however empty, so the bar stays up. With nothing
+                // in it the bar goes, the library moves up a bar's height
+                // under the folder, and the tile the folder closes back into
+                // is no longer where it opened from.
+                ToolbarItem(placement: .principal) {
+                    Color.clear.frame(width: 1, height: 1)
+                }
             }
         }
         .navigationDestination(for: Album.self) { album in
@@ -784,14 +782,28 @@ struct LibraryView: View {
         // later plain tap on the same album opens it normally.
         .onAppear { pendingEditAlbumId = nil }
         .toolbar {
-            if isArranging {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        try? modelContext.save()
-                        isArranging = false
+            if arranger.isArranging {
+                ToolbarItem(placement: .topBarLeading) {
+                    // Right after a sort, the same button takes it back — for
+                    // the grid that was sorted, the library or one folder.
+                    let canUndo = arranger.colorSortUndo.map { $0.folderID == arranger.openFolderID } ?? false
+                    Button {
+                        if canUndo { undoColorSort() } else { sortByColor() }
+                    } label: {
+                        // The label keeps its width while the spinner shows,
+                        // so the glass capsule doesn't jump.
+                        Text(canUndo ? "Undo Sort" : "Sort by Color")
+                            .opacity(arranger.isSortingByColor ? 0 : 1)
+                            .overlay {
+                                if arranger.isSortingByColor { ProgressView() }
+                            }
                     }
+                    .disabled(arranger.isSortingByColor)
                 }
-            } else {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { endArranging() }
+                }
+            } else if arranger.openFolderID == nil {
                 // Background work — an album's offline download, or a transfer
                 // — keeps its ring here once you leave the album that started
                 // it. Before this the progress still existed on the services;
@@ -994,6 +1006,7 @@ struct LibraryView: View {
         }
         .task {
             initializeDisplayOrder()
+            pruneEmptyFolders()
         }
         // Keyed on the in-use accounts, so switching accounts re-reads and
         // nothing else does. Quotas move slowly; once per appearance and per
@@ -1017,13 +1030,52 @@ struct LibraryView: View {
                     .frame(height: bottomOverlayInset)
                     .allowsHitTesting(false)
 
-                // Arranging has its own Done/Cancel chrome and no use for a
-                // button that pushes new albums onto the list being reordered.
-                if !isArranging {
+                // Arranging has its own Done chrome and no use for a button
+                // that pushes new albums onto the grid being rearranged.
+                if !arranger.isArranging && arranger.openFolderID == nil {
                     addButton
                         .padding(.bottom, addButtonBottomPadding)
                 }
             }
+        }
+        // Outside the inset, so an open folder dims the add button's band too.
+        .overlay { folderOverlay(arrangement) }
+        .overlay { LiftedItemLayer(arranger: arranger) }
+        // Every grid, the open folder and the lifted card report positions in
+        // this one space — the whole library, overlays included.
+        .coordinateSpace(LibraryArranger.coordinateSpace)
+        // Emptied from under it (its last album removed), an open folder
+        // closes rather than standing open around nothing. Not mid-drag: that
+        // case is the drag's to finish, and it does.
+        .onChange(of: openFolderAlbumCount(arrangement)) { _, count in
+            if count == 0, arranger.openFolderID != nil, !arranger.isBusy {
+                closeFolder()
+            }
+        }
+        .prompt(
+            "Rename Folder",
+            isPresented: $showFolderRename,
+            presenting: folderBeingRenamed,
+            placeholder: "Folder Name",
+            text: $folderNameDraft
+        ) { folder in
+            let name = folderNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            folder.name = name
+            try? modelContext.save()
+        }
+        .alert(
+            "Remove \u{201C}\(albumPendingRemoval?.name ?? "")\u{201D}?",
+            isPresented: Binding(
+                get: { albumPendingRemoval != nil },
+                set: { if !$0 { albumPendingRemoval = nil } }
+            ),
+            presenting: albumPendingRemoval
+        ) { album in
+            Button("Remove", role: .destructive) { removeAlbum(album) }
+            Button("Cancel", role: .cancel) { }
+        } message: { album in
+            Text(removalMessage(for: album))
         }
     }
 
@@ -1039,6 +1091,9 @@ struct LibraryView: View {
         for album in localAlbums {
             modelContext.delete(album)
         }
+        for folder in folders where folder.storageSource == .localStorage {
+            modelContext.delete(folder)
+        }
         try? modelContext.save()
 
         // Wipe the entire LocalAlbums directory
@@ -1047,7 +1102,10 @@ struct LibraryView: View {
         try? FileManager.default.removeItem(at: localBase)
     }
 
-    private func removeAlbum(_ album: Album) {
+    func removeAlbum(_ album: Album) {
+        // A sort's undo holds this album; the order it would restore no
+        // longer describes the library once it's gone.
+        arranger.colorSortUndo = nil
         // Both of these read the records, so both run *before* the delete.
         // The player holds Track model objects; left in its queue they'd be
         // detached models it would trap on at the next gapless preload.
@@ -1499,13 +1557,22 @@ struct AlbumCard: View {
     let album: Album
     var coverSize: CGFloat = 148
 
+    /// The title/artist block under the cover, and the gap above it. Named
+    /// because the arrange grid does its hit-testing in arithmetic rather than
+    /// by asking cells where they are, and a folder card has to stand exactly
+    /// as tall as this one for that arithmetic to hold.
+    static let labelHeight: CGFloat = 36
+    static let labelSpacing: CGFloat = 4
+    /// Everything a card adds below its cover.
+    static let labelBlock: CGFloat = labelSpacing + labelHeight
+
     private var subtitle: String {
         let trimmedArtist = album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedArtist.isEmpty ? "Unknown Artist" : trimmedArtist
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Self.labelSpacing) {
             AlbumArtworkThumbnail(album: album, size: coverSize)
 
             VStack(alignment: .leading, spacing: 0) {
@@ -1523,7 +1590,7 @@ struct AlbumCard: View {
                     .fadingTruncation()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 36, alignment: .top)
+            .frame(height: Self.labelHeight, alignment: .top)
             // Indent the text block to visually align with the cover's
             // rounded corners (its straight edge reads inset from x=0).
             // Symmetric padding also pulls the trailing fade in by the same
@@ -1536,6 +1603,10 @@ struct AlbumCard: View {
 struct AlbumArtworkThumbnail: View {
     let album: Album
     var size: CGFloat = 148
+    /// 12 everywhere a cover is drawn on its own; a folder tile's minis shrink
+    /// it with the cover so a small cover isn't a lozenge.
+    var cornerRadius: CGFloat = defaultCornerRadius
+    static let defaultCornerRadius: CGFloat = 12
     @Environment(\.modelContext) private var modelContext
     @Environment(\.displayScale) private var displayScale
     @Environment(AlbumArtService.self) private var albumArtService
@@ -1577,7 +1648,7 @@ struct AlbumArtworkThumbnail: View {
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 12)
+        RoundedRectangle(cornerRadius: cornerRadius)
             .fill(
                 LinearGradient(
                     colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
@@ -1601,10 +1672,10 @@ struct AlbumArtworkThumbnail: View {
                     }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             // Glass edge: hairline + gyro specular so covers with dark
             // borders separate from the background (Phosphor kit).
-            .overlay(GlassRim(cornerRadius: 12))
+            .overlay(GlassRim(cornerRadius: cornerRadius))
             .onAppear {
                 // Memory only: a row scrolling back into view draws its cover
                 // on this frame. Anything that would touch the disk waits for

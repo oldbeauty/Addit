@@ -289,7 +289,7 @@ struct AccountContainerView: View {
         let config = ModelConfiguration(url: storeURL)
 
         do {
-            let container = try ModelContainer(for: Album.self, Track.self, configurations: config)
+            let container = try ModelContainer(for: Album.self, Track.self, LibraryFolder.self, configurations: config)
             // Run one-time migration from legacy per-account stores
             migratePerAccountStores(into: container)
             return container
@@ -301,7 +301,7 @@ struct AccountContainerView: View {
             try? FileManager.default.removeItem(at: storeURL.appendingPathExtension("wal"))
             try? FileManager.default.removeItem(at: storeURL.appendingPathExtension("shm"))
             do {
-                let container = try ModelContainer(for: Album.self, Track.self, configurations: config)
+                let container = try ModelContainer(for: Album.self, Track.self, LibraryFolder.self, configurations: config)
                 return container
             } catch {
                 fatalError("Could not create shared ModelContainer after reset: \(error)")
@@ -311,7 +311,7 @@ struct AccountContainerView: View {
 
     private static let signedOutContainer: ModelContainer = {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: Album.self, Track.self, configurations: config)
+        return try! ModelContainer(for: Album.self, Track.self, LibraryFolder.self, configurations: config)
     }()
 
     // MARK: - Migration from per-account stores
@@ -463,6 +463,16 @@ struct AccountContainerView: View {
             #if DEBUG
             print("[Store] Removed \(albums.count) albums for account \(accountId)")
             #endif
+        }
+
+        // The account's library folders go with it. Emptied, they'd be
+        // invisible anyway, but there's no reason to leave the rows behind.
+        let folderDescriptor = FetchDescriptor<LibraryFolder>(
+            predicate: #Predicate { $0.accountId == accountId }
+        )
+        if let folders = try? context.fetch(folderDescriptor), !folders.isEmpty {
+            folders.forEach(context.delete)
+            try? context.save()
         }
     }
 }

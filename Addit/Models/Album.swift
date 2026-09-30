@@ -38,6 +38,17 @@ final class Album {
     var localCoverPath: String?
     var showHiddenTracks: Bool = true
     var accountId: String?
+    /// The library folder this album sits in, by `LibraryFolder.folderID`;
+    /// `nil` on the library's top level. App-side arrangement only — unrelated
+    /// to the cloud folder `googleFolderId` names.
+    ///
+    /// While it's set, `displayOrder` mirrors the folder's own position, so an
+    /// album inside a folder still counts as sitting where its folder sits —
+    /// which is what keeps "max `displayOrder` + 1" meaning *the end of the
+    /// library* for everything that adds an album.
+    var libraryFolderID: String?
+    /// Position inside `libraryFolderID`'s folder. Meaningless when that's nil.
+    var libraryFolderOrder: Int = 0
 
     var storageSource: StorageSource {
         get { StorageSource(rawValue: storageSourceRaw ?? "") ?? .googleDrive }

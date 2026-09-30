@@ -247,13 +247,19 @@ final class MotionShine {
 
     @ObservationIgnored private let manager = CMMotionManager()
     @ObservationIgnored private var consumers = 0
+    /// Tilt goes unread while this is set, so no rim redraws. Each rim's lobe
+    /// is an angular gradient the CPU rasterises, and one tilt re-rasterises
+    /// every rim on screen — fine at rest, and exactly what an animation that
+    /// needs every frame can't afford. The rims catch up on the first reading
+    /// after it's cleared.
+    @ObservationIgnored var isHeld = false
 
     func addConsumer() {
         consumers += 1
         guard consumers == 1, manager.isDeviceMotionAvailable else { return }
         manager.deviceMotionUpdateInterval = 1.0 / 30.0
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
-            guard let self, let g = motion?.gravity else { return }
+            guard let self, !isHeld, let g = motion?.gravity else { return }
             let qx = (g.x * 32).rounded() / 32
             let qy = (g.y * 32).rounded() / 32
             if qx != gravityX { gravityX = qx }
@@ -292,6 +298,9 @@ final class MotionShine {
 struct GlassRim<S: InsettableShape>: View {
     var shape: S
     var lineWidth: CGFloat = 1
+    /// Off, the lobe alone — for a surface that draws its own hairline on a
+    /// shape that moves, where this one has to stay put (see `FolderZoom`).
+    var showsBase = true
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -302,12 +311,9 @@ struct GlassRim<S: InsettableShape>: View {
     var body: some View {
         ZStack {
             // Base hairline — the always-there thin border.
-            shape.strokeBorder(
-                scheme == .dark
-                    ? Color.white.opacity(0.12)
-                    : Color.black.opacity(0.07),
-                lineWidth: lineWidth
-            )
+            if showsBase {
+                shape.strokeBorder(Self.hairline(scheme), lineWidth: lineWidth)
+            }
 
             // Specular lobe, rotated to stay under the world's light.
             shape.strokeBorder(
@@ -331,6 +337,11 @@ struct GlassRim<S: InsettableShape>: View {
                 )
             }
         }
+        // Drawn by the GPU. Left to Core Graphics, an angular gradient is
+        // rasterised on the main thread — for every rim on screen, on every
+        // tilt, and on every frame a rim changes scale — and in a profile of
+        // a folder opening that was most of the main thread's time.
+        .drawingGroup()
         .allowsHitTesting(false)
         .onAppear { isOnScreen = true; syncMotion(to: true) }
         .onDisappear { isOnScreen = false; syncMotion(to: false) }
@@ -421,11 +432,19 @@ struct GlassRim<S: InsettableShape>: View {
 
 extension GlassRim where S == RoundedRectangle {
     /// The original spelling, for the rounded artwork it was written for.
-    init(cornerRadius: CGFloat, lineWidth: CGFloat = 1) {
+    init(cornerRadius: CGFloat, lineWidth: CGFloat = 1, showsBase: Bool = true) {
         self.init(
             shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
-            lineWidth: lineWidth
+            lineWidth: lineWidth,
+            showsBase: showsBase
         )
+    }
+}
+
+extension GlassRim {
+    /// The base hairline's colour, for anything drawing that hairline itself.
+    static func hairline(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07)
     }
 }
 
