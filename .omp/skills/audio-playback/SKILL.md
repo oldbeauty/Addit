@@ -1,6 +1,6 @@
 ---
 name: audio-playback
-description: Deep internals of Addit's AudioPlayerService — the two-phase gapless pipeline, PlaybackAnchor atomic snapshot, user-queue splicing, the cancellable-Task pattern, the NowPlayingView UIKit pager, and PixelSortCoverView. READ THIS before editing playback, queue, gapless transitions, or now-playing UI; these invariants are subtle and easy to revert.
+description: Deep internals of Addit's AudioPlayerService — the two-phase gapless pipeline, PlaybackAnchor atomic snapshot, user-queue splicing, the cancellable-Task pattern, how a failed load reports why (PlaybackFailure), the NowPlayingView UIKit pager, and PixelSortCoverView. READ THIS before editing playback, queue, gapless transitions, or now-playing UI; these invariants are subtle and easy to revert.
 ---
 
 # Audio playback internals (Addit)
@@ -219,6 +219,33 @@ tapping the sorted state replays the log **in reverse** for the un-sort
 animation — the swap log is the cheap reverse mechanism (no recursion, no
 recomputation). Tap states: `idle → sorting → pausedMidSort → reverting →
 pausedMidRevert → idle`. Throttled to ~400 swaps/frame.
+
+## A failed load says why (`PlaybackFailure`)
+
+Every failure in `loadAndPlay` used to land in one `catch` that reported
+"Unable to play this audio format". The commonest real cause was nothing of the
+kind: play a track that isn't downloaded, lock the phone, and with nothing
+playing yet iOS suspended the app mid-download; on unlocking, the dead
+connection was announced as a codec problem (reported 2026-10-02).
+
+- **Each stage throws its own reason**: fetching (`Reason(downloadError:
+  suspended:)` — connection, sign-in, 404/403, 429/5xx), a missing local file,
+  decoding after conversion (`Reason(decodeError:)` — the only path to
+  `.unsupportedFormat`), and starting the session/engine (`.audioUnavailable`).
+  Anything else falls through as `.other` in its own words. Never map a
+  non-decode failure to the format.
+- **`LoadKeepAlive`** holds a background task for the length of a load, so a
+  download started just before the phone locks usually finishes and starts
+  playing on the lock screen (after which playing audio keeps the app alive).
+  Its expiry is the signal that iOS suspended the load: a dropped connection
+  *then* is `.interruptedInBackground`, otherwise `.offline`.
+- `failure` drives the alert (cleared when dismissed); `playbackError` is its
+  `summary` on the player's subtitle until a track plays. Retryable reasons get
+  **Try Again** → `retry(_:)`, which reloads only if the queue is still on that
+  track.
+- The classification is checkable without a cloud account: run
+  `PlaybackFailure.Reason(downloadError:suspended:)` over sample errors with
+  Xcode's `RunCodeSnippet` (done 2026-10-02, all as intended).
 
 ## Outstanding / verification queue
 

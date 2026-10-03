@@ -67,7 +67,7 @@ struct LoadingIndicator: View {
     /// the time has no such failure mode, costs no state, and has the bonus
     /// that every spinner on screen stays in lockstep.
     private var glyph: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.sixtyHertz) { context in
             let elapsed = context.date.timeIntervalSinceReferenceDate
             let cycle = elapsed.truncatingRemainder(dividingBy: Self.period) / Self.period
 

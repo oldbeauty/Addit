@@ -180,11 +180,11 @@ struct ImprintButtonStyle: ButtonStyle {
             configuration.label
                 // Resolve the label's geometry as one unit, or a child that
                 // re-renders mid-press resolves independently and skips the
-                // animation. A library card is exactly that case: its artwork
+                // animation. A folder card is exactly that case: its tile
                 // carries `GlassRim`, whose specular angle follows
-                // `MotionShine`, so the cover's branch invalidates as the
+                // `MotionShine`, so the tile's branch invalidates as the
                 // device tilts while the title's never does. That's why the
-                // title would sink and the cover — sometimes, depending on
+                // title would sink and the tile — sometimes, depending on
                 // whether a gyro update landed inside the press — would not.
                 .geometryGroup()
                 .scaleEffect(isSunk ? pressedScale : 1)
@@ -229,8 +229,8 @@ struct ImprintButtonStyle: ButtonStyle {
 /// 30 Hz update rate.
 ///
 /// That quantum is a performance control, not a smoothing one. Every rim on
-/// screen redraws when it changes — a screen of album covers is a dozen of
-/// them, each drawing two or three `AngularGradient` strokes — so the question
+/// screen redraws when it changes — a library of folders is a dozen of them,
+/// each drawing two or three `AngularGradient` strokes — so the question
 /// it answers is "how small a change is worth a full redraw of every piece of
 /// glass in the app." The specular lobe is broad and its stops are soft, so
 /// steps of a couple of degrees are invisible where steps of one degree cost
@@ -405,9 +405,11 @@ struct GlassRim<S: InsettableShape>: View {
 
     /// Reduce Motion, or Low Power Mode.
     ///
-    /// The second is here because of where this view *is*: on every cover in
-    /// the library, so a gyro update is a redraw of every visible rim, and the
-    /// library is the screen whose scrolling has the least room to spare. On a
+    /// The second is here because of where this view *is*: on every folder
+    /// tile in the library, so a gyro update is a redraw of every visible rim,
+    /// and the library is the screen whose scrolling has the least room to
+    /// spare. (Album covers wear a still hairline of their own now,
+    /// `AlbumArtworkThumbnail.edge`, partly for that reason.) On a
     /// device running at reduced clocks the moving highlight is the first thing
     /// that should stop being worth its cost. The hairline stays either way —
     /// it's what keeps a dark-edged cover off the background — so what's lost

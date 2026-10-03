@@ -96,7 +96,7 @@ struct SpinningPlasmaOrb: View {
     @State private var start = Date()
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.sixtyHertz) { timeline in
             PlasmaOrbGlass(
                 diameter: diameter,
                 angle: 2 * .pi * timeline.date.timeIntervalSince(start) / period,

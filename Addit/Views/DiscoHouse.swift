@@ -20,7 +20,7 @@ struct DiscoHouse: View {
     @State private var start = Date()
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.sixtyHertz) { timeline in
             let elapsed = timeline.date.timeIntervalSince(start)
             Rectangle()
                 .fill(.white)

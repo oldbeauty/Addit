@@ -11,10 +11,10 @@ import Foundation
 /// and GPU clocks, so per-frame work that fits comfortably at full speed can
 /// stop fitting.
 ///
-/// Only one thing consults it — `GlassRim`'s travelling specular — and the line
-/// between that and everything else is *how many of them are on screen*. One
-/// rim is nothing; a library grid is a dozen, all redrawing together on every
-/// gyro tick, which is the cost worth dropping when the clocks come down. The
+/// `GlassRim`'s travelling specular consults it, and the line between that and
+/// everything else is *how many of them are on screen*. One rim is nothing; a
+/// library of folders is a dozen, all redrawing together on every gyro tick,
+/// which is the cost worth dropping when the clocks come down. The
 /// toolbar ornaments deliberately keep moving: there are two of them, they're
 /// the app's signature, and `ScrollOffsetBox` already made them cheap enough
 /// that Low Power Mode isn't the place to take them away.

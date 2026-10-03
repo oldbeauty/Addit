@@ -1,6 +1,6 @@
 ---
 name: glass-ornaments
-description: Addit's house style of raymarched 3D glass ornaments instead of glyphs — the shared GlassRoom lighting rig, PlasmaOrb/GlassLogo/AccessIcons, still-rendered UIMenu icons (MenuIcons.metal + MenuIconRenderer), and scroll-driven motion via ScrollOffsetBox/ScrollTorque. READ THIS before adding or changing an ornament, a menu icon, GlassRoom.h, or anything reading the scroll offset.
+description: Addit's house style of raymarched 3D glass ornaments instead of glyphs — the shared GlassRoom lighting rig, PlasmaOrb/GlassLogo/AccessIcons, still-rendered UIMenu icons (MenuIcons.metal + MenuIconRenderer), scroll-driven motion via ScrollOffsetBox/ScrollTorque, and Liquid Glass that has to move every frame (GlassDisc). READ THIS before adding or changing an ornament, a menu icon, GlassRoom.h, anything reading the scroll offset, or Liquid Glass on something that moves every frame.
 ---
 
 # Glass ornaments (Addit)
@@ -49,6 +49,22 @@ read — a dependency of the scroll, re-run every frame. Reading it inside the
 ornaments puts that dependency where the value is used. These two keep moving in
 Low Power Mode — settled; they're small, they're the app's signature, and the
 box is what made them cheap. `GlassRim`'s gyro highlight is the one that holds
-still there (`PowerState.shared.isLowPower`), because it's on every cover on
-screen: it *doesn't read* the gravity in that state, so it stops being
-invalidated rather than merely stopping moving.
+still there (`PowerState.shared.isLowPower`), because there can be a screenful
+of them — it was on every library cover until 2026-10-01, and is on every
+folder tile still: it *doesn't read* the gravity in that state, so it stops
+being invalidated rather than merely stopping moving. Covers now wear a still
+hairline of their own (`AlbumArtworkThumbnail.edge`).
+
+## Liquid Glass that moves
+
+SwiftUI's `glassEffect` is re-resolved — shape bounds, its container's, the
+material — on every frame its transform changes; counter-rotating a jiggling
+badge back upright, so only a translation was left, cost just as much. One
+moving glass button is nothing; a screenful of them, moving every frame, is
+not: the library's arrange-mode delete badges ride each card's jiggle and were
+a third of that mode's main-thread time. Glass that has to move with
+per-frame motion is UIKit's (`UIGlassEffect` in a `UIVisualEffectView`, see
+`GlassDisc` in `LibraryArrange.swift`): moved by a transform, it's a layer
+moving, and the glass is the render server's business. It renders and fades
+like SwiftUI's; it just doesn't respond to touches it doesn't receive, so give
+its button a press style.

@@ -337,14 +337,14 @@ struct LibraryView: View {
         }
     }
 
-    /// One gutter width everywhere: the screen-edge margins and the gaps
-    /// between covers all measure `gridGutter`, and cover size is whatever
-    /// fills the remainder. 30 ≈ the old effective edge margin (16pt grid
-    /// padding + the slack the fixed 148pt cards left in their adaptive
-    /// columns) — that edge distance is the look being kept.
-    static let gridGutter: CGFloat = 30
-    /// Vertical gap between rows of cards, in the library and in a folder.
-    static let gridRowSpacing: CGFloat = 16
+    /// One gutter width everywhere: the screen-edge margins, the gaps between
+    /// covers, and the gap between rows whose labels are hidden all measure
+    /// `gridGutter`, and cover size is whatever fills the remainder. 12 is
+    /// Cosmos's grid, measured off a screenshot of it: 12pt margins and gaps
+    /// around 183pt tiles on a 402pt-wide phone, which this gives exactly.
+    static let gridGutter: CGFloat = 12
+    /// Above the first row and below the last, before `gridRunway`.
+    private static let gridPadding: CGFloat = 16
     /// Covers never target smaller than this; wider screens add columns.
     private static let minCoverSize: CGFloat = 150
 
@@ -361,7 +361,13 @@ struct LibraryView: View {
         // once the real width lands. Answer with the minimum instead, which
         // buckets to the same thumbnail size as any real phone width, so
         // nothing is laid out — or cached — from a width that isn't one.
-        guard width > 0 else {
+        //
+        // Nor is a width of a few points, which is what that pass reports now
+        // (seen 2026-10-02: covers laid out at 2–4pt). `> 0` let it through, the
+        // 64px thumbnails came back, and switching libraries — which rebuilds
+        // the grid, `ContentView` being keyed on the account — brought covers
+        // back blurry. Narrower than one minimum cover is not the grid's width.
+        guard width >= Self.minCoverSize else {
             let column = GridItem(.fixed(Self.minCoverSize), spacing: gutter)
             return ([column, column], Self.minCoverSize)
         }
@@ -369,6 +375,18 @@ struct LibraryView: View {
         let coverSize = max(1, (width - CGFloat(count + 1) * gutter) / CGFloat(count))
         let column = GridItem(.fixed(coverSize), spacing: gutter)
         return (Array(repeating: column, count: count), coverSize)
+    }
+
+    /// Empty room after the last row: enough for it to scroll up to the line
+    /// and be labelled (`LibraryLabelLine`). Scrolled all the way down, the last
+    /// row's covers sit where the last row labelled at rest sits then.
+    ///
+    /// Without it the rows in the last screenful could never reach the line,
+    /// and a library that fits on one screen would only ever name its top rows —
+    /// while a newly added album, which lands at the end, would never show its
+    /// name at all. `height` is the grid's visible height, between the bars.
+    private func gridRunway(height: CGFloat, line: LibraryLabelLine) -> CGFloat {
+        max(0, height - (2 * Self.gridPadding + line.restingSpan))
     }
 
     /// Account whose albums the viewed library shows — resolved from the
@@ -620,26 +638,33 @@ struct LibraryView: View {
             } else {
                 GeometryReader { geo in
                     let layout = gridLayout(for: geo.size.width)
+                    let columns = layout.columns.count
+                    let line = LibraryLabelLine(cover: layout.coverSize, gap: Self.gridGutter)
                     let searching = !searchText.isEmpty
                     ScrollView {
                         VStack(spacing: 0) {
-                            LazyVGrid(columns: layout.columns, spacing: Self.gridRowSpacing) {
+                            // Rows of bare covers a gutter apart; a row's label
+                            // opens the gap under it as the row reaches the
+                            // line (`LibraryLabelLine`), which is why each card
+                            // is told its row.
+                            LazyVGrid(columns: layout.columns, spacing: Self.gridGutter) {
                                 if searching {
                                     // Search looks through folders: a match is
                                     // a match wherever it happens to be filed.
-                                    ForEach(searchResults) { album in
-                                        albumCell(album, coverSize: layout.coverSize)
+                                    ForEach(searchResults.enumerated(), id: \.element.id) { index, album in
+                                        albumCell(album, coverSize: layout.coverSize, row: index / columns)
                                     }
                                 } else {
-                                    ForEach(arrangement.items) { item in
+                                    ForEach(arrangement.items.enumerated(), id: \.element.id) { index, item in
                                         switch item {
                                         case .album(let album):
-                                            albumCell(album, coverSize: layout.coverSize)
+                                            albumCell(album, coverSize: layout.coverSize, row: index / columns)
                                         case .folder(let folder):
                                             folderCell(
                                                 folder,
                                                 albums: arrangement.contents[folder.folderID] ?? [],
-                                                coverSize: layout.coverSize
+                                                coverSize: layout.coverSize,
+                                                row: index / columns
                                             )
                                         }
                                     }
@@ -651,7 +676,8 @@ struct LibraryView: View {
                                 arranger.grid.origin = origin
                             }
                             .padding(.horizontal, Self.gridGutter)
-                            .padding(.vertical, 16)
+                            .padding(.top, Self.gridPadding)
+                            .padding(.bottom, Self.gridPadding + gridRunway(height: geo.size.height, line: line))
                         }
                         // At least a screen tall, so the whole empty stretch
                         // under a short library is somewhere to tap "done".
@@ -672,6 +698,9 @@ struct LibraryView: View {
                         }
                     }
                     .tracksScrollOffset(into: scrollOffset)
+                    .revealsLibraryLabels(line) { scrolled in
+                        arranger.grid.scrolled = scrolled
+                    }
                     // Belt to the recognizer's braces: it already refuses to
                     // share the touch with the scroll, but nothing should be
                     // able to scroll the grid out from under a card in hand.
@@ -689,7 +718,7 @@ struct LibraryView: View {
                         arranger.grid.columns = layout.columns.count
                         arranger.grid.cover = layout.coverSize
                         arranger.grid.columnSpacing = Self.gridGutter
-                        arranger.grid.rowSpacing = Self.gridRowSpacing
+                        arranger.grid.rowSpacing = Self.gridGutter
                     }
                 }
             }
@@ -718,8 +747,10 @@ struct LibraryView: View {
             // part of a frame budget several times over — so it changes as
             // the folder is put up and after it's taken down, the two moments
             // nothing is moving. Changed on the spring's first frame, it
-            // stalled the folder there, both ways.
-            if !arranger.isArranging && arranger.openFolderID == nil {
+            // stalled the folder there, both ways. `isLibraryBarCleared` is
+            // that moment with a fade attached, so the items go and come back
+            // rather than blinking.
+            if !arranger.isArranging && !arranger.isLibraryBarCleared {
                 ToolbarItem(placement: .principal) {
                     Menu {
                         Button {
@@ -803,7 +834,7 @@ struct LibraryView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { endArranging() }
                 }
-            } else if arranger.openFolderID == nil {
+            } else if !arranger.isLibraryBarCleared {
                 // Background work — an album's offline download, or a transfer
                 // — keeps its ring here once you leave the album that started
                 // it. Before this the progress still existed on the services;
@@ -1038,7 +1069,7 @@ struct LibraryView: View {
 
                 // Arranging has its own Done chrome and no use for a button
                 // that pushes new albums onto the grid being rearranged.
-                if !arranger.isArranging && arranger.openFolderID == nil {
+                if !arranger.isArranging && !arranger.isLibraryBarCleared {
                     addButton
                         .padding(.bottom, addButtonBottomPadding)
                 }
@@ -1562,6 +1593,9 @@ struct LibraryView: View {
 struct AlbumCard: View {
     let album: Album
     var coverSize: CGFloat = 148
+    /// The card's row in the library's grid, where labels come and go with the
+    /// scroll (`LibraryLabelLine`). Nil wherever the label simply stays.
+    var row: Int? = nil
 
     /// The title/artist block under the cover, and the gap above it. Named
     /// because the arrange grid does its hit-testing in arithmetic rather than
@@ -1569,7 +1603,7 @@ struct AlbumCard: View {
     /// as tall as this one for that arithmetic to hold.
     static let labelHeight: CGFloat = 36
     static let labelSpacing: CGFloat = 4
-    /// Everything a card adds below its cover.
+    /// Everything a card adds below its cover, label showing.
     static let labelBlock: CGFloat = labelSpacing + labelHeight
 
     private var subtitle: String {
@@ -1578,41 +1612,65 @@ struct AlbumCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Self.labelSpacing) {
+        VStack(alignment: .leading, spacing: 0) {
             AlbumArtworkThumbnail(album: album, size: coverSize)
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(album.name)
-                    // Medium, matching the list and arrange rows. Geist ships a
-                    // drawn Medium cut, so this is a real weight rather than a
-                    // synthesised one.
-                    .font(.uiSubheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .fadingTruncation()
+            LibraryCardLabel(row: row) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(album.name)
+                        // Medium, matching the list and arrange rows. Geist ships a
+                        // drawn Medium cut, so this is a real weight rather than a
+                        // synthesised one.
+                        .font(.uiSubheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .fadingTruncation()
 
-                Text(subtitle)
-                    .font(.uiCaption)
-                    .foregroundStyle(.secondary)
-                    .fadingTruncation()
+                    Text(subtitle)
+                        .font(.uiCaption)
+                        .foregroundStyle(.secondary)
+                        .fadingTruncation()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: Self.labelHeight, alignment: .top)
+                // Indent the text block to visually align with the cover's
+                // rounded corners (its straight edge reads inset from x=0).
+                // Symmetric padding also pulls the trailing fade in by the same
+                // amount, keeping the right edge balanced with the left.
+                .padding(.horizontal, 4)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: Self.labelHeight, alignment: .top)
-            // Indent the text block to visually align with the cover's
-            // rounded corners (its straight edge reads inset from x=0).
-            // Symmetric padding also pulls the trailing fade in by the same
-            // amount, keeping the right edge balanced with the left.
-            .padding(.horizontal, 4)
         }
         .frame(width: coverSize)
+        // Named in words rather than by the label: in the grid the label is
+        // hidden on most rows, and VoiceOver would be left a nameless cover.
+        // Outlined by the card, too — left to itself VoiceOver rings the
+        // hidden label's text as well, hanging into the next row.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([album.name, subtitle].joined(separator: ", "))
+        .contentShape(.accessibility, Rectangle())
     }
 }
 struct AlbumArtworkThumbnail: View {
     let album: Album
     var size: CGFloat = 148
-    /// 12 everywhere a cover is drawn on its own; a folder tile's minis shrink
-    /// it with the cover so a small cover isn't a lozenge.
+    /// `defaultCornerRadius` everywhere a cover is drawn on its own; a folder
+    /// tile's minis shrink it with the cover (`FolderTile.miniCornerRadius`).
     var cornerRadius: CGFloat = defaultCornerRadius
-    static let defaultCornerRadius: CGFloat = 12
+    /// Cosmos's corner, measured off a screenshot of its grid: a continuous
+    /// 3¼pt on a 183pt tile, fitted to the anti-aliased edge. Every cover in
+    /// the library — grid, list, folders, the card in hand — and the folder
+    /// tiles among them share it.
+    static let defaultCornerRadius: CGFloat = 3.25
+    /// The hairline round every cover: `GlassRim`'s base line, the one folder
+    /// tiles draw under their gyro lobe, so a cover and a folder share an
+    /// edge. Light in dark mode — a dark sleeve on the dark background is what
+    /// it has to find, and light mode's dark line (`ThemeService.forcesDark`
+    /// keeps that mode in reserve) would vanish into exactly those covers.
+    /// White at 8% at first (2026-10-01), "super duper faint" as asked;
+    /// raised to the rim's 12% the next day for a touch more edge.
+    static func edge(_ scheme: ColorScheme) -> Color {
+        GlassRim<RoundedRectangle>.hairline(scheme)
+    }
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.modelContext) private var modelContext
     @Environment(\.displayScale) private var displayScale
     @Environment(AlbumArtService.self) private var albumArtService
@@ -1638,7 +1696,7 @@ struct AlbumArtworkThumbnail: View {
     /// specific look. A cell laid out before its container's width is known
     /// fetches a thumbnail for that provisional size and caches it; when the
     /// real width arrives, `size` changes and `thumbnailPixels` with it, but
-    /// nothing re-asks — `onAppear` has already run and this id hasn't moved.
+    /// nothing re-asks — the task has already run and its id hasn't moved.
     /// The cell is then stranded holding a thumbnail built for a size it is no
     /// longer drawn at, and the only thing that has ever fixed it is scrolling
     /// the cell out of the grid and back so it is rebuilt from scratch.
@@ -1653,7 +1711,35 @@ struct AlbumArtworkThumbnail: View {
         return "\(album.coverArtTaskID)-\(refreshMarker)-\(album.localCoverPath ?? "")-\(thumbnailPixels)"
     }
 
+    /// Below this, a cover is being laid out by a pass that hasn't been given
+    /// its real room yet, not drawn: the smallest real ones are a folder row's
+    /// minis, ~17pt. Art fetched for those passes is a 64px thumbnail, and
+    /// a cell left holding one draws it blurry once it's full size — so none
+    /// is fetched, and nothing small is there to be left holding.
+    private static let smallestRealSize: CGFloat = 12
+    private var isRealSize: Bool { size >= Self.smallestRealSize }
+
+    /// What the art service already holds for this cover at this size — a
+    /// dictionary lookup, nothing that touches the disk.
+    private var memoryThumbnail: UIImage? {
+        guard isRealSize else { return nil }
+        if album.isLocal {
+            guard let coverPath = album.resolvedLocalCoverPath else { return nil }
+            return albumArtService.cachedThumbnail(atPath: coverPath, pixelSize: thumbnailPixels)
+        }
+        guard let coverFileId = album.coverFileId else { return nil }
+        return albumArtService.cachedThumbnail(for: coverFileId, pixelSize: thumbnailPixels)
+    }
+
     var body: some View {
+        // A cover already in memory is drawn on this view's very first frame.
+        // It used to be fetched in `onAppear`, which runs a frame too late: a
+        // new copy of a cover on screen — the card lifted into your hand, the
+        // covers flying out of an opening folder — drew the placeholder
+        // first, and the lift's spring then crossfaded the art in over it, a
+        // grey flash at the start of every drag. Anything that would touch
+        // the disk still waits for the task below.
+        let shown = image ?? memoryThumbnail
         RoundedRectangle(cornerRadius: cornerRadius)
             .fill(
                 LinearGradient(
@@ -1665,8 +1751,8 @@ struct AlbumArtworkThumbnail: View {
             .frame(width: size, height: size)
             .overlay {
                 Group {
-                    if let image {
-                        Image(uiImage: image)
+                    if let shown {
+                        Image(uiImage: shown)
                             .resizable()
                             .scaledToFill()
                             .transition(.opacity)
@@ -1679,34 +1765,33 @@ struct AlbumArtworkThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            // Glass edge: hairline + gyro specular so covers with dark
-            // borders separate from the background (Phosphor kit).
-            .overlay(GlassRim(cornerRadius: cornerRadius))
-            .onAppear {
-                // Memory only: a row scrolling back into view draws its cover
-                // on this frame. Anything that would touch the disk waits for
-                // the task below — the old version read and decoded a local
-                // cover file *here*, on the main thread, on the frame a row
-                // appeared, which is the frame least able to afford it.
-                guard image == nil else { return }
-                if album.isLocal {
-                    if let coverPath = album.resolvedLocalCoverPath {
-                        image = albumArtService.cachedThumbnail(
-                            atPath: coverPath, pixelSize: thumbnailPixels
-                        )
-                    }
-                } else if let coverFileId = album.coverFileId {
-                    image = albumArtService.cachedThumbnail(
-                        for: coverFileId, pixelSize: thumbnailPixels
-                    )
-                }
+            // A still hairline, so a cover with dark edges still separates
+            // from the background — what `GlassRim` did, less the gyro lobe. The
+            // lobe stays on folder tiles, which it now singles out; on every
+            // cover it was a GPU-drawn layer apiece that every tilt redrew,
+            // under the very grids that arranging and folders animate.
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Self.edge(colorScheme), lineWidth: 1)
+                    .allowsHitTesting(false)
             }
+            // Every `image =` here waits for its task to still be current.
+            // A task this id has replaced is cancelled, but cancelling doesn't
+            // stop a decode already under way: it still returns, and assigning
+            // it then lays a stale thumbnail over the one that replaced it.
+            // That's how covers came up blurry at random. The grid's first
+            // layout can be a few points wide, so every cover asks for a 64px
+            // thumbnail before its real size; whenever that small decode
+            // finished second, it won, and stayed until the cell was rebuilt.
             .task(id: artworkTaskID) {
+                guard isRealSize else { return }
                 if album.isLocal {
                     if let coverPath = album.resolvedLocalCoverPath {
-                        image = await albumArtService.thumbnail(
+                        let thumbnail = await albumArtService.thumbnail(
                             atPath: coverPath, pixelSize: thumbnailPixels
                         )
+                        guard !Task.isCancelled else { return }
+                        image = thumbnail
                     }
                     return
                 }
@@ -1719,21 +1804,26 @@ struct AlbumArtworkThumbnail: View {
                     if let thumbnail = await albumArtService.thumbnail(
                         for: coverFileId, pixelSize: thumbnailPixels
                     ) {
+                        guard !Task.isCancelled else { return }
                         image = thumbnail
                         return
                     }
                 }
 
                 // No cover on record: this is the discovery path, and the only
-                // one that has anything to write back.
+                // one that has anything to write back. What it finds is true at
+                // any size, so it's recorded even if this task has been
+                // replaced; only the picture waits for the task to be current.
                 let resolution = await albumArtService.resolveAlbumArt(for: album)
                 albumArtService.applyResolution(resolution, to: album, modelContext: modelContext)
                 if let found = resolution.resolvedCoverItem?.id,
                    let thumbnail = await albumArtService.thumbnail(
                        for: found, pixelSize: thumbnailPixels
                    ) {
+                    guard !Task.isCancelled else { return }
                     image = thumbnail
                 } else if resolution.image != nil || image == nil {
+                    guard !Task.isCancelled else { return }
                     image = resolution.image
                 }
             }

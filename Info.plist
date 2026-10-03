@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Lets the app's own animations run at ProMotion's 120 Hz. Without it an
+	     iPhone caps every animation an app drives itself — all of SwiftUI's:
+	     a folder opening, the grid making room for a card — at 60, while the
+	     scroll views beside them run at 120, and the animations read as choppy
+	     next to the scrolling. Anything that runs on its own clock rather than
+	     answering a finger asks for 60 by itself (`TimelineSchedule.sixtyHertz`). -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

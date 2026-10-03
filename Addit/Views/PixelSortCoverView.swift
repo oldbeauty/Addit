@@ -389,6 +389,9 @@ struct PixelSortCoverView: View {
         tearDownDisplayLink()
         let target = DisplayLinkTarget { [self] in tick() }
         let link = CADisplayLink(target: target, selector: #selector(DisplayLinkTarget.fire))
+        // The sort advances a fixed number of swaps a tick: its pace is the
+        // link's rate.
+        link.preferredFrameRateRange = .sixtyHertz
         link.add(to: .main, forMode: .common)
         self.linkTarget = target
         self.displayLink = link

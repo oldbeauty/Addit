@@ -140,8 +140,9 @@ final class AlbumArtService {
         "\(identity)@\(pixelSize)" as NSString
     }
 
-    /// Fast synchronous lookup — memory only, no I/O. The `onAppear` path, so
-    /// a row that scrolls back into view draws its cover on the same frame.
+    /// Fast synchronous lookup — memory only, no I/O. What a cover reads as it
+    /// draws, so one that scrolls back into view, or a new copy of one already
+    /// on screen, has its art on its first frame.
     func cachedThumbnail(for identity: String, pixelSize: Int) -> UIImage? {
         thumbnailCache.object(forKey: Self.thumbnailKey(identity, pixelSize))
     }
@@ -167,9 +168,13 @@ final class AlbumArtService {
     ///
     /// One entry per local album, and only ever written from the async path,
     /// which re-stats every time it runs. A stale entry is therefore possible
-    /// for exactly one frame — the frame `onAppear` draws, before the task that
-    /// follows it refreshes both this and the image.
-    private var localIdentities: [String: String] = [:]
+    /// for exactly one frame — a cover's first, before the task that follows
+    /// it refreshes both this and the image.
+    ///
+    /// Unobserved: covers read it while they draw (`AlbumArtworkThumbnail`),
+    /// and as an observed property every cover that finished loading would
+    /// redraw every cover still waiting.
+    @ObservationIgnored private var localIdentities: [String: String] = [:]
 
     /// A cover already sitting in the app's own Documents — a local album's.
     ///
@@ -188,8 +193,9 @@ final class AlbumArtService {
         return await makeThumbnail(at: url, identity: identity, pixelSize: pixelSize)
     }
 
-    /// The synchronous half of the local lookup, for `onAppear`. A dictionary
-    /// hit or nothing — no `stat`, no read, nothing that can block a frame.
+    /// The synchronous half of the local lookup, read as a cover draws. A
+    /// dictionary hit or nothing — no `stat`, no read, nothing that can block a
+    /// frame.
     func cachedThumbnail(atPath path: String, pixelSize: Int) -> UIImage? {
         guard let identity = localIdentities[path] else { return nil }
         return cachedThumbnail(for: identity, pixelSize: pixelSize)

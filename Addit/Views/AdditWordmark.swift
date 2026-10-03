@@ -84,7 +84,7 @@ struct AdditWordmark: View {
                 // is already running the ripple field underneath it.
                 mark(canvas: canvas, time: Self.heldFrame)
             } else {
-                TimelineView(.animation) { timeline in
+                TimelineView(.sixtyHertz) { timeline in
                     mark(canvas: canvas, time: timeline.date.timeIntervalSince(start))
                 }
             }

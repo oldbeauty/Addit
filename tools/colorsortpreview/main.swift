@@ -178,9 +178,10 @@ let tones = covers.map(CoverTone.measure)
 
 // The naive version, for comparison: hue order poured into the grid in reading
 // order, greys after — what "sort by colour" means without the grid in mind.
+// Hue descending, the way `ColorSort` runs, so the two compare like for like.
 let naive = tones.indices.sorted { a, b in
     switch (tones[a]?.hue, tones[b]?.hue) {
-    case let (x?, y?): return (x, a) < (y, b)
+    case let (x?, y?): return (y, a) < (x, b)
     case (.some, nil): return true
     case (nil, .some): return false
     case (nil, nil): return ((tones[b]?.lightness ?? 0), a) < ((tones[a]?.lightness ?? 0), b)

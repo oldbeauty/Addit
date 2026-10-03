@@ -151,7 +151,8 @@ nonisolated struct CoverTone: Sendable {
 ///
 /// - **Down the rows, hue.** Consecutive runs of the hue order, one row's
 ///   worth each, so every row is a band of neighbouring colours and the bands
-///   step through the spectrum top to bottom.
+///   step through the spectrum top to bottom: pink and violet first, down
+///   through blue, green and yellow, to orange and red.
 /// - **Across a row, lightness**, lightest on the left. Each column becomes a
 ///   shade, so the left edge runs pale and the right edge deep — a paint-chip
 ///   wall, not a strip that wraps.
@@ -179,10 +180,13 @@ nonisolated enum ColorSort {
         }
 
         let cut = spectrumStart(hues: chromatic.map(\.hue))
+        // Backwards round the circle from the cut: OKLab hue rises from red
+        // through yellow, green and blue to pink, and the wall runs pink to
+        // red. (It ran red to pink until 2026-10-01; reversed by request.)
         let spectrum = chromatic.sorted {
             let a = ($0.hue - cut + 360).truncatingRemainder(dividingBy: 360)
             let b = ($1.hue - cut + 360).truncatingRemainder(dividingBy: 360)
-            return (a, $0.index) < (b, $1.index)
+            return (b, $0.index) < (a, $1.index)
         }
         let greys = neutral.sorted { ($1.lightness, $0.index) < ($0.lightness, $1.index) }
 

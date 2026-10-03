@@ -46,18 +46,43 @@ enum LibraryDragZone: Equatable {
 ///
 /// The grids are `LazyVGrid`s, which only build the cells on screen, so they
 /// can't be asked where slot 40 is, and a drag that auto-scrolls needs exactly
-/// that. Every card is the same size — a cover plus `AlbumCard.labelBlock` —
-/// so a slot is arithmetic on the grid's origin, and the origin is the one
-/// thing measured (`onGeometryChange`, into the arranger's coordinate space).
+/// that. Every card in a row is the same size — a cover plus however much of
+/// `AlbumCard.labelBlock` the row is showing — so a slot is arithmetic on the
+/// grid's origin, and the origin is the one thing measured (`onGeometryChange`,
+/// into the arranger's coordinate space). In an open folder every row shows
+/// all of its label; in the library's own grid that depends on the scroll,
+/// and `LibraryLabelLine` — the same arithmetic the cards are drawn from — says
+/// how much.
 struct LibraryGridGeometry {
     var origin: CGPoint = .zero
     var columns = 2
     var cover: CGFloat = 150
     var columnSpacing: CGFloat = 30
     var rowSpacing: CGFloat = 16
+    /// Labels only on the rows scrolled up to the line, as the library's own
+    /// grid draws them. Off — an open folder — every row is labelled.
+    var revealsLabels = false
+    /// How far the grid is scrolled from rest, which `revealsLabels` rows are
+    /// placed by. A copy kept here, unobserved, rather than a read of the
+    /// cards' `LibraryLabelReveal`: `LibraryView.body` asks where a folder's
+    /// tile is, and must never come to depend on the scroll.
+    var scrolled: CGFloat = 0
 
-    private var pitch: CGSize {
-        CGSize(width: cover + columnSpacing, height: cover + AlbumCard.labelBlock + rowSpacing)
+    private var columnPitch: CGFloat { cover + columnSpacing }
+    /// The most a row can take up, cover top to cover top: label showing.
+    private var tallestPitch: CGFloat { cover + AlbumCard.labelBlock + rowSpacing }
+
+    /// Where row `row`'s covers start, below `origin`.
+    private func rowTop(_ row: Int) -> CGFloat {
+        guard revealsLabels else { return CGFloat(row) * tallestPitch }
+        return LibraryLabelLine(cover: cover, gap: rowSpacing).rowTop(row, scrolled: scrolled)
+    }
+
+    /// How much label hangs under row `row`'s covers.
+    private func labelHeight(_ row: Int) -> CGFloat {
+        guard revealsLabels else { return AlbumCard.labelBlock }
+        return AlbumCard.labelBlock
+            * LibraryLabelLine(cover: cover, gap: rowSpacing).progress(row: row, scrolled: scrolled)
     }
 
     /// The card under `point`, if any. Gutters hit nothing, so a hold between
@@ -65,10 +90,15 @@ struct LibraryGridGeometry {
     func itemIndex(at point: CGPoint, count: Int) -> Int? {
         let x = point.x - origin.x, y = point.y - origin.y
         guard x >= 0, y >= 0, columns > 0 else { return nil }
-        let column = Int(x / pitch.width), row = Int(y / pitch.height)
+        let column = Int(x / columnPitch)
+        // The last row to start at or above `y`. No row is taller than
+        // `tallestPitch`, so row `y / tallestPitch` has certainly started;
+        // walk on from there.
+        var row = Int(y / tallestPitch)
+        while rowTop(row + 1) <= y { row += 1 }
         guard column < columns,
-              x - CGFloat(column) * pitch.width <= cover,
-              y - CGFloat(row) * pitch.height <= cover + AlbumCard.labelBlock
+              x - CGFloat(column) * columnPitch <= cover,
+              y - rowTop(row) <= cover + labelHeight(row)
         else { return nil }
         let index = row * columns + column
         return index < count ? index : nil
@@ -84,13 +114,18 @@ struct LibraryGridGeometry {
     func slot(for point: CGPoint, count: Int) -> (index: Int, over: Int?) {
         guard count > 0, columns > 0 else { return (0, nil) }
         let x = point.x - origin.x, y = point.y - origin.y
-        let column = min(max(Int(floor((x + (pitch.width - cover) / 2) / pitch.width)), 0), columns - 1)
-        let row = max(Int(floor((y + (pitch.height - cover) / 2) / pitch.height)), 0)
+        let column = min(max(Int(floor((x + (columnPitch - cover) / 2) / columnPitch)), 0), columns - 1)
+        // The last row whose boundary with the row above — halfway between
+        // their cover centres — is at or above `y`. A row's boundary is never
+        // below its own cover's centre, so from where that has certainly been
+        // passed, walk on.
+        var row = max(Int(floor((y - cover / 2) / tallestPitch)), 0)
+        while (rowTop(row) + rowTop(row + 1)) / 2 + cover / 2 <= y { row += 1 }
         let raw = row * columns + column
         var over: Int?
         if raw < count {
             let coverRect = CGRect(
-                x: CGFloat(column) * pitch.width, y: CGFloat(row) * pitch.height,
+                x: CGFloat(column) * columnPitch, y: rowTop(row),
                 width: cover, height: cover
             )
             // The middle half, roughly: near enough the centre to mean "onto",
@@ -107,8 +142,8 @@ struct LibraryGridGeometry {
     func coverCenter(of index: Int) -> CGPoint {
         let columns = max(self.columns, 1)
         return CGPoint(
-            x: origin.x + CGFloat(index % columns) * pitch.width + cover / 2,
-            y: origin.y + CGFloat(index / columns) * pitch.height + cover / 2
+            x: origin.x + CGFloat(index % columns) * columnPitch + cover / 2,
+            y: origin.y + rowTop(index / columns) + cover / 2
         )
     }
 }
@@ -146,6 +181,14 @@ final class LibraryArranger {
     static let holdToPickUp: TimeInterval = 0.18
 
     private static let reflow: Animation = .snappy(duration: 0.3)
+    /// The card in hand, a little larger than the covers it's carried over.
+    private static let liftScale: CGFloat = 1.1
+    /// …and while it's held where letting go would make a folder or drop into
+    /// one: smaller than the cover under it, so that cover and the plate
+    /// forming behind it show round the card. At its lifted size, centred over
+    /// the cover as a merge is aimed, it hid both, and nothing said a folder
+    /// was coming until one appeared.
+    private static let mergeScale: CGFloat = 0.8
     /// A pause, for the dwell: the finger staying within this of where it was.
     private static let pauseSlop: CGFloat = 8
 
@@ -154,7 +197,19 @@ final class LibraryArranger {
     var isArranging = false
     /// The folder whose layer is up. Setting it puts the layer up *collapsed*,
     /// exactly over the folder's tile; `isFolderExpanded` is what grows it.
-    var openFolderID: String?
+    var openFolderID: String? {
+        didSet {
+            guard (openFolderID == nil) != (oldValue == nil) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { isLibraryBarCleared = openFolderID != nil }
+        }
+    }
+    /// The library's own controls — its toolbar items, the add button — are
+    /// away, because a folder is up: `openFolderID`, on a fade of its own. The
+    /// bar changes on the frames the layer goes up and comes down, which must
+    /// not animate — the layer appears and vanishes exactly over its tile — so
+    /// keyed on `openFolderID` itself, the items blinked off at the tap and
+    /// back on as the folder landed.
+    private(set) var isLibraryBarCleared = false
     /// The open folder is open, as opposed to growing out of its tile or
     /// shrinking back into it. Read by `FolderZoom` alone — anything in
     /// `LibraryView.body` keyed on it would re-run the library on the
@@ -179,7 +234,7 @@ final class LibraryArranger {
 
     // MARK: Not observed
 
-    @ObservationIgnored var grid = LibraryGridGeometry()
+    @ObservationIgnored var grid = LibraryGridGeometry(revealsLabels: true)
     @ObservationIgnored var panel = LibraryGridGeometry()
     @ObservationIgnored var gridViewport: CGRect = .zero
     @ObservationIgnored var panelViewport: CGRect = .zero
@@ -195,7 +250,7 @@ final class LibraryArranger {
     /// than `pauseSlop` from it starts the dwell over.
     @ObservationIgnored private var dwellAnchor: CGPoint = .zero
     @ObservationIgnored private var leaveTask: Task<Void, Never>?
-    @ObservationIgnored private var autoscrollTask: Task<Void, Never>?
+    @ObservationIgnored private var autoscroll: FrameTicker?
 
     /// A card is in hand or still flying home, or a colour sort is under way.
     /// Nothing else may start then.
@@ -274,7 +329,7 @@ final class LibraryArranger {
         liftPoint = center
         lifted = LiftedCard(item: card, contents: contents, size: geometry.cover)
         draggedItem = card.id
-        withAnimation(.snappy(duration: 0.22)) { lifted?.scale = 1.1 }
+        withAnimation(.snappy(duration: 0.22)) { lifted?.scale = Self.liftScale }
         startAutoscroll()
     }
 
@@ -328,7 +383,10 @@ final class LibraryArranger {
     private func propose(_ candidate: DropCandidate, immediate: Bool) {
         guard let session else { return }
         if let mergeTarget, candidate != .merge(mergeTarget) {
-            withAnimation(.snappy(duration: 0.2)) { self.mergeTarget = nil }
+            withAnimation(.snappy(duration: 0.2)) {
+                self.mergeTarget = nil
+                lifted?.scale = Self.liftScale
+            }
         }
         if immediate {
             dwellTask?.cancel()
@@ -355,7 +413,10 @@ final class LibraryArranger {
         switch candidate {
         case .merge(let target):
             guard mergeTarget != target else { return }
-            withAnimation(.snappy(duration: 0.22)) { mergeTarget = target }
+            withAnimation(.snappy(duration: 0.22)) {
+                mergeTarget = target
+                lifted?.scale = Self.mergeScale
+            }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         case .reorder(let index):
             switch session.zone {
@@ -409,7 +470,8 @@ final class LibraryArranger {
         dwellTask?.cancel()
         leaveTask?.cancel()
         leaveTask = nil
-        autoscrollTask?.cancel()
+        autoscroll?.stop()
+        autoscroll = nil
         // Let go without pausing, the card still lands where it was let go —
         // the pause only decides what happens *on the way*. A folder, though,
         // has to have been offered first.
@@ -516,21 +578,27 @@ final class LibraryArranger {
     /// scrolls — faster the closer to the edge. A loop rather than a reaction
     /// to movement, because the whole point is a finger holding still.
     ///
+    /// The loop is the display's (`FrameTicker`), and each step covers the
+    /// time since the last. It was a task sleeping 16ms between steps of a
+    /// fixed size: never in step with the frames, so the grid moved twice on
+    /// some and not at all on others, and slowed whenever the main thread was
+    /// busy — a judder, right under the card in hand.
+    ///
     /// The scroll view is driven directly (`EnclosingScrollViewReader` found
     /// it) rather than through a SwiftUI `ScrollPosition`, which would be a
     /// state change on `LibraryView` every frame of the scroll.
     private func startAutoscroll() {
-        autoscrollTask?.cancel()
-        autoscrollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(16))
-                guard let self, self.session != nil else { return }
-                self.autoscrollTick()
-            }
+        autoscroll?.stop()
+        let ticker = FrameTicker { [weak self] elapsed in
+            guard let self, self.session != nil else { return false }
+            self.autoscrollStep(elapsed)
+            return true
         }
+        autoscroll = ticker
+        ticker.start()
     }
 
-    private func autoscrollTick() {
+    private func autoscrollStep(_ elapsed: CFTimeInterval) {
         guard let session else { return }
         let scrollView: UIScrollView?
         let viewport: CGRect
@@ -554,22 +622,63 @@ final class LibraryArranger {
         let top = -inset.top
         let bottom = max(top, scrollView.contentSize.height + inset.bottom - scrollView.bounds.height)
         let old = scrollView.contentOffset.y
-        let new = min(max(old + speed, top), bottom)
-        guard abs(new - old) > 0.5 else { return }
+        let new = min(max(old + speed * elapsed, top), bottom)
+        guard abs(new - old) > 0.1 else { return }
         scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: new), animated: false)
         // The content just moved under a still finger. Shift our copy of the
         // grid's origin now rather than a frame from now, when its
-        // `onGeometryChange` gets round to saying so.
+        // `onGeometryChange` gets round to saying so — and the scroll the
+        // library grid's labels are placed by, for the same reason.
         switch session.zone {
-        case .grid: grid.origin.y -= new - old
-        case .panel: panel.origin.y -= new - old
+        case .grid:
+            grid.origin.y -= new - old
+            grid.scrolled += new - old
+        case .panel:
+            panel.origin.y -= new - old
         }
         evaluate(immediate: true)
     }
 
+    /// Points a second, by how deep into the band at the edge the finger is:
+    /// the same pace as the old loop's 3 + 16t² points a step, sixty steps a
+    /// second.
     private static func autoscrollSpeed(_ depth: CGFloat) -> CGFloat {
         let t = min(max(depth, 0), 1.3)
-        return 3 + 16 * t * t
+        return 180 + 960 * t * t
+    }
+}
+
+/// A display link: `tick` once a frame with the seconds since the last, until
+/// it returns false or `stop()` is called.
+private final class FrameTicker: NSObject {
+    private let tick: (CFTimeInterval) -> Bool
+    private var link: CADisplayLink?
+    private var last: CFTimeInterval?
+
+    init(tick: @escaping (CFTimeInterval) -> Bool) {
+        self.tick = tick
+    }
+
+    func start() {
+        guard link == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(step(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    /// Also what breaks the link's hold on this object.
+    func stop() {
+        link?.invalidate()
+        link = nil
+        last = nil
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        let elapsed = last.map { link.timestamp - $0 } ?? link.duration
+        last = link.timestamp
+        // A long stall moves the grid as far as a short one, not in one leap.
+        if !tick(min(elapsed, 1.0 / 30.0)) { stop() }
     }
 }
 
@@ -858,15 +967,21 @@ struct ArrangeChrome: ViewModifier {
         let arranging = arranger.isArranging
         let isLifted = arranger.draggedItem == id
         let isTarget = arranger.mergeTarget == id
-        // Scale about the cover's centre, not the card's — the label hangs below.
-        let coverAnchor = UnitPoint(x: 0.5, y: coverSize / 2 / (coverSize + AlbumCard.labelBlock))
+        // An album under a hovering album draws back into a plate that grows
+        // behind it: the folder, forming. A folder just swells.
+        let targetScale: CGFloat = isTarget ? (id.isFolder ? 1.08 : 0.86) : 1
         content
-            // An album under a hovering album draws back into a plate that
-            // grows behind it: the folder, forming. A folder just swells.
-            .scaleEffect(isTarget ? (id.isFolder ? 1.08 : 0.86) : 1, anchor: coverAnchor)
+            // About the cover's centre, not the card's: the label hangs below
+            // — or, in the library's grid, mostly doesn't (`LibraryLabelLine`)
+            // — so the card's height says nothing about where the cover's
+            // middle is. Scaled from the top, where the cover always starts,
+            // then let down by what that moved the cover's centre.
+            .scaleEffect(targetScale, anchor: .top)
+            .offset(y: (1 - targetScale) * coverSize / 2)
             .background(alignment: .top) {
                 if !id.isFolder {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    // Concentric with the cover, 7pt outside it.
+                    RoundedRectangle(cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius + 7, style: .continuous)
                         .fill(Color.white.opacity(0.16))
                         .frame(width: coverSize + 14, height: coverSize + 14)
                         .offset(y: -7)
@@ -914,7 +1029,7 @@ private struct Jiggle: ViewModifier {
     let seed: Int
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(paused: !isActive)) { timeline in
+        TimelineView(.sixtyHertz(paused: !isActive)) { timeline in
             content.rotationEffect(.degrees(isActive ? angle(at: timeline.date) : 0))
         }
     }
@@ -932,6 +1047,15 @@ private struct Jiggle: ViewModifier {
 /// Liquid Glass, like the toolbar's buttons: it floats over the cover, and
 /// real glass takes on whatever art is under it where a flat grey disc read as
 /// a sticker. No `GlassRim` — the glass brings its own edge.
+///
+/// UIKit's glass (`GlassDisc`), not SwiftUI's `glassEffect`. The badge rides
+/// its card's jiggle, and SwiftUI works a glass effect out again on every
+/// frame it moves — the shape's bounds, its container's, the material — which
+/// across a screen of jiggling badges was a third of everything arranging
+/// cost the main thread, before a card was even picked up. Holding the badges
+/// still made that cost vanish, and made them look stuck on rather than
+/// attached. A `UIVisualEffectView` that a transform moves is a layer moving:
+/// the glass is the render server's business.
 private struct RemoveBadge: View {
     let action: () -> Void
 
@@ -941,14 +1065,37 @@ private struct RemoveBadge: View {
                 .font(.ui(12, weight: .bold))
                 .foregroundStyle(.primary)
                 .frame(width: 26, height: 26)
-                .glassEffect(.regular.interactive(), in: .circle)
+                .background { GlassDisc() }
                 // A finger's worth of target around a small mark.
                 .contentShape(Circle().inset(by: -8))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BadgePress())
         .offset(x: -ArrangeChrome.badgeOverhang, y: -ArrangeChrome.badgeOverhang)
         .accessibilityLabel("Remove from Library")
     }
+
+    /// The give that interactive glass has under a finger. UIKit's only shows
+    /// it to touches that reach the glass itself, and here the button takes
+    /// them.
+    private struct BadgePress: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? 0.86 : 1)
+                .animation(.snappy(duration: 0.18), value: configuration.isPressed)
+        }
+    }
+}
+
+/// A circle of Liquid Glass, drawn by UIKit — see `RemoveBadge` for why.
+private struct GlassDisc: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        let view = UIVisualEffectView(effect: UIGlassEffect(style: .regular))
+        view.isUserInteractionEnabled = false
+        view.cornerConfiguration = .capsule()
+        return view
+    }
+
+    func updateUIView(_ view: UIVisualEffectView, context: Context) {}
 }
 
 /// A folder's face: its first four covers, two by two, on a pale plate shaped
@@ -959,7 +1106,8 @@ struct FolderTile: View {
     let albums: [Album]
     let size: CGFloat
 
-    static let cornerRadius: CGFloat = 12
+    /// A cover's, since the tile stands among covers in for one.
+    static let cornerRadius: CGFloat = AlbumArtworkThumbnail.defaultCornerRadius
     static let plateOpacity: Double = 0.09
     private static let perSide = 2
     /// How many covers a tile shows.
@@ -990,9 +1138,13 @@ struct FolderTile: View {
         )
     }
 
-    /// A cover's rounding, shrunk with it so a small cover isn't a lozenge.
+    /// A cover's rounding, shrunk with it: in proportion to the library's
+    /// corner on a cover about the size an open folder draws them (~150pt), so
+    /// the minis are the same shape as the covers they fly out to become
+    /// (`FolderZoomStage.travellingCovers`) and never rounder than the tile
+    /// they sit on.
     static func miniCornerRadius(_ mini: CGFloat) -> CGFloat {
-        max(2, mini * 0.12)
+        max(1, AlbumArtworkThumbnail.defaultCornerRadius * mini / 150)
     }
 
     var body: some View {
@@ -1022,6 +1174,9 @@ struct FolderCard: View {
     let folder: LibraryFolder
     let albums: [Album]
     var coverSize: CGFloat
+    /// As `AlbumCard.row`: the card's row in the library's grid, nil where the
+    /// label simply stays.
+    var row: Int? = nil
     /// The folder is open, and its layer is drawing the tile — growing out of
     /// this spot, or shrinking back into it. The label stays, as on the Home
     /// Screen: only the icon lifts off.
@@ -1032,7 +1187,7 @@ struct FolderCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AlbumCard.labelSpacing) {
+        VStack(alignment: .leading, spacing: 0) {
             FolderTile(albums: albums, size: coverSize)
                 .opacity(tileHidden ? 0 : 1)
                 // Gone the instant the folder's layer covers it, never faded.
@@ -1040,21 +1195,27 @@ struct FolderCard: View {
                 // from the tap, and faded under that, the tile lingered
                 // behind the opening folder as a second copy of it.
                 .animation(nil, value: tileHidden)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(folder.name)
-                    .font(.uiSubheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .fadingTruncation()
-                Text(Self.countLabel(albums.count))
-                    .font(.uiCaption)
-                    .foregroundStyle(.secondary)
-                    .fadingTruncation()
+            LibraryCardLabel(row: row) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(folder.name)
+                        .font(.uiSubheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .fadingTruncation()
+                    Text(Self.countLabel(albums.count))
+                        .font(.uiCaption)
+                        .foregroundStyle(.secondary)
+                        .fadingTruncation()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: AlbumCard.labelHeight, alignment: .top)
+                .padding(.horizontal, 4)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: AlbumCard.labelHeight, alignment: .top)
-            .padding(.horizontal, 4)
         }
         .frame(width: coverSize)
+        // As `AlbumCard`'s: the label is hidden on most rows of the grid.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([folder.name, Self.countLabel(albums.count)].joined(separator: ", "))
+        .contentShape(.accessibility, Rectangle())
     }
 }
 

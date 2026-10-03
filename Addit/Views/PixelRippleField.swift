@@ -91,7 +91,7 @@ struct PixelRippleField: View {
                     // square.
                     field(size: size, cell: cell, time: Self.heldFrame)
                 } else {
-                    TimelineView(.animation) { timeline in
+                    TimelineView(.sixtyHertz) { timeline in
                         field(size: size, cell: cell, time: timeline.date.timeIntervalSince(start))
                     }
                 }

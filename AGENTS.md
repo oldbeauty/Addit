@@ -13,10 +13,10 @@ Google Drive + OneDrive + local iPhone storage.
 
 | Area | Skill |
 |---|---|
-| Playback, queue, gapless, now-playing UI | `skill://audio-playback` |
+| Playback, queue, gapless, now-playing UI, playback failures | `skill://audio-playback` |
 | Launch screen: wordmark, ripple field, colorways, analysis overlay, plaque | `skill://launch-screen` |
-| Glass ornaments, menu icons, anything reading the scroll offset | `skill://glass-ornaments` |
-| Library: folders, arrange mode, folder zoom, Sort by Color, cover thumbnails | `skill://library-screen` |
+| Glass ornaments, menu icons, anything reading the scroll offset, Liquid Glass that moves | `skill://glass-ornaments` |
+| Library: grid spacing & the label line, folders, arrange mode, folder zoom, Sort by Color, cover thumbnails | `skill://library-screen` |
 | Share links, the site handshake, link previews | `skill://share-links` |
 | Sign-in, drive requests and uploads, background transfers, album sync | `skill://cloud-services` |
 
@@ -118,9 +118,12 @@ Signing check (device builds): append
 ## Conventions
 
 - SwiftUI + Observation (`@Observable`) — not Combine/`ObservableObject`.
-- Unsupported audio formats convert via AVAssetExportSession/AVAssetReader in
-  `AudioCacheService`; a hard failure surfaces through `playerService.failedTrack`
-  (alert in `ContentView`). MIME allow-list in `Constants.audioMimeTypes`.
+- Unsupported audio formats convert via AVAssetExportSession/AVAssetReader
+  (`AudioPlayerService.convertToCompatibleFormat`). A track that won't play
+  surfaces as `playerService.failure` — a `PlaybackFailure` saying *why* (alert
+  in `ContentView`): each stage of a load throws its own reason, and **only a
+  failed decode may blame the format**. MIME allow-list in
+  `Constants.audioMimeTypes`.
 - **No scroll bars**: `.scrollIndicators(.hidden)` on the app root *and* on the
   content of every `.sheet` / `.fullScreenCover` — the environment doesn't
   cross a presentation.
@@ -131,6 +134,11 @@ Signing check (device builds): append
   `files.description`; Graph's, which is OneDrive-Personal-only and so fine on
   the `/consumers` tenant), cached in `Album.albumDescription`. Not `.addit-data`
   — the point is that it's the same text the provider's own UI shows.
+- **Animations run at up to 120 Hz** (`CADisableMinimumFrameDurationOnPhone`
+  in `Info.plist`). Anything on its own clock — a `TimelineView(.animation)`,
+  a `CADisplayLink` — asks for 60 unless it follows a finger:
+  `.sixtyHertz` (`Utilities/FrameRate.swift`). A link left at its default runs
+  twice as often, and anything paced per tick, twice as fast.
 - Debug logging gated `#if DEBUG`, with filterable prefixes: **`[Q]`**
   (queue/playback decisions in `AudioPlayerService` — detailed enough to
   reconstruct the whole playback timeline) and **`[NP]`** (Now Playing artwork).
@@ -139,7 +147,7 @@ Signing check (device builds): append
 
 Use `search` + targeted ranges: `Services/AudioPlayerService.swift` (~97KB),
 `Views/AlbumDetailView.swift` (~96KB), `Views/NowPlayingView.swift` (~83KB),
-`Views/LibraryView.swift` (~79KB), `Views/LibraryArrange.swift` (~42KB),
+`Views/LibraryView.swift` (~85KB), `Views/LibraryArrange.swift` (~75KB),
 `Views/AlbumDetailView+EditMode.swift` (~83KB — inline edit mode lives here
 as an `extension AlbumDetailView`; its `@State` stays in the main file),
 `Utilities/FieldAnalysis.swift` (~48KB — the launch overlay's pipeline; the

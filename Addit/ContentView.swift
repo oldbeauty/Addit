@@ -170,15 +170,23 @@ struct ContentView: View {
         } message: {
             Text(shareLinks.failure ?? "")
         }
-        .alert("Unable to play this audio format", isPresented: .init(
-            get: { playerService.failedTrack != nil },
-            set: { if !$0 { playerService.failedTrack = nil } }
-        )) {
-            Button("OK", role: .cancel) {
-                playerService.failedTrack = nil
+        // Says what actually went wrong (`PlaybackFailure`). It used to blame
+        // the audio format for everything, a download cut short by the phone
+        // locking included.
+        .alert(
+            playerService.failure?.title ?? "",
+            isPresented: .init(
+                get: { playerService.failure != nil },
+                set: { if !$0 { playerService.failure = nil } }
+            ),
+            presenting: playerService.failure
+        ) { failure in
+            if failure.isRetryable {
+                Button("Try Again") { playerService.retry(failure) }
             }
-        } message: {
-            Text("This file uses an audio format that Addit doesn't support.")
+            Button("OK", role: .cancel) { playerService.failure = nil }
+        } message: { failure in
+            Text(failure.message)
         }
     }
 

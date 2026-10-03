@@ -291,8 +291,10 @@ extension LibraryView {
 
     // MARK: - Cards
 
+    /// `row` is the card's row in the library's grid, whose labels come and go
+    /// with the scroll; nil in an open folder, whose labels stay.
     @ViewBuilder
-    func albumCell(_ album: Album, coverSize: CGFloat) -> some View {
+    func albumCell(_ album: Album, coverSize: CGFloat, row: Int? = nil) -> some View {
         // A `Button`, not a `NavigationLink`: the link swallows the press
         // state, so a custom `ButtonStyle` renders nothing on it. Pushing the
         // path by hand is what the context menu's Edit already does.
@@ -302,7 +304,7 @@ extension LibraryView {
             guard !arranger.isArranging else { return }
             libraryPath.append(album)
         } label: {
-            AlbumCard(album: album, coverSize: coverSize)
+            AlbumCard(album: album, coverSize: coverSize, row: row)
         }
         .buttonStyle(ImprintButtonStyle())
         // The chrome goes *inside* the context menu, and the menu's preview
@@ -328,7 +330,7 @@ extension LibraryView {
     }
 
     @ViewBuilder
-    func folderCell(_ folder: LibraryFolder, albums: [Album], coverSize: CGFloat) -> some View {
+    func folderCell(_ folder: LibraryFolder, albums: [Album], coverSize: CGFloat, row: Int? = nil) -> some View {
         Button {
             openFolder(folder)
         } label: {
@@ -336,6 +338,7 @@ extension LibraryView {
                 folder: folder,
                 albums: albums,
                 coverSize: coverSize,
+                row: row,
                 tileHidden: isTileLifted(folder)
             )
         }
@@ -507,6 +510,8 @@ extension LibraryView {
     private static let folderMargin: CGFloat = 20
     private static let folderPadding: CGFloat = 20
     private static let folderGutter: CGFloat = 20
+    /// Between rows of cards in an open folder, whose labels always show.
+    private static let folderRowSpacing: CGFloat = 16
     private static let minFolderCover: CGFloat = 130
 
     /// Columns for an open folder's grid, the library's rule at a folder's
@@ -554,7 +559,7 @@ extension LibraryView {
             let columns = layout.columns.count
             let rows = max(1, (albums.count + columns - 1) / columns)
             let contentHeight = CGFloat(rows) * (layout.coverSize + AlbumCard.labelBlock)
-                + CGFloat(rows - 1) * Self.gridRowSpacing
+                + CGFloat(rows - 1) * Self.folderRowSpacing
                 + 2 * Self.folderPadding
             let panelHeight = max(1, min(contentHeight, geo.size.height * 0.62))
             // The zoom works in the reader's own space; the tile arrives in
@@ -574,7 +579,7 @@ extension LibraryView {
                     columns: columns,
                     cover: layout.coverSize,
                     columnSpacing: Self.folderGutter,
-                    rowSpacing: Self.gridRowSpacing
+                    rowSpacing: Self.folderRowSpacing
                 ),
                 albums: albums,
                 onClose: closeFolder
@@ -582,7 +587,7 @@ extension LibraryView {
                 folderTitle(folder, width: panelWidth)
             } panel: {
                 ScrollView {
-                    LazyVGrid(columns: layout.columns, spacing: Self.gridRowSpacing) {
+                    LazyVGrid(columns: layout.columns, spacing: Self.folderRowSpacing) {
                         ForEach(albums) { album in
                             albumCell(album, coverSize: layout.coverSize)
                         }
@@ -610,7 +615,7 @@ extension LibraryView {
                     arranger.panel.columns = columns
                     arranger.panel.cover = layout.coverSize
                     arranger.panel.columnSpacing = Self.folderGutter
-                    arranger.panel.rowSpacing = Self.gridRowSpacing
+                    arranger.panel.rowSpacing = Self.folderRowSpacing
                 }
             }
         }

@@ -4,6 +4,7 @@ import MediaPlayer
 import SwiftUI
 import SwiftData
 import Accelerate
+import UIKit
 
 enum RepeatMode {
     case off, all, one
@@ -25,8 +26,12 @@ final class AudioPlayerService {
     var isSeeking: Bool = false
     var hideNowPlayingBar: Bool = false
     var userQueue: [Track] = []
+    /// The player's subtitle line while the last load has failed: the
+    /// failure in a few words. Cleared when a track plays.
     var playbackError: String? = nil
-    var failedTrack: Track? = nil
+    /// Why the last track failed (`PlaybackFailure`), for the alert in
+    /// `ContentView`. Cleared once it's been seen.
+    var failure: PlaybackFailure? = nil
 
     /// Downsampled waveform amplitudes (0…1) for the current track, used by the mini scrubber.
     var waveformSamples: [Float] = []
@@ -195,6 +200,14 @@ final class AudioPlayerService {
     }
 
     // MARK: - Playback Controls
+
+    /// Loads the track that failed again, if the queue is still on it —
+    /// anything played since is what the user wants now.
+    func retry(_ failure: PlaybackFailure) {
+        if self.failure?.id == failure.id { self.failure = nil }
+        guard currentTrack?.persistentModelID == failure.track.persistentModelID else { return }
+        beginLoadAndPlay()
+    }
 
     /// - Parameter index: which track to begin on. `nil` means "no particular
     ///   one" — ordered playback starts at the top, and a shuffled start is
@@ -895,6 +908,9 @@ final class AudioPlayerService {
 
         isLoadingTrack = true
         isLoading = true
+        // Time to finish if the phone locks mid-load — see `LoadKeepAlive`.
+        let keepAlive = LoadKeepAlive()
+        defer { keepAlive.end() }
 
         // Invalidate any pending completion from the previous track. This is
         // the *outgoing* half of the bookkeeping; the segment this load will
@@ -915,9 +931,17 @@ final class AudioPlayerService {
                 #if DEBUG
                 print("[Player] Local track: \(track.name), path: \(localURL.path), exists: \(exists)")
                 #endif
+                guard exists else { throw PlaybackFailure.Reason.missingFile }
             } else {
-                guard let cacheService else { throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Cache service not available"]) }
-                fileURL = try await cacheService.cacheTrack(track)
+                guard let cacheService else { throw PlaybackFailure.Reason.other("Addit's downloads weren't set up yet.") }
+                do {
+                    fileURL = try await cacheService.cacheTrack(track)
+                } catch {
+                    #if DEBUG
+                    print("[Q] download failed track=\"\(track.name)\" suspended=\(keepAlive.wasSuspended) error=\(error)")
+                    #endif
+                    throw PlaybackFailure.Reason(downloadError: error, suspended: keepAlive.wasSuspended)
+                }
             }
 
             // A newer transport action has superseded this load. Bail before
@@ -939,9 +963,16 @@ final class AudioPlayerService {
                 #if DEBUG
                 print("AVAudioFile failed, attempting conversion: \(error.localizedDescription)")
                 #endif
-                let convertedURL = try await convertToCompatibleFormat(fileURL)
-                audioFile = try AVAudioFile(forReading: convertedURL)
-                waveformSourceURL = convertedURL
+                do {
+                    let convertedURL = try await convertToCompatibleFormat(fileURL)
+                    audioFile = try AVAudioFile(forReading: convertedURL)
+                    waveformSourceURL = convertedURL
+                } catch {
+                    #if DEBUG
+                    print("[Q] decode failed track=\"\(track.name)\" error=\(error)")
+                    #endif
+                    throw PlaybackFailure.Reason(decodeError: error)
+                }
             }
 
             // Checked again: a format conversion is the longest suspension in
@@ -988,8 +1019,15 @@ final class AudioPlayerService {
             needsRescheduleOnPlay = false
 
             if !engine.isRunning {
-                try AVAudioSession.sharedInstance().setActive(true)
-                try engine.start()
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    try engine.start()
+                } catch {
+                    #if DEBUG
+                    print("[Q] audio start failed track=\"\(track.name)\" error=\(error)")
+                    #endif
+                    throw PlaybackFailure.Reason.audioUnavailable
+                }
             }
 
             playbackError = nil
@@ -1015,11 +1053,19 @@ final class AudioPlayerService {
             // through track 5" failure, which is a load that threw at the
             // boundary and said nothing.
             isPlaying = false
-            failedTrack = track
-            playbackError = "Unable to play this audio format"
+            // Each stage above throws the reason it failed for; anything that
+            // gets here otherwise says what it is in its own words — never
+            // that the format is to blame, which was this alert's one answer
+            // for everything.
+            let failure = PlaybackFailure(
+                track: track,
+                reason: error as? PlaybackFailure.Reason ?? .other(error.localizedDescription)
+            )
+            self.failure = failure
+            playbackError = failure.summary
             updateNowPlayingPlaybackInfo()
             #if DEBUG
-            print("[Q] loadAndPlay FAILED track=\"\(track.name)\" token=\(token) error=\(error)")
+            print("[Q] loadAndPlay FAILED track=\"\(track.name)\" token=\(token) reason=\(failure.reason) error=\(error)")
             #endif
         }
     }
@@ -1534,6 +1580,9 @@ final class AudioPlayerService {
         let displayLink = CADisplayLink(target: DisplayLinkTarget { [weak self] in
             self?.updateCurrentTime()
         }, selector: #selector(DisplayLinkTarget.tick))
+        // Every tick redraws everything reading `currentTime`, for as long as
+        // anything plays; 60 is what it has always had.
+        displayLink.preferredFrameRateRange = .sixtyHertz
         displayLink.add(to: .main, forMode: .common)
         timeTimer = displayLink
     }
@@ -2144,4 +2193,56 @@ private final class DisplayLinkTarget: NSObject {
     private let callback: () -> Void
     init(_ callback: @escaping () -> Void) { self.callback = callback }
     @objc func tick() { callback() }
+}
+
+/// A track's load, kept running for a while after Addit leaves the screen.
+///
+/// Play a track that isn't downloaded yet, lock the phone, and with nothing
+/// playing yet iOS suspended Addit with the download half done: no music, and
+/// on unlocking, a dead connection reported as an unplayable format. A
+/// background task buys the load the time iOS gives any app finishing up —
+/// usually enough for a track, which then starts on the lock screen, and from
+/// then on playing audio keeps Addit running. When even that time runs out,
+/// `wasSuspended` is how the failure that follows knows to say so rather than
+/// blame the network.
+private final class LoadKeepAlive {
+    private var task: UIBackgroundTaskIdentifier = .invalid
+    private var granted = false
+    private var ranOutOfTime = false
+    private var wentToBackground = false
+    private var observer: NSObjectProtocol?
+
+    /// iOS took the time back before the load was done — or, having granted
+    /// none, sent Addit into the background with the load still running.
+    var wasSuspended: Bool {
+        ranOutOfTime || (wentToBackground && !granted)
+    }
+
+    init() {
+        task = UIApplication.shared.beginBackgroundTask(withName: "Load track") { [weak self] in
+            self?.ranOutOfTime = true
+            self?.end()
+        }
+        granted = task != .invalid
+        wentToBackground = UIApplication.shared.applicationState == .background
+        observer = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.wentToBackground = true }
+        }
+    }
+
+    /// Gives the time back. Called when the load finishes either way, and by
+    /// iOS's deadline if that comes first; the second call does nothing.
+    func end() {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+            self.observer = nil
+        }
+        guard task != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(task)
+        task = .invalid
+    }
 }

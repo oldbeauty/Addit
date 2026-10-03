@@ -163,7 +163,7 @@ struct RotatingStructureView: View {
     @State private var start = Date()
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.sixtyHertz) { timeline in
             let t = Float(timeline.date.timeIntervalSince(start))
             StructureView(
                 parameters: parameters,

@@ -6,23 +6,22 @@ import SwiftUI
 /// Usage: `Text("…").fadingTruncation()`
 ///
 /// Implementation notes:
-/// - The text is wrapped in a scroll-disabled horizontal `ScrollView`. That
-///   container takes the width the parent offers and clips its content to
-///   that width (same cutoff point SwiftUI's built-in truncation would pick)
-///   without propagating the oversized intrinsic width back up the layout.
-/// - `fixedSize(horizontal: true)` on the inner text prevents SwiftUI from
-///   inserting the "…" character — the glyphs render in full and the scroll
-///   container does the clipping.
-/// - `mask(...)` fades the trailing `fadeWidth` points of whatever is
-///   visible, and is applied **only when the text is actually too long**. A
-///   mask forces the masked subtree into an offscreen pass, and this modifier
-///   is on both labels of every album card — a screen of them was paying for
-///   a dozen offscreen passes a frame to fade text that mostly fits, since a
-///   fitting string put the faded region past its own last glyph and drew
-///   identically either way. Overflow is free to detect: the inner frame's
-///   `minWidth` pins it to the container when the text fits, so a measured
-///   width above that *is* the overflow. `TrailingFade` at the bottom of this
-///   file is what makes "no fade" mean no `.mask` at all.
+/// - The line is laid out at its natural width, `fixedSize` so SwiftUI never
+///   inserts the "…": the glyphs render in full and the cut is a clip.
+/// - `ViewThatFits` picks, in the layout pass itself, between the line as it
+///   is — when it fits, placed by `alignment` — and the line clipped to the
+///   width it's offered with its trailing `fadeWidth` points faded.
+/// - Only an overflowing line pays for `.mask`. A mask forces the masked
+///   subtree into an offscreen pass, and this modifier is on both labels of
+///   every album card: a screen of them was paying for a dozen offscreen
+///   passes a frame to fade text that mostly fits, which draws identically
+///   without one.
+/// - Nothing is measured into state. The first version clipped inside a
+///   scroll-disabled horizontal `ScrollView` and found the overflow with two
+///   `GeometryReader`s writing `@State` — a `UIScrollView` per line, and a
+///   second update pass for every label just after it appeared. That's two of
+///   each per card, so every folder opening built a handful of scroll views
+///   and laid its panel out twice, on the frames the folder starts moving.
 extension View {
     func fadingTruncation(
         fadeWidth: CGFloat = 18,
@@ -35,86 +34,66 @@ extension View {
 private struct FadingTruncationModifier: ViewModifier {
     let fadeWidth: CGFloat
     let alignment: Alignment
-    @State private var containerWidth: CGFloat = 0
-    @State private var textWidth: CGFloat = 0
-
-    /// Half a point of slack, so a text laid out to exactly the container width
-    /// doesn't flap between masked and unmasked on rounding.
-    private var overflows: Bool {
-        containerWidth > 0 && textWidth > containerWidth + 0.5
-    }
 
     func body(content: Content) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            content
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                // When the text is shorter than the container, `minWidth`
-                // pads the frame out to the container width so the specified
-                // alignment takes effect (e.g. centered text stays centered).
-                // When the text is longer, the frame grows to fit the text
-                // and the ScrollView clips the trailing overflow.
-                .frame(minWidth: containerWidth, alignment: alignment)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear { textWidth = geo.size.width }
-                            .onChange(of: geo.size.width) { _, new in
-                                textWidth = new
-                            }
+        let line = content
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+        ViewThatFits(in: .horizontal) {
+            // Half a point of slack, so a line exactly the container's width
+            // doesn't land on the faded side of the choice by rounding.
+            NaturalWidthLine(alignment: alignment.horizontal, slack: 0.5) { line }
+            NaturalWidthLine(alignment: .leading, slack: 0) { line }
+                .mask {
+                    HStack(spacing: 0) {
+                        Rectangle().fill(.black)
+                        LinearGradient(
+                            colors: [.black, .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: fadeWidth)
                     }
-                )
+                }
         }
-        .scrollDisabled(true)
-        .modifier(TrailingFade(isActive: overflows, fadeWidth: fadeWidth))
-        .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { containerWidth = geo.size.width }
-                    .onChange(of: geo.size.width) { _, new in
-                        containerWidth = new
-                    }
-            }
+    }
+}
+
+/// One line at its natural width, placed by `alignment` inside the width it's
+/// offered — and that offered width is the one it reports, so a line too long
+/// for its room runs off the trailing edge (for the mask to cut) rather than
+/// pushing the room wider. Asked for its ideal width, as `ViewThatFits` asks,
+/// it answers the line's less `slack`.
+private struct NaturalWidthLine: Layout {
+    var alignment: HorizontalAlignment
+    var slack: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let natural = subviews.first?.sizeThatFits(.unspecified) ?? .zero
+        return CGSize(
+            width: proposal.width ?? max(0, natural.width - slack),
+            height: natural.height
         )
     }
 
-}
-
-/// Applies the trailing fade, or genuinely nothing.
-///
-/// The branch is the point: masking with an opaque rectangle would still cost
-/// the offscreen pass, so the fitting case has to skip `.mask` itself rather
-/// than pass it something that draws everything through.
-private struct TrailingFade: ViewModifier {
-    let isActive: Bool
-    let fadeWidth: CGFloat
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isActive {
-            content.mask(
-                HStack(spacing: 0) {
-                    Rectangle().fill(.black)
-                    LinearGradient(
-                        colors: [.black, .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: fadeWidth)
-                }
-            )
-        } else {
-            content
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let line = subviews.first else { return }
+        let width = line.sizeThatFits(.unspecified).width
+        let x: CGFloat = switch alignment {
+        case .center: bounds.midX - width / 2
+        case .trailing: bounds.maxX - width
+        default: bounds.minX
         }
+        line.place(at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading, proposal: .unspecified)
     }
 }
 
 /// The multi-line counterpart to `fadingTruncation`: text clamped to a number
 /// of lines whose overflow **fades out** instead of ending in an ellipsis.
 ///
-/// Why it isn't the modifier above. That one clips a single line in a
-/// scroll-disabled `ScrollView` and fades the trailing edge of the whole thing,
-/// which works precisely because there is only ever one line. Fade the trailing
+/// Why it isn't the modifier above. That one clips a single line and fades the
+/// trailing edge of the whole thing, which works precisely because there is
+/// only ever one line. Fade the trailing
 /// edge of a two-line block and you fade the end of the *first* line too — and
 /// a line that wrapped is by definition running right up to the edge, so what
 /// you get is a title that appears to be cut in the middle of a perfectly
@@ -194,7 +173,7 @@ struct FadingClampedText: View {
 }
 
 /// Fades the trailing end of the bottom `bandHeight` of a view, or does nothing
-/// at all — same reasoning as `TrailingFade`, a mask that draws everything
+/// at all — same reasoning as `fadingTruncation`'s, a mask that draws everything
 /// through still costs the offscreen pass.
 private struct LastLineFade: ViewModifier {
     let isActive: Bool
