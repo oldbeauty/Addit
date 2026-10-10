@@ -117,6 +117,77 @@ final class OneDriveService: CloudDriveService {
         return DriveFileListResponse(files: sorted, nextPageToken: nil)
     }
 
+    // MARK: - Folder tracking
+
+    /// One folder per request: Graph has no query across several parents.
+    let watchBatchSize = 1
+
+    func listWatchedChildren(ofFolders folderIds: [String]) async throws -> [String: [FolderChild]] {
+        // Who "me" is, to tell your own additions from other people's. Not
+        // worth failing a check over: unknown just means nothing is yours.
+        let me = try? await signedInUserId()
+        var result: [String: [FolderChild]] = [:]
+        for folderId in folderIds {
+            var children: [FolderChild] = []
+            // Every page, as `listChildren` does — a tail left unread would
+            // be reported as new next time. Not `listChildren` itself, which
+            // drops `createdBy` on the way to a `DriveItem`.
+            var next: String? = "\(itemURL(folderId))/children?$top=200"
+            do {
+                while let url = next {
+                    let (data, _) = try await authorizedRequest(urlString: url)
+                    let page = try JSONDecoder().decode(GraphItemList.self, from: data)
+                    children += page.value.compactMap { watchedChild(from: $0, me: me) }
+                    next = page.nextLink
+                }
+            } catch OneDriveError.badResponse(let status, _) where [400, 403, 404, 410].contains(status) {
+                // Gone, or not shared with this account any more.
+                throw FolderListingError.unlistable
+            }
+            result[folderId] = children
+        }
+        return result
+    }
+
+    private func watchedChild(from item: GraphItem, me: String?) -> FolderChild? {
+        guard let entry = mapItem(item, ownedByMe: nil) else { return nil }
+        let kind: FolderChild.Kind
+        if entry.isFolder {
+            kind = .folder
+        } else if entry.isAudio {
+            kind = .track
+        } else {
+            return nil
+        }
+        let creator = item.remoteItem?.createdBy?.user ?? item.createdBy?.user
+        return FolderChild(
+            id: entry.id, name: entry.name, kind: kind,
+            addedBy: creator?.displayName,
+            addedByMe: me != nil && creator?.id == me
+        )
+    }
+
+    /// The signed-in user as Graph's identity sets name them: the owner of
+    /// their own drive, which is the same kind of id an item's `createdBy`
+    /// carries. Fetched once per account.
+    @ObservationIgnored private var signedInUser: (email: String, id: String)?
+
+    private func signedInUserId() async throws -> String? {
+        let email = authService?.userEmail
+        if let signedInUser, signedInUser.email == email { return signedInUser.id }
+        struct Drive: Decodable {
+            struct Owner: Decodable {
+                struct User: Decodable { let id: String? }
+                let user: User?
+            }
+            let owner: Owner?
+        }
+        let (data, _) = try await authorizedRequest(urlString: "\(baseURL)/me/drive?$select=owner")
+        guard let id = try JSONDecoder().decode(Drive.self, from: data).owner?.user?.id else { return nil }
+        if let email { signedInUser = (email, id) }
+        return id
+    }
+
     // MARK: - Files
 
     func findCoverImage(inFolder folderId: String) async throws -> DriveItem? {
@@ -544,6 +615,14 @@ final class OneDriveService: CloudDriveService {
             let driveId: String?
             let id: String?
         }
+        /// Who made an item — folder tracking's "who added it".
+        struct Creator: Decodable {
+            struct User: Decodable {
+                let id: String?
+                let displayName: String?
+            }
+            let user: User?
+        }
         struct RemoteItem: Decodable {
             let id: String?
             let name: String?
@@ -553,6 +632,7 @@ final class OneDriveService: CloudDriveService {
             let parentReference: ParentRef?
             let lastModifiedDateTime: String?
             let description: String?
+            let createdBy: Creator?
         }
 
         let id: String?
@@ -564,6 +644,7 @@ final class OneDriveService: CloudDriveService {
         let lastModifiedDateTime: String?
         let remoteItem: RemoteItem?
         let description: String?
+        let createdBy: Creator?
     }
 
     private struct GraphPermission: Decodable {

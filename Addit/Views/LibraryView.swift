@@ -3,17 +3,26 @@ import SwiftData
 import UIKit
 import UniformTypeIdentifiers
 
+/// A screen the library's navigation stack pushes: an album, or tracking.
+/// One path for both, so an album opened from tracking sits on top of it and
+/// back returns there, and both arrive with the same flat slide.
+enum LibraryRoute: Hashable {
+    case album(Album)
+    case tracking
+}
+
 struct LibraryView: View {
     /// The enclosing NavigationStack's path (owned by ContentView) — lets
     /// library flows push an album programmatically, e.g. straight into
     /// edit mode after creating it.
-    @Binding var libraryPath: [Album]
+    @Binding var libraryPath: [LibraryRoute]
     @Environment(\.modelContext) var modelContext
     @Environment(CloudAuthCoordinator.self) private var authService
     @Environment(CloudServiceRouter.self) private var cloudRouter
     @Environment(AudioPlayerService.self) private var playerService
     @Environment(AlbumArtService.self) var albumArtService
     @Environment(AudioCacheService.self) private var cacheService
+    @Environment(FolderWatchService.self) private var folderWatch
     @Query(sort: \Album.displayOrder) var albums: [Album]
     @Query(sort: \LibraryFolder.displayOrder) var folders: [LibraryFolder]
     /// Arrange mode, folders and the drag between them — see
@@ -49,7 +58,7 @@ struct LibraryView: View {
     /// it to the user for filling in (create album, import).
     func openForEditing(_ album: Album) {
         pendingEditAlbumId = album.googleFolderId
-        libraryPath.append(album)
+        libraryPath.append(.album(album))
     }
     @AppStorage("libraryViewMode") var isListMode = false
     @State private var accountToSignOut: String?
@@ -127,6 +136,13 @@ struct LibraryView: View {
                 }
             }
         }
+    }
+
+    /// Pushes tracking, as tapping an album pushes its page — the same flat
+    /// slide, the same back button. Not twice, if it's already on top.
+    private func openTracking() {
+        guard libraryPath.last != .tracking else { return }
+        libraryPath.append(.tracking)
     }
 
     private func selectLocalLibrary() {
@@ -420,6 +436,24 @@ struct LibraryView: View {
 
     private var sourceAlbums: [Album] {
         albums.filter(currentLibraryFilter())
+    }
+
+    /// The account whose folders tracking follows: the viewed cloud
+    /// library's. `nil` in the Local library, which has nothing to track.
+    private var watchAccount: WatchAccount? {
+        guard let provider = currentSource.provider,
+              let email = authService.accountManager.activeEmail(for: provider) else { return nil }
+        return WatchAccount(
+            key: AccountManager.storageIdentifier(for: email), email: email, source: currentSource
+        )
+    }
+
+    /// The viewed library's albums as tracking sees them — each one tracked
+    /// automatically. Handed to tracking as a closure, so the albums are only
+    /// walked when a check starts, never on a library body.
+    private var watchTargets: [WatchTarget] {
+        guard !libraryIsLocal else { return [] }
+        return sourceAlbums.map { WatchTarget(folderId: $0.googleFolderId, name: $0.name) }
     }
 
     /// The library, narrowed by the search field.
@@ -803,11 +837,24 @@ struct LibraryView: View {
                 }
             }
         }
-        .navigationDestination(for: Album.self) { album in
-            AlbumDetailView(
-                album: album,
-                startInEditMode: album.googleFolderId == pendingEditAlbumId
-            )
+        .navigationDestination(for: LibraryRoute.self) { route in
+            switch route {
+            case .album(let album):
+                AlbumDetailView(
+                    album: album,
+                    startInEditMode: album.googleFolderId == pendingEditAlbumId
+                )
+            case .tracking:
+                // Pushed like an album, with the same slide and back button.
+                // An album opened from it goes on top, so back returns here.
+                FolderWatchPanel(library: { watchTargets }) { album in
+                    libraryPath.append(.album(album))
+                }
+                .appBackground()
+                .staticTopFade()
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+            }
         }
         // Popping back to the library disarms any pending edit push, so a
         // later plain tap on the same album opens it normally.
@@ -842,6 +889,13 @@ struct LibraryView: View {
                 // running download look like a stalled one.
                 ToolbarItem(placement: .primaryAction) {
                     ActivityRing()
+                }
+                // Folder tracking, left of search. Not in the Local library:
+                // tracking follows a cloud account, and there's none here.
+                if !libraryIsLocal {
+                    ToolbarItem(placement: .primaryAction) {
+                        FolderWatchButton(offset: scrollOffset) { openTracking() }
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -1045,6 +1099,7 @@ struct LibraryView: View {
             initializeDisplayOrder()
             pruneEmptyFolders()
         }
+        .folderWatchChecks(for: watchAccount) { watchTargets }
         // Keyed on the in-use accounts, so switching accounts re-reads and
         // nothing else does. Quotas move slowly; once per appearance and per
         // switch is plenty, and it keeps the network off the path of simply
@@ -1563,6 +1618,7 @@ struct LibraryView: View {
         // Clear this account's caches
         try? cacheService.clearCache(for: accountId)
         albumArtService.clearCache(for: accountId)
+        folderWatch.forget(accountKey: accountId)
 
         // Remove Drive albums belonging to this account from the shared store
         AccountContainerView.removeStore(for: targetEmail)
@@ -1829,3 +1885,4 @@ struct AlbumArtworkThumbnail: View {
             }
     }
 }
+

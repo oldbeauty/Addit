@@ -25,6 +25,10 @@ final class AudioCacheService {
 
     private let fileManager = FileManager.default
 
+    /// Downloads in flight, keyed by the file they write: one per file,
+    /// however many callers are waiting on it.
+    private let downloads = SharedTasks<URL, Void>()
+
     private var cacheDirectory: URL {
         let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         let base = caches.appendingPathComponent("AudioCache", isDirectory: true)
@@ -70,9 +74,17 @@ final class AudioCacheService {
             return driveService
         }()
         guard let client else { throw CacheError.notConfigured }
-        try await client.downloadFile(fileId: track.googleFileId, to: destination)
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
+        // Whoever asks for a file that's already on its way joins that
+        // download rather than starting the file again: the gapless preload
+        // and the prefetch both ask for the next track the moment one starts,
+        // and a skip or a track boundary often asks for a file the preload
+        // was still fetching. See `SharedTasks`.
+        let fileId = track.googleFileId
+        try await downloads.join(destination) {
+            try await client.downloadFile(fileId: fileId, to: destination)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .audioCacheDidChange, object: nil)
+            }
         }
         return destination
     }

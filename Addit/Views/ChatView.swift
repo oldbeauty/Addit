@@ -115,7 +115,11 @@ struct ChatView: View {
             }
         }
         .ignoresSafeArea(.keyboard)
-        .navigationBarHidden(true)
+        // The header above stands in for the bar. Hidden with the per-view
+        // API: `navigationBarHidden(true)` is a preference that outlives the
+        // view, and the album page it was pushed from came back with no bar —
+        // its back button and its ⋯ menu gone (TestFlight, build 10).
+        .toolbarVisibility(.hidden, for: .navigationBar)
         .sheet(isPresented: $showAccessSheet) {
             AccessSheet(album: album)
                 .environment(cloudRouter)

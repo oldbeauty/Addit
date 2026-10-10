@@ -110,6 +110,15 @@ struct ScrollTorque<Content: View>: View {
 @Observable
 final class ScrollOffsetBox {
     var value: CGFloat = 0
+    /// `value` with the content scrolled to the top: minus the top inset, not
+    /// zero, since a scroll view under a bar starts at `-inset`. The orb and
+    /// the brand marks have no home position and ignore it; the tracking
+    /// eyeball does, or it starts turned well away from you (about 90° on a
+    /// phone, 2026-10-07). Changes with layout, not with scrolling.
+    var top: CGFloat = 0
+
+    /// How far the content is scrolled down from the top.
+    var scrolled: CGFloat { value - top }
 
     init(_ value: CGFloat = 0) {
         self.value = value
@@ -128,6 +137,13 @@ extension View {
             geometry.contentOffset.y
         } action: { _, new in
             box.value = new
+        }
+        // Separately, so a scroll frame doesn't write it: written only when
+        // the inset itself changes, which is what an observer pays for.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            -geometry.contentInsets.top
+        } action: { _, new in
+            if box.top != new { box.top = new }
         }
     }
 }

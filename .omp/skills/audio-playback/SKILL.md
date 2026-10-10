@@ -247,6 +247,40 @@ connection was announced as a codec problem (reported 2026-10-02).
   `PlaybackFailure.Reason(downloadError:suspended:)` over sample errors with
   Xcode's `RunCodeSnippet` (done 2026-10-02, all as intended).
 
+## Fetching the next track: retried, shared, cut off when it stalls
+
+From the hardening list left after the 2026-07-12 track 4→5 stop (done
+2026-10-04). All three are about the network going bad near a boundary.
+
+- **The preload retries its download** (`downloadForPreload`) when the failure
+  can clear up by itself — `PlaybackFailure.Reason` says `.offline` or
+  `.driveTrouble` — waiting 2, 5, 15, 30 and 60 s between attempts. It was one
+  silent attempt, so a blip as a track began left the boundary to fetch the
+  file cold, with the screen off. It needs no deadline: a boundary with nothing
+  staged goes to `next()`, whose `clearGaplessState()` cancels it. It also stops
+  on a generation change, safely, because every path that bumps the generation
+  and voids a preload (seek, resume, shuffle, `replaceCurrentScheduling`)
+  starts a new one.
+- **One download per file** (`AudioCacheService.cacheTrack` through
+  `SharedTasks`). The preload and the prefetch ask for the next track the
+  moment one starts, and used to download it twice in parallel. A cancelled
+  caller leaves at once with `CancellationError`; the download itself is
+  cancelled only when nobody is left waiting, and only after a 2 s grace.
+  **Don't take the grace out**: at a boundary the preload is cancelled and the
+  boundary's own load asks for the same file in the same breath, and the grace
+  is what lets that load carry on from the bytes already in instead of starting
+  over. The same goes for a skip mid-preload, and for the prefetch of the track
+  after next becoming the preload at a gapless advance. Each waiter is a
+  continuation resumed exactly once, by whichever of finish or cancel reaches
+  it first — both run on the main actor. A waiter left unresumed would be a
+  load that never returns, a silent stop by a new route, so a change there
+  wants the same check this got: a harness compiled against the shipping file
+  (sharing, prompt cancel, cancel-and-re-ask inside the grace, failure, and
+  300 randomized cancel rounds under a hang watchdog).
+- **A download gives up after 20 s without a byte**
+  (`CloudSession.downloadStallTimeout`), not URLSession's minute — see
+  `skill://cloud-services`.
+
 ## Outstanding / verification queue
 
 - The three audit suspects (queue race, artwork race, `handleTrackEnd` field
@@ -254,4 +288,9 @@ connection was announced as a codec problem (reported 2026-10-02).
   are recent and want a long real-world listening session to confirm no
   regressions.
 - No test target — verify by building (`xcodebuild … build`) and reading
-  `[Q]`/`[NP]` logs during a repro.
+  `[Q]`/`[NP]` logs during a repro. A preload that had to retry logs
+  `[Q] preload RETRY n/5`.
+- Still unhandled: `AVAudioSession.mediaServicesWereResetNotification`. After
+  iOS restarts its media services every audio object is dead and has to be
+  rebuilt; `handleEngineConfigurationChange` only reconnects the engine it
+  has. Reproducible on a phone: Settings → Developer → Reset Media Services.

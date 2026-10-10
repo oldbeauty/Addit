@@ -302,7 +302,7 @@ extension LibraryView {
             // Arranging, a tap on an album does nothing — the Home Screen
             // doesn't launch apps from edit mode either.
             guard !arranger.isArranging else { return }
-            libraryPath.append(album)
+            libraryPath.append(.album(album))
         } label: {
             AlbumCard(album: album, coverSize: coverSize, row: row)
         }

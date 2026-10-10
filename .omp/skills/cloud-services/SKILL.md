@@ -59,6 +59,15 @@ the next request opens a fresh one. It never retries anything itself: whether a
 request can be sent again is the caller's decision. It has `URLSession`'s method
 names, so a service swaps the type and no call site changes.
 
+Downloads have a shorter fuse: `CloudSession.download` caps the request's
+timeout at `downloadStallTimeout` (20 s), so a file that stops arriving fails as
+`.timedOut` — retiring the session — in a third of URLSession's minute. That
+was a minute of silence at a track boundary before anything said why. It bounds
+the silence, not the length: a slow download that keeps arriving runs to the
+end. Being on the request, it carries through OneDrive's `/content` redirect to
+its CDN. Both were checked against a stalling local server (2026-10-04). It
+applies to every `downloadFile`, including export and edit mode's downloads.
+
 ## Drive uploads are resumable
 
 `GoogleDriveService.createFile` uses Google's resumable protocol for every file

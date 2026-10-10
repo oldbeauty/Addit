@@ -156,7 +156,8 @@ struct FolderBrowserView: View {
     let folderName: String
     let source: FolderSource
     let existingFolderIds: Set<String>
-    let onAdd: (DriveItem, [DriveItem]) -> Void
+    /// `nil` in the tracking picker, which offers "Track" instead.
+    let onAdd: ((DriveItem, [DriveItem]) -> Void)?
     /// Which cloud to browse. `nil` means the account you're currently in,
     /// which is what every flow wants except "Copy from…", where the point is
     /// to reach a cloud other than the active one.
@@ -179,6 +180,13 @@ struct FolderBrowserView: View {
     /// batch leaves it open so you can keep going and see what's now marked
     /// "Added".
     var onAddBatch: (([(folder: DriveItem, files: [DriveItem])]) -> Void)? = nil
+    /// Makes this the tracking picker: the folder on screen offers "Track"
+    /// where "Add to Library" would be, and does whether or not it has audio
+    /// of its own — a folder of albums is what tracking is most for. A folder
+    /// in a list can be tracked from its context menu without opening it.
+    var onTrack: ((DriveItem) -> Void)? = nil
+    /// Already tracked: shown as such rather than offered again.
+    var trackedFolderIds: Set<String> = []
 
     @Environment(CloudServiceRouter.self) private var cloudRouter
     private var driveService: any CloudDriveService {
@@ -286,9 +294,7 @@ struct FolderBrowserView: View {
                                 if isSelecting {
                                     selectableRow(folder)
                                 } else {
-                                    NavigationLink(value: folder) {
-                                        Label(folder.name, systemImage: "folder.fill")
-                                    }
+                                    folderLink(folder)
                                 }
                             }
                         }
@@ -308,18 +314,31 @@ struct FolderBrowserView: View {
         .navigationTitle(isRoot ? "" : folderName)
         .navigationBarTitleDisplayMode(isRoot ? .inline : .large)
         .toolbar {
-            if !isRoot && !audioFiles.isEmpty && !isLoading && !isSearchActive && !isSelecting {
+            if onAdd != nil && !isRoot && !audioFiles.isEmpty && !isLoading && !isSearchActive && !isSelecting {
                 ToolbarItem(placement: .confirmationAction) {
                     if alreadyAdded {
                         Label("Added", systemImage: "checkmark")
                             .foregroundStyle(.secondary)
                     } else if let currentFolder {
                         Button {
-                            onAdd(currentFolder, audioFiles)
+                            onAdd?(currentFolder, audioFiles)
                             addedThisSession.insert(currentFolder.id)
                         } label: {
                             Label("Add to Library", systemImage: "plus")
                         }
+                    }
+                }
+            }
+            // Only once the folder has listed: one that won't open for this
+            // account is one tracking couldn't read either.
+            if let onTrack, let currentFolder, !isLoading && !isSearchActive && errorMessage == nil {
+                ToolbarItem(placement: .confirmationAction) {
+                    if trackedFolderIds.contains(currentFolder.id) {
+                        Label("Tracking", systemImage: "checkmark")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Track") { onTrack(currentFolder) }
+                            .fontWeight(.semibold)
                     }
                 }
             }
@@ -384,6 +403,23 @@ struct FolderBrowserView: View {
         }
         .task(id: trimmedQuery) {
             await runSearch()
+        }
+    }
+
+    /// A folder row that opens the folder — and in the tracking picker, can
+    /// track it from a long press, so "Good Music" sitting in Shared can be
+    /// tracked without going into it first.
+    @ViewBuilder
+    private func folderLink(_ folder: DriveItem) -> some View {
+        let link = NavigationLink(value: folder) {
+            Label(folder.name, systemImage: "folder.fill")
+        }
+        if let onTrack, !trackedFolderIds.contains(folder.id) {
+            link.contextMenu {
+                Button("Track Folder", systemImage: "scope") { onTrack(folder) }
+            }
+        } else {
+            link
         }
     }
 
@@ -479,9 +515,7 @@ struct FolderBrowserView: View {
             List {
                 Section("\(searchResults.count) folder\(searchResults.count == 1 ? "" : "s")") {
                     ForEach(searchResults) { folder in
-                        NavigationLink(value: folder) {
-                            Label(folder.name, systemImage: "folder.fill")
-                        }
+                        folderLink(folder)
                     }
                 }
             }
@@ -613,5 +647,68 @@ struct CopyAlbumFromDriveView: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// Picking a folder to track: the add-album browser with "Track" where "Add
+/// to Library" would be, on any folder at all — what tracking is most for is
+/// a folder of albums with no tracks of its own. Tracking one closes this.
+struct TrackFolderPicker: View {
+    let provider: AccountProvider
+    /// Folders already tracked, shown as such rather than offered again.
+    let trackedIds: Set<String>
+    let onTrack: (DriveItem) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(CloudServiceRouter.self) private var cloudRouter
+    @State private var selectedSource: FolderSource = .personal
+    @State private var searchText = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Source", selection: $selectedSource) {
+                    ForEach(FolderSource.availableCases(for: cloudRouter.service(for: provider.storageSource)), id: \.self) { source in
+                        Text(source.rawValue).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                browser(folderId: nil, name: selectedSource.rawValue, searchQuery: searchText)
+                    .id(selectedSource)
+            }
+            .flatSlideNavigation()
+            .navigationDestination(for: DriveItem.self) { folder in
+                browser(folderId: folder.id, name: folder.name)
+            }
+            .searchable(text: $searchText, prompt: "Search folders")
+            .navigationTitle("Track a Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDragIndicator(.visible)
+    }
+
+    private func browser(folderId: String?, name: String, searchQuery: String = "") -> FolderBrowserView {
+        FolderBrowserView(
+            folderId: folderId,
+            folderName: name,
+            source: selectedSource,
+            existingFolderIds: [],
+            onAdd: nil,
+            provider: provider,
+            searchQuery: searchQuery,
+            onTrack: { folder in
+                onTrack(folder)
+                dismiss()
+            },
+            trackedFolderIds: trackedIds
+        )
     }
 }

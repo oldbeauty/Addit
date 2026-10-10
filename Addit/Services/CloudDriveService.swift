@@ -70,6 +70,21 @@ protocol CloudDriveService {
     func deletePermission(fileId: String, permissionId: String) async throws
     func createAnyonePermission(fileId: String, role: String) async throws
 
+    // Folder tracking
+    /// How many folders one `listWatchedChildren` request can take.
+    var watchBatchSize: Int { get }
+    /// What's directly inside each of `folderIds` that tracking counts —
+    /// subfolders, and audio Addit can play — read in full, every page. A
+    /// listing missing its tail would report the tail as new next time, so
+    /// nothing partial is ever returned: a batch is all there or it throws.
+    ///
+    /// Throws `FolderListingError.unlistable` when it's the folders that are
+    /// the problem (gone, not shared, or too many for one query), so the
+    /// caller can split the batch (`ListingQueue`); anything else — offline,
+    /// signed out, rate-limited — is thrown as it came and ends the check.
+    /// See `skill://folder-tracking`.
+    func listWatchedChildren(ofFolders folderIds: [String]) async throws -> [String: [FolderChild]]
+
     // NOTE: comments are deliberately NOT part of this protocol. OneDrive
     // has no comments API, and per-album chat is a Google-only feature —
     // ChatView talks to the concrete GoogleDriveService directly, and the

@@ -1277,6 +1277,15 @@ final class AudioPlayerService {
     /// that queue mutations late in the track would require a pause.
     private static let armLeadTime: TimeInterval = 0.5
 
+    /// The waits between the gapless preload's download attempts once the
+    /// first has failed (`downloadForPreload`). The preload starts at the top
+    /// of a track minutes long, so there's time to sit out a dead spot: a
+    /// little under two minutes of waiting in all, each attempt itself cut
+    /// off by `CloudSession.downloadStallTimeout`.
+    private static let preloadRetryDelays: [Duration] = [
+        .seconds(2), .seconds(5), .seconds(15), .seconds(30), .seconds(60),
+    ]
+
     /// Two-phase gapless pipeline:
     ///   1. PRELOAD — load the desired next track's audio file and
     ///      waveform into memory. No engine interaction. Idle state.
@@ -1335,7 +1344,7 @@ final class AudioPlayerService {
                     fileURL = localURL
                 } else {
                     guard let cs = self.cacheService else { return }
-                    fileURL = try await cs.cacheTrack(nextTrack)
+                    fileURL = try await downloadForPreload(nextTrack, using: cs, generation: gen)
                 }
 
                 // Check generation + cancellation. A queue mutation that
@@ -1443,7 +1452,8 @@ final class AudioPlayerService {
                     try? await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
                 }
             } catch {
-                // Pre-loading failed — the normal non-gapless transition will
+                // Pre-loading failed (a download, only once `downloadForPreload`
+                // has run out of retries) — the normal non-gapless transition will
                 // happen via handleTrackEnd, which reaches for the track at the
                 // boundary instead. Logged because a swallowed reason here is
                 // exactly what makes a stalled boundary unreadable after the
@@ -1471,6 +1481,55 @@ final class AudioPlayerService {
         }
         let elapsedSeconds = snapshot.elapsedSeconds(forEngineSampleTime: playerTime.sampleTime)
         return max(0, snapshot.duration - elapsedSeconds)
+    }
+
+    /// The preload's download, tried again while what failed was the network.
+    ///
+    /// It used to be one attempt. A blip as a track started — Wi-Fi handing
+    /// over to cellular, a lift — and nothing asked again for the rest of the
+    /// track, though the connection was usually back within seconds; the
+    /// boundary then had nothing staged and had to fetch the file itself, with
+    /// the screen off, where a stall is least likely to be noticed. A retry
+    /// gets a fresh connection now (`CloudSession` retires a dead one), which
+    /// is what makes waiting and asking again worth something.
+    ///
+    /// Only failures that clear up on their own are retried: no connection, a
+    /// stall, the drive erroring or rate-limiting. A file that's gone or
+    /// refused, or a lapsed sign-in, fails at once as before. There's no
+    /// deadline of its own: reaching the boundary with nothing staged sends
+    /// `handleTrackEnd` to `next()`, which cancels the preload, and the
+    /// boundary's load joins any download still in flight (`SharedTasks`).
+    private func downloadForPreload(_ track: Track, using cs: AudioCacheService, generation gen: UInt64) async throws -> URL {
+        var retries = 0
+        while true {
+            do {
+                return try await cs.cacheTrack(track)
+            } catch {
+                try Task.checkCancellation()
+                guard gen == scheduleGeneration,
+                      retries < Self.preloadRetryDelays.count,
+                      Self.clearsUpOnItsOwn(error) else { throw error }
+                let delay = Self.preloadRetryDelays[retries]
+                retries += 1
+                #if DEBUG
+                print("[Q] preload RETRY \(retries)/\(Self.preloadRetryDelays.count) in \(delay) track=\"\(track.name)\" gen=\(gen) error=\(error)")
+                #endif
+                try await Task.sleep(for: delay)
+                // A pause, seek or reschedule moved the generation on while
+                // this waited, and started a preload of its own.
+                guard gen == scheduleGeneration else { throw CancellationError() }
+            }
+        }
+    }
+
+    /// A download failure worth trying again unprompted: the connection, or
+    /// the drive having trouble. Classified by the failure alert's own rules,
+    /// so the two can't disagree about what a failure was.
+    private static func clearsUpOnItsOwn(_ error: Error) -> Bool {
+        switch PlaybackFailure.Reason(downloadError: error, suspended: false) {
+        case .offline, .driveTrouble: true
+        default: false
+        }
     }
 
     /// Take the in-memory pre-loaded next track and actually schedule it

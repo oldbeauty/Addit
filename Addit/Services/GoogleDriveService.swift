@@ -45,7 +45,10 @@ final class GoogleDriveService: CloudDriveService {
 
     func listAudioFiles(inFolder folderId: String, pageToken: String? = nil) async throws -> DriveFileListResponse {
         let query = "'\(folderId)' in parents and (mimeType contains 'audio/' or mimeType = 'video/mp4') and trashed=false"
-        return try await listFiles(query: query, pageToken: pageToken, pageSize: 1000, orderBy: "name")
+        let page = try await listFiles(query: query, pageToken: pageToken, pageSize: 1000, orderBy: "name")
+        // The query is broad on purpose; `isAudio` is what decides, the same
+        // rule OneDrive's listing applies — MIDI is `audio/` too.
+        return DriveFileListResponse(files: page.files.filter(\.isAudio), nextPageToken: page.nextPageToken)
     }
 
     func findCoverImage(inFolder folderId: String) async throws -> DriveItem? {
@@ -81,7 +84,7 @@ final class GoogleDriveService: CloudDriveService {
 
     func getFileMetadata(fileId: String) async throws -> DriveItem {
         let token = try await getToken()
-        let fields = "id,name,mimeType,size,parents,ownedByMe,modifiedTime,description,capabilities/canEdit,capabilities/canAddChildren"
+        let fields = "id,name,mimeType,size,parents,ownedByMe,modifiedTime,description,trashed,capabilities/canEdit,capabilities/canAddChildren"
         var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
         components.queryItems = [
             URLQueryItem(name: "fields", value: fields),
@@ -130,6 +133,87 @@ final class GoogleDriveService: CloudDriveService {
     func listAllFilesInFolder(_ folderId: String) async throws -> DriveFileListResponse {
         let query = "'\(folderId)' in parents and trashed=false"
         return try await listFiles(query: query, pageSize: 1000, orderBy: "name")
+    }
+
+    // MARK: - Folder tracking
+
+    /// Drive takes several parents in one query (`'a' in parents or 'b' in
+    /// parents …`), so checking a library of 200 albums is seven requests,
+    /// not 200. Thirty keeps the query well inside Drive's length and
+    /// complexity limits, neither of which Google publishes; a batch it turns
+    /// down anyway comes back `.unlistable`, and `ListingQueue` halves it.
+    let watchBatchSize = 30
+
+    func listWatchedChildren(ofFolders folderIds: [String]) async throws -> [String: [FolderChild]] {
+        guard !folderIds.isEmpty else { return [:] }
+        let parents = folderIds
+            .map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))' in parents" }
+            .joined(separator: " or ")
+        let query = "(\(parents)) and trashed = false and (mimeType = '\(DriveItem.folderMimeType)'"
+            + " or mimeType contains 'audio/' or mimeType = 'video/mp4')"
+
+        // Every folder asked for gets an entry, so one that lists empty reads
+        // as listed rather than as missing from the batch. Drive answers a
+        // folder this account can't see into the same way, as empty; the
+        // snapshot only growing is what makes that harmless.
+        var children = Dictionary(folderIds.map { ($0, [FolderChild]()) }, uniquingKeysWith: { first, _ in first })
+        // Unlike the browsing listings, every page: the tail of a listing
+        // left unread would be reported as new the next time.
+        var pageToken: String?
+        repeat {
+            let data: Data
+            do {
+                data = try await listRequest(
+                    query: query, pageToken: pageToken, pageSize: 1000,
+                    orderBy: nil, fields: Self.watchedChildFields
+                )
+            } catch DriveError.notFound {
+                throw FolderListingError.unlistable
+            } catch DriveError.serverError(let status) where status == 400 {
+                // How Drive turns down a query it won't run ("too complex").
+                throw FolderListingError.unlistable
+            }
+            let page = try await Self.decodeWatchedPage(data)
+            for file in page.files {
+                guard let child = watchedChild(from: file) else { continue }
+                // A file in two tracked folders (multiple parents predate
+                // 2020 on Drive, but still exist) counts in both.
+                for parent in file.parents ?? [] where children[parent] != nil {
+                    children[parent]?.append(child)
+                }
+            }
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+        return children
+    }
+
+    private static let watchedChildFields =
+        "nextPageToken,files(id,name,mimeType,parents,owners(displayName,me,photoLink),lastModifyingUser(displayName,me,photoLink))"
+
+    private func watchedChild(from file: WatchedChildrenPage.File) -> FolderChild? {
+        let kind: FolderChild.Kind
+        if file.mimeType == DriveItem.folderMimeType {
+            kind = .folder
+        } else if DriveItem.isPlayableAudio(mimeType: file.mimeType, name: file.name) {
+            kind = .track
+        } else {
+            return nil
+        }
+        // The owner is whoever uploaded or made the file. A shared drive's
+        // files have no owner; the last person to change one is the nearest.
+        let person = file.owners?.first ?? file.lastModifyingUser
+        return FolderChild(
+            id: file.id, name: file.name, kind: kind,
+            addedBy: person?.displayName, addedByMe: person?.me ?? false,
+            addedByPhoto: person?.photoLink
+        )
+    }
+
+    /// Off the main actor: a check over a big library decodes thousands of
+    /// entries, a page at a time, while the library may be scrolling.
+    @concurrent
+    private static func decodeWatchedPage(_ data: Data) async throws -> WatchedChildrenPage {
+        try JSONDecoder().decode(WatchedChildrenPage.self, from: data)
     }
 
     // MARK: - Rename
@@ -661,6 +745,16 @@ final class GoogleDriveService: CloudDriveService {
     private func listFiles(query: String, pageToken: String? = nil,
                            pageSize: Int = 100, orderBy: String? = nil,
                            fields: String = "files(id,name,mimeType,size,parents,ownedByMe,modifiedTime),nextPageToken") async throws -> DriveFileListResponse {
+        let data = try await listRequest(
+            query: query, pageToken: pageToken, pageSize: pageSize, orderBy: orderBy, fields: fields
+        )
+        return try JSONDecoder().decode(DriveFileListResponse.self, from: data)
+    }
+
+    /// One page of a `files.list` query, undecoded: each caller decodes the
+    /// fields it asked for.
+    private func listRequest(query: String, pageToken: String?, pageSize: Int,
+                             orderBy: String?, fields: String) async throws -> Data {
         let token = try await getToken()
 
         var components = URLComponents(string: "\(baseURL)/files")!
@@ -684,7 +778,7 @@ final class GoogleDriveService: CloudDriveService {
 
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
-        return try JSONDecoder().decode(DriveFileListResponse.self, from: data)
+        return data
     }
 
     private func getToken() async throws -> String {
@@ -711,6 +805,29 @@ final class GoogleDriveService: CloudDriveService {
             throw DriveError.serverError(http.statusCode)
         }
     }
+}
+
+/// A `files.list` page with what folder tracking reads: where each item sits,
+/// and whose it is. `nonisolated` so it can be decoded off the main actor.
+private nonisolated struct WatchedChildrenPage: Decodable, Sendable {
+    nonisolated struct Person: Decodable, Sendable {
+        let displayName: String?
+        /// Drive's own "this is the account asking".
+        let me: Bool?
+        let photoLink: String?
+    }
+
+    nonisolated struct File: Decodable, Sendable {
+        let id: String
+        let name: String
+        let mimeType: String
+        let parents: [String]?
+        let owners: [Person]?
+        let lastModifyingUser: Person?
+    }
+
+    let files: [File]
+    let nextPageToken: String?
 }
 
 /// Hands an upload's running bytes-sent count to a closure. A per-task

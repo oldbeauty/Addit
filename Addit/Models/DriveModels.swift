@@ -20,13 +20,37 @@ struct DriveItem: Codable, Identifiable, Hashable {
     /// the only OneDrive this app talks to (`/consumers`). Albums use the
     /// album folder's copy as their blurb.
     let description: String?
+    /// In the provider's trash — which is where deleting something in Drive
+    /// puts it, and where it still answers a metadata request as if nothing
+    /// happened. Only `getFileMetadata` asks Drive for it; OneDrive answers a
+    /// recycled item with a 404 instead, so it's never set there.
+    var trashed: Bool? = nil
+
+    /// Drive's folder type, which `OneDriveService` stamps on Graph folders too.
+    nonisolated static let folderMimeType = "application/vnd.google-apps.folder"
 
     var isFolder: Bool {
-        mimeType == "application/vnd.google-apps.folder"
+        mimeType == Self.folderMimeType
     }
 
     var isAudio: Bool {
-        mimeType.hasPrefix("audio/") || mimeType == "video/mp4"
+        Self.isPlayableAudio(mimeType: mimeType, name: name)
+    }
+
+    /// Audio Addit can play: an `audio/` type, or MPEG-4 video (how Drive
+    /// labels some .m4a files) — but not MIDI. That's note data rather than
+    /// sound, and both drives file it under `audio/` (`audio/midi`,
+    /// `audio/x-midi`, `audio/mid`), so a .mid in an album folder was listed
+    /// as a track that could never play (TestFlight, build 10). Folder
+    /// tracking asks the same question of what it lists, so a track that
+    /// shows up as news is one the album would list.
+    nonisolated static func isPlayableAudio(mimeType: String, name: String) -> Bool {
+        let type = mimeType.lowercased()
+        let ext = (name as NSString).pathExtension.lowercased()
+        if type.contains("midi") || type == "audio/mid" || ["mid", "midi", "kar", "rmi"].contains(ext) {
+            return false
+        }
+        return type.hasPrefix("audio/") || type == "video/mp4"
     }
 
     var canEdit: Bool {

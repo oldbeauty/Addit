@@ -9,7 +9,7 @@ struct ContentView: View {
     @Environment(ShareLinkService.self) private var shareLinks
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
-    @State private var libraryPath: [Album] = []
+    @State private var libraryPath: [LibraryRoute] = []
     /// Non-empty while the "which account?" picker is up for an incoming link.
     @State private var shareAccountChoices: [Account] = []
     /// "Use without an account" — the library opens on iPhone Storage with no
@@ -54,8 +54,8 @@ struct ContentView: View {
                             // before opening the player), skip the push so
                             // "tap cover" just returns there instead of
                             // stacking a duplicate.
-                            if libraryPath.last != album {
-                                libraryPath.append(album)
+                            if libraryPath.last != .album(album) {
+                                libraryPath.append(.album(album))
                             }
                         })
                         // The pill is pinned to the bottom of the window and has
@@ -289,8 +289,8 @@ struct ContentView: View {
         // gets passed around a group chat. Just go to it.
         if let existing = importer.existingAlbum(folderId: link.folderId, accountId: accountId) {
             shareLinks.clear()
-            if libraryPath.last != existing {
-                libraryPath.append(existing)
+            if libraryPath.last != .album(existing) {
+                libraryPath.append(.album(existing))
             }
             playSharedTrack(link, in: existing)
             return
@@ -306,7 +306,7 @@ struct ContentView: View {
                 storageSource: link.source
             )
             shareLinks.clear()
-            libraryPath.append(album)
+            libraryPath.append(.album(album))
             playSharedTrack(link, in: album)
             // The album is on screen by now; this is the metadata catching up.
             await importer.finishImport(of: album, audioFiles: audioFiles)

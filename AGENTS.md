@@ -19,6 +19,7 @@ Google Drive + OneDrive + local iPhone storage.
 | Library: grid spacing & the label line, folders, arrange mode, folder zoom, Sort by Color, cover thumbnails | `skill://library-screen` |
 | Share links, the site handshake, link previews | `skill://share-links` |
 | Sign-in, drive requests and uploads, background transfers, album sync | `skill://cloud-services` |
+| Folder tracking: the Tracking screen, what counts as new, checks, `listWatchedChildren` | `skill://folder-tracking` |
 
 ## Build & verify
 
@@ -76,7 +77,7 @@ Signing check (device builds): append
   MicrosoftAuth, CloudAuthCoordinator (unified session facade — views use this,
   not the concrete auth services), GoogleDrive, OneDrive, CloudDriveService
   (protocol + CloudServiceRouter), AudioPlayer, AudioCache, AudioAnalyzer
-  (FFT/EQ), AlbumArt, AccountManager, Theme.
+  (FFT/EQ), AlbumArt, AccountManager, Theme, FolderWatch (folder tracking).
 - **Provider routing**: views never hold a concrete drive client. Album-scoped
   views compute `driveService` = `cloudRouter.service(for: album)` (routes on
   `Album.storageSource`); account-scoped flows (browse/add/create/import) use

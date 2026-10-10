@@ -41,8 +41,23 @@ final class CloudSession {
     }
 
     func download(for request: URLRequest) async throws -> (URL, URLResponse) {
-        try await run { try await $0.download(for: request) }
+        var request = request
+        request.timeoutInterval = min(request.timeoutInterval, Self.downloadStallTimeout)
+        return try await run { [request] in try await $0.download(for: request) }
     }
+
+    /// How long a file download may go without receiving a byte before it
+    /// counts as dead: `URLError.timedOut`, which also retires the session.
+    ///
+    /// It limits the silence, not the length: a slow download that keeps
+    /// arriving is never cut off. URLSession's own limit is a minute, so a
+    /// track that had to be fetched at a boundary over a dead connection was a
+    /// minute of quiet before anything gave up and said why. Set on the
+    /// request, it also covers the CDN redirect OneDrive answers `/content`
+    /// with. Checked against a server that stalls (2026-10-04): a 2 s limit
+    /// fired at 2.0 s before the headers, mid-body and after a 302, while a
+    /// byte every 1.5 s ran to the end.
+    static let downloadStallTimeout: TimeInterval = 20
 
     private func run<T>(_ request: (URLSession) async throws -> T) async throws -> T {
         let current = session

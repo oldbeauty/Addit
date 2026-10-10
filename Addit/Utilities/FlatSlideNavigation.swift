@@ -176,6 +176,21 @@ final class FlatSlideCoordinator: NSObject, UINavigationControllerDelegate, UIGe
             && nav.transitionCoordinator == nil
             && interactionController == nil
     }
+
+    /// The back swipe first, over anything that scrolls sideways under it —
+    /// the tracking screen's two pages, whose first would otherwise take a
+    /// drag from the left edge as its own bounce, so back never started. That
+    /// scroller waits for this to fail, which it does at once for any touch
+    /// that didn't start at the edge, so paging itself isn't held up. Vertical
+    /// scrollers (every list) aren't affected.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        guard let scrollView = otherGestureRecognizer.view as? UIScrollView,
+              otherGestureRecognizer === scrollView.panGestureRecognizer else { return false }
+        return scrollView.contentSize.width > scrollView.bounds.width + 1
+    }
 }
 
 // MARK: - Forcing animated transitions

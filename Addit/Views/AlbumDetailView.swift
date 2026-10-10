@@ -35,6 +35,16 @@ struct AlbumDetailView: View {
     @State private var showAccessSheet = false
     @State private var navigateToChat = false
     @State var albumImage: UIImage?
+    /// What the bar shows of the scroll: the cover, as a way back to the top,
+    /// once the header's play and shuffle have gone under the bar. An object
+    /// this view never reads, so the flag flipping mid-scroll re-runs only
+    /// the button (`AlbumScrollChrome.swift`), not this body.
+    @State private var chrome = AlbumChrome()
+    /// The cover's height and the title line's (with its buttons), measured.
+    @State private var coverHeight: CGFloat = 0
+    @State private var titleRowHeight: CGFloat = 0
+    /// Bumped by the bar's cover to scroll the page back to its top.
+    @State private var scrollToTopRequest = 0
     /// The header's title and artist, shown in full on glass over the line they
     /// were cut on. Any tap puts it away.
     @State private var isTitleExpanded = false
@@ -81,6 +91,9 @@ struct AlbumDetailView: View {
     /// Held while the restricted-access warning is up; released to
     /// `linkShareItem` when it's acknowledged.
     @State private var restrictedShareItem: AlbumLinkShareItem?
+    /// Why opening a restricted album to "anyone with the link" failed, from
+    /// the warning's own button.
+    @State private var accessChangeError: String?
     /// Second step of "Duplicate to…" from the denial alert — an alert button
     /// can't open a submenu, so the destinations get their own dialog.
     @State var showDuplicateDestinations = false
@@ -569,9 +582,15 @@ struct AlbumDetailView: View {
     /// in place. Nothing is ever laid out below anything else.
     private var headerSection: some View {
         Section {
-            VStack(spacing: 16) {
+            VStack(spacing: Self.headerSpacing) {
                 coverSlot
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        if coverHeight != height { coverHeight = height }
+                    }
                 titleSlot
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        if titleRowHeight != height { titleRowHeight = height }
+                    }
                 descriptionSlot
             }
             .frame(maxWidth: .infinity)
@@ -584,8 +603,14 @@ struct AlbumDetailView: View {
             // with a rule above the cover and another between the transport
             // buttons and the first track. The tracklist owns the rules.
             .listRowSeparator(.hidden)
+            .id(Self.topRowID)
         }
     }
+
+    /// The header row, for the bar's cover to scroll back to.
+    private static let topRowID = "album-top"
+    /// Between the cover, the title line and the blurb.
+    private static let headerSpacing: CGFloat = 16
 
     /// Title and artist, centered in what `titleRow` leaves between the two
     /// controls — which, the controls being the same size, is the middle of the
@@ -776,11 +801,7 @@ struct AlbumDetailView: View {
     /// on it — the target is aligned, not the ink.
     var shuffleButton: some View {
         Button {
-            if isThisAlbumPlaying {
-                playerService.toggleShuffle()
-            } else {
-                playerService.playAlbum(album, shuffled: true)
-            }
+            shuffleTapped()
         } label: {
             // On/off needs two signals, not one. Tinting the glyph alone
             // failed because the accent is a pale cyan and the off state
@@ -804,6 +825,16 @@ struct AlbumDetailView: View {
         }
         .buttonStyle(ImprintButtonStyle())
         .animation(.easeInOut(duration: 0.18), value: shuffleEngaged)
+    }
+
+    /// Shuffle's one action, from the header and from the bar alike: turn it
+    /// on or off for the album playing, or start this one shuffled.
+    private func shuffleTapped() {
+        if isThisAlbumPlaying {
+            playerService.toggleShuffle()
+        } else {
+            playerService.playAlbum(album, shuffled: true)
+        }
     }
 
     /// Play, at the right end, hard against the tracklist's edge.
@@ -1336,6 +1367,7 @@ struct AlbumDetailView: View {
     // `body` is assembled in stages (list → chrome → presentations → body)
     // so no single expression exceeds the type-checker's budget.
     private var listLayer: some View {
+        ScrollViewReader { proxy in
         List {
             if isSyncing && album.tracks.isEmpty {
                 Section {
@@ -1365,6 +1397,23 @@ struct AlbumDetailView: View {
                 }
             }
         }
+        // A threshold: the action runs when it's crossed, not per frame, and
+        // writes where only the bar's button reads.
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            AlbumChrome.headerIsPast(
+                geometry,
+                buttonsBottom: coverHeight > 0 && titleRowHeight > 0
+                    ? Self.coverTopGap + coverHeight + Self.headerSpacing + titleRowHeight : 0
+            )
+        } action: { _, isPast in
+            withAnimation(.snappy(duration: 0.28)) { chrome.headerIsPast = isPast }
+        }
+        .onChange(of: scrollToTopRequest) {
+            withAnimation(.smooth(duration: 0.45)) {
+                proxy.scrollTo(Self.topRowID, anchor: .top)
+            }
+        }
+        }
         .backgroundPreferenceValue(CoverBoundsKey.self) { anchor in
             GeometryReader { proxy in
                 Color.clear
@@ -1383,6 +1432,10 @@ struct AlbumDetailView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(isEditing)
+        // Claimed outright, so a screen pushed from here that hides the bar
+        // (chat draws its own header) can't leave this one without its back
+        // button and ⋯ menu when it's popped.
+        .toolbarVisibility(.visible, for: .navigationBar)
     }
 
     private var chromeLayer: some View {
@@ -1417,6 +1470,15 @@ struct AlbumDetailView: View {
                 // what makes it survive leaving this screen.
                 ToolbarItem(placement: .primaryAction) {
                     ActivityRing(albumFolderId: album.googleFolderId)
+                }
+                // The cover, once the header's play and shuffle are under the
+                // bar: back to the top, where they are. Always in the bar —
+                // adding an item mid-scroll reconfigures it, which was the lag
+                // when it arrived — and hidden until then.
+                ToolbarItem(placement: .principal) {
+                    AlbumTopButton(chrome: chrome, album: album) {
+                        scrollToTopRequest &+= 1
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -1474,6 +1536,22 @@ struct AlbumDetailView: View {
             } else {
                 linkShareItem = item
             }
+        }
+    }
+
+    /// The restricted warning's "change and proceed": opens the folder to
+    /// anyone with the link as a viewer — the Access sheet's "Anyone with the
+    /// link: Viewer", and all a link needs — then shares. If the drive refuses,
+    /// it says so rather than sending a link that still won't open.
+    private func openToAnyoneAndShare(_ item: AlbumLinkShareItem?) async {
+        guard let item else { return }
+        shareLinks.isPreparingLink = true
+        defer { shareLinks.isPreparingLink = false }
+        do {
+            try await driveService.createAnyonePermission(fileId: album.googleFolderId, role: "reader")
+            linkShareItem = item
+        } catch {
+            accessChangeError = error.localizedDescription
         }
     }
 
@@ -1569,7 +1647,6 @@ struct AlbumDetailView: View {
             get: { restrictedShareItem != nil },
             set: { if !$0 { restrictedShareItem = nil } }
         )) {
-            Button("Cancel", role: .cancel) { restrictedShareItem = nil }
             Button("Proceed") {
                 let item = restrictedShareItem
                 restrictedShareItem = nil
@@ -1578,8 +1655,30 @@ struct AlbumDetailView: View {
                 // missing — the same class of desync as the rename popup.
                 DispatchQueue.main.async { linkShareItem = item }
             }
+            // Owners and editors can fix the access right here, as the Access
+            // sheet lets them; anyone else can only send the link as it is.
+            if album.canEdit {
+                Button("Change to \u{201C}Anyone with Link\u{201D} and Proceed") {
+                    let item = restrictedShareItem
+                    restrictedShareItem = nil
+                    Task { await openToAnyoneAndShare(item) }
+                }
+                Button("Open Access Sheet") {
+                    restrictedShareItem = nil
+                    DispatchQueue.main.async { showAccessSheet = true }
+                }
+            }
+            Button("Cancel", role: .cancel) { restrictedShareItem = nil }
         } message: {
             Text(ShareAccess.restrictedWarning)
+        }
+        .alert("Couldn't Change Access", isPresented: Binding(
+            get: { accessChangeError != nil },
+            set: { if !$0 { accessChangeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { accessChangeError = nil }
+        } message: {
+            Text(accessChangeError ?? "")
         }
         .fullScreenCover(item: $trackToSplit, onDismiss: refreshTracklist) { splitTrack in
             TrackSplitView(track: splitTrack, album: album)

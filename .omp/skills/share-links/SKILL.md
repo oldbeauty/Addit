@@ -58,3 +58,13 @@ unauthenticated fetcher could never see inside a restricted folder (or on
 OneDrive at all). The `?c=` Drive id and `/cover` only serve `og:image`, i.e.
 links someone *pastes* elsewhere; `/cover` sits outside the AASA's `/a/*` claim
 deliberately.
+
+## The restricted-access warning
+
+Sharing an album whose folder has no "anyone" permission
+(`ShareAccess.isRestricted`) warns first, since the link will only open for
+people already on the access list. Everyone gets **Proceed** and **Cancel**;
+owners and editors (`album.canEdit`, the Access sheet's own test) also get
+**Change to "Anyone with Link" and Proceed** — adds the anyone-with-the-link
+*viewer* permission, then shares, or says why the drive refused — and **Open
+Access Sheet** (order: Proceed, Change, Open, Cancel; added 2026-10-03).

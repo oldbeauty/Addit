@@ -17,6 +17,7 @@ struct AdditApp: App {
     @State private var analyzerService = AudioAnalyzerService()
     @State private var shareLinks = ShareLinkService()
     @State private var transfers = TransferService()
+    @State private var folderWatch: FolderWatchService
 
     init() {
         // Let a button inside a scroll view show its press state on touch-down.
@@ -46,6 +47,7 @@ struct AdditApp: App {
         let router = CloudServiceRouter(google: gDrive, oneDrive: oneDrive)
         router.accountManager = google.accountManager
         _cloudRouter = State(initialValue: router)
+        _folderWatch = State(initialValue: FolderWatchService(router: router))
     }
 
     /// Export staging (zips, hardlinked track copies) lives in tmp and is
@@ -93,6 +95,7 @@ struct AdditApp: App {
                 .environment(analyzerService)
                 .environment(shareLinks)
                 .environment(transfers)
+                .environment(folderWatch)
                 .onOpenURL { url in
                     // Album links and the Google OAuth callback arrive through
                     // the same door, so this has to be a branch rather than an
