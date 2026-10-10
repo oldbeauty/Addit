@@ -21,6 +21,11 @@ iOS fetches it at *install*, so publish the site before shipping a build. The
 doesn't linkify custom schemes, which is the whole reason the shipping format is
 `https`.
 
+Without the app, a link opens the site's `/a/` page in Safari. Its **Get
+Addit** goes straight to the TestFlight join link (not `/addit/`), and the
+copy asks them to tap the link again once it's installed: nothing carries a
+link through an install, so the first tap is lost.
+
 ## Format, routing and previews
 
 `AlbumShareLink` owns the URL format
