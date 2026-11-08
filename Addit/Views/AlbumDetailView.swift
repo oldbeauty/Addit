@@ -78,10 +78,6 @@ struct AlbumDetailView: View {
     @State var isExportingAlbum = false
     @State var exportProgress: (current: Int, total: Int, trackName: String) = (0, 0, "")
     @State var exportError: String?
-    /// Duration (seconds) per track, keyed by `track.googleFileId`. Populated
-    /// by `calculateAlbumDuration()` from cached / on-disk audio files. Used
-    /// for both the album total and per-disc totals.
-    @State private var trackDurations: [String: Double] = [:]
     /// Destination provider for "Duplicate to…", which is also what presents
     /// the folder picker — the presentation's identity *is* the chosen cloud.
     @State var duplicateTarget: AccountProvider?
@@ -1285,7 +1281,7 @@ struct AlbumDetailView: View {
     }
 
     private var albumDurationSeconds: Double {
-        trackDurations.values.reduce(0, +)
+        playableTracks.reduce(0) { $0 + ($1.durationSeconds ?? 0) }
     }
 
     private var albumDurationMinutes: Int {
@@ -1314,7 +1310,8 @@ struct AlbumDetailView: View {
     /// marker at `markerIndex` in `filteredDisplayItems` — i.e. every track
     /// between this marker and the next (or end of list). Tracks whose
     /// duration hasn't been measured yet (e.g. uncached Drive tracks) are
-    /// skipped; the caller should treat a zero return as "unavailable."
+    /// skipped, and hidden ones don't count, as in the album total; the
+    /// caller should treat a zero return as "unavailable."
     private func discDurationSeconds(forMarkerAt markerIndex: Int) -> Double {
         let items = filteredDisplayItems
         guard markerIndex < items.count else { return 0 }
@@ -1324,7 +1321,7 @@ struct AlbumDetailView: View {
             case .discMarker:
                 return total
             case .track(let track):
-                if let d = trackDurations[track.googleFileId] { total += d }
+                if !track.isHidden, let d = track.durationSeconds { total += d }
             }
         }
         return total
@@ -1768,7 +1765,7 @@ struct AlbumDetailView: View {
             await initialLoad()
         }
         .task(id: "\(playableTracks.map(\.googleFileId))") {
-            await calculateAlbumDuration()
+            await measureTrackLengths()
         }
         .onChange(of: album.tracks.count) {
             if album.isLocal {
@@ -1796,11 +1793,9 @@ struct AlbumDetailView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .audioCacheDidChange)) { _ in
             refreshCachedState()
-            // The album/disc duration readout is computed by probing each
-            // track's local/cached audio file. When cache state flips, that
-            // set changes, so recompute so the header updates immediately
-            // instead of waiting for the view to re-enter.
-            Task { await calculateAlbumDuration() }
+            // A track that just landed on disk can be measured now, so the
+            // totals take it in without waiting for the page to reopen.
+            Task { await measureTrackLengths() }
         }
         .task(id: artworkTaskID) {
             if album.isLocal {
@@ -1927,16 +1922,48 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func calculateAlbumDuration() async {
-        var durations: [String: Double] = [:]
-        for track in playableTracks {
-            if let url = track.localFileURL ?? cacheService.cachedFileURL(for: track) {
-                if let file = try? AVAudioFile(forReading: url) {
-                    durations[track.googleFileId] = Double(file.length) / file.processingFormat.sampleRate
-                }
-            }
+    /// Measures the tracks on the device whose length isn't known yet, and
+    /// keeps each length on its track, so the album and disc totals are in the
+    /// first frame from then on, and stay when a download is removed.
+    ///
+    /// Once per track, and off the main thread. This used to open every
+    /// on-device track's file each time the page opened, on the main thread,
+    /// as the page slid in. A file whose header gives its length costs a few
+    /// milliseconds, but an MP3 without one (no Xing/Info frame) can only be
+    /// measured by reading all of it, frame by frame: Tektra's thirteen
+    /// 320 kbps MP3s (4¾ hours, 687 MB) took well over 100 ms each on an
+    /// iPhone 16 Pro, so the page hung for well over a second on every open,
+    /// while FLAC albums far bigger, whose header always has the length,
+    /// opened at once (2026-10-21).
+    private func measureTrackLengths() async {
+        let unmeasured = playableTracks.compactMap { track -> (id: String, url: URL)? in
+            guard track.durationSeconds == nil,
+                  let url = track.localFileURL ?? cacheService.cachedFileURL(for: track) else { return nil }
+            return (track.googleFileId, url)
         }
-        trackDurations = durations
+        guard !unmeasured.isEmpty else { return }
+        let lengths = await Self.lengths(of: unmeasured)
+        guard !lengths.isEmpty else { return }
+        // Written through a fresh fetch rather than the tracks held across
+        // the wait, which a sync can have deleted meanwhile.
+        for track in fetchAllTracks() {
+            if let seconds = lengths[track.googleFileId] { track.durationSeconds = seconds }
+        }
+        try? modelContext.save()
+    }
+
+    /// Each file's length in seconds, by track. Stops between files once the
+    /// page has gone; what it measured by then is still kept.
+    @concurrent
+    private static func lengths(of files: [(id: String, url: URL)]) async -> [String: Double] {
+        var lengths: [String: Double] = [:]
+        for file in files {
+            if Task.isCancelled { break }
+            guard let audio = try? AVAudioFile(forReading: file.url),
+                  audio.processingFormat.sampleRate > 0 else { continue }
+            lengths[file.id] = Double(audio.length) / audio.processingFormat.sampleRate
+        }
+        return lengths
     }
 
     private func refreshCachedState() {

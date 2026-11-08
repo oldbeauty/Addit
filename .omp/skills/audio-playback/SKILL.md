@@ -283,6 +283,18 @@ From the hardening list left after the 2026-07-12 track 4→5 stop (done
 
 ## Outstanding / verification queue
 
+- **A track's length can cost a read of the whole file.** `AVAudioFile.length`
+  comes from the header for FLAC, WAV, M4A and most MP3s, but an MP3 with no
+  Xing/Info frame is measured by reading every frame. Tektra's thirteen
+  320 kbps MP3s took well over 100 ms each on an iPhone 16 Pro (2026-10-21).
+  The album page measured every on-device track that way on each open, on the
+  main thread, and hung for well over a second; it now measures each track
+  once, off the main actor, into `Track.durationSeconds`
+  (`AlbumDetailView.measureTrackLengths`). Two spots in this service still
+  read `length` on the main actor: `loadAndPlay`, and the gapless preload
+  (`scheduleNextTrackGapless`) for the next track. Both run as a track starts, so files like these
+  can hitch the UI there. That's unfixed, and nobody has reported it yet.
+
 - The three audit suspects (queue race, artwork race, `handleTrackEnd` field
   race) are addressed via `PlaybackAnchor` + the cancellable-Task pattern. Fixes
   are recent and want a long real-world listening session to confirm no
