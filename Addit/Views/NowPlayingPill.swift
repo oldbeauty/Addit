@@ -65,7 +65,10 @@ struct NowPlayingPill: View {
     /// the mini player would have been.
     static let miniPlayCenterFromBottom: CGFloat = MiniLayout.rowCenterFromBottom + bottomInset
 
-    private static let horizontalInset: CGFloat = 12
+    /// 4pt inside the library grid's 12pt margin, so the pill reaches a little
+    /// past the outer edges of the covers. Flush with them, it read as a
+    /// mistake (2026-11-08, at the user's ask).
+    private static let horizontalInset: CGFloat = 8
     private static let bottomInset: CGFloat = 4
 
     private let collapsedCorner: CGFloat = 20

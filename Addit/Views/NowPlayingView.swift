@@ -24,7 +24,7 @@ private struct RestrictedShare {
 ///   `MorphSlot`s, which draw them somewhere between the position the layout
 ///   below gives them and the position `MiniLayout` defines for the mini bar.
 ///   Everything else is `.nowPlayingChrome(progress)` and simply fades.
-/// - The card is narrower than the old sheet (the pill's 12pt insets, then
+/// - The card is narrower than the old sheet (the pill's 8pt insets, then
 ///   this view's own), so horizontal budgets are tight — the transport row in
 ///   particular is spaced to fit rather than to breathe.
 struct NowPlayingView: View {
@@ -949,8 +949,8 @@ struct NowPlayingView: View {
 
     /// Spacing is sized to the pill, not chosen for looks: five controls
     /// (32 + ~30 + 60 + ~30 + 32 ≈ 184pt of glyph) have to clear the content
-    /// width, which is the screen less the pill's 12pt insets and this view's
-    /// 12pt padding — ≈327pt on a 375pt phone. 28pt gaps land at ~296; 40 (the
+    /// width, which is the screen less the pill's 8pt insets and this view's
+    /// 12pt padding — ≈335pt on a 375pt phone. 28pt gaps land at ~296; 40 (the
     /// old sheet's) didn't fit.
     private var transportControls: some View {
         HStack(spacing: 28) {
