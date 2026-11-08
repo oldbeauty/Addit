@@ -2,6 +2,14 @@ import SwiftUI
 import UIKit
 import SwiftData
 
+/// A song link waiting on the restricted warning, with the album it was made
+/// from — the one whose access the warning's buttons change, whatever has
+/// started playing since.
+private struct RestrictedShare {
+    let item: AlbumLinkShareItem
+    let album: Album
+}
+
 /// The expanded state of `NowPlayingPill` — content only. It is *not* a sheet
 /// and doesn't own a background, a width, or its own dismissal.
 ///
@@ -50,7 +58,10 @@ struct NowPlayingView: View {
     @State private var seekValue: TimeInterval = 0
     @State private var albumImage: UIImage?
     @State private var shareItem: AlbumLinkShareItem?
-    @State private var restrictedShareItem: AlbumLinkShareItem?
+    @State private var restrictedShare: RestrictedShare?
+    /// The album whose Access sheet the restricted warning opened.
+    @State private var accessSheetAlbum: Album?
+    @State private var accessChangeError: String?
     @State private var exportFileURL: URL?
     /// The current cover's own colour, or `nil` for art with none to take.
     @State private var coverAccent: Color?
@@ -115,17 +126,41 @@ struct NowPlayingView: View {
             ShareSheet(activityItems: [item])
         }
         .alert("Restricted Access", isPresented: Binding(
-            get: { restrictedShareItem != nil },
-            set: { if !$0 { restrictedShareItem = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { restrictedShareItem = nil }
+            get: { restrictedShare != nil },
+            set: { if !$0 { restrictedShare = nil } }
+        ), presenting: restrictedShare) { share in
             Button("Proceed") {
-                let item = restrictedShareItem
-                restrictedShareItem = nil
-                DispatchQueue.main.async { shareItem = item }
+                restrictedShare = nil
+                DispatchQueue.main.async { shareItem = share.item }
             }
+            // As on the album's page, owners and editors can fix it here.
+            // It's the album's access that a song's link goes by, so the
+            // album's is what these change and open (`ShareSubject`).
+            if share.album.canEdit {
+                Button(share.item.subject.openToAnyoneTitle) {
+                    restrictedShare = nil
+                    Task { await openToAnyoneAndShare(share.item, in: share.album) }
+                }
+                Button(share.item.subject.accessSheetTitle) {
+                    restrictedShare = nil
+                    DispatchQueue.main.async { accessSheetAlbum = share.album }
+                }
+            }
+            Button("Cancel", role: .cancel) { restrictedShare = nil }
+        } message: { share in
+            Text(share.item.subject.restrictedWarning)
+        }
+        .alert("Couldn't Change Access", isPresented: Binding(
+            get: { accessChangeError != nil },
+            set: { if !$0 { accessChangeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { accessChangeError = nil }
         } message: {
-            Text(ShareAccess.restrictedWarning)
+            Text(accessChangeError ?? "")
+        }
+        .sheet(item: $accessSheetAlbum) { album in
+            AccessSheet(album: album)
+                .scrollIndicators(.hidden)
         }
         .sheet(isPresented: Binding(
             get: { exportFileURL != nil },
@@ -652,7 +687,27 @@ struct NowPlayingView: View {
             )
             guard let item = await AlbumLinkShareItem.make(for: track, in: album, image: albumImage)
             else { return }
-            if isRestricted { restrictedShareItem = item } else { shareItem = item }
+            if isRestricted {
+                restrictedShare = RestrictedShare(item: item, album: album)
+            } else {
+                shareItem = item
+            }
+        }
+    }
+
+    /// The warning's "change and proceed", as on the album's page: opens the
+    /// song's album to anyone with the link as a viewer, then shares. If the
+    /// drive refuses, it says so rather than sending a link that still won't
+    /// open.
+    private func openToAnyoneAndShare(_ item: AlbumLinkShareItem, in album: Album) async {
+        shareLinks.isPreparingLink = true
+        defer { shareLinks.isPreparingLink = false }
+        do {
+            try await cloudRouter.service(for: album)
+                .createAnyonePermission(fileId: album.googleFolderId, role: "reader")
+            shareItem = item
+        } catch {
+            accessChangeError = error.localizedDescription
         }
     }
 

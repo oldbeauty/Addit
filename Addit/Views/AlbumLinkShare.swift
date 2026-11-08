@@ -27,6 +27,8 @@ import UIKit
 /// `og:image` whatsoever — cover, title, artist, domain, all four.
 final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
     let id = UUID()
+    /// An album's link or a song's, which the restricted warning words itself by.
+    let subject: ShareSubject
     private let url: URL
     /// Used for the Mail subject only — the card's title comes from the page.
     private let caption: String
@@ -34,7 +36,8 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
     /// case the system does its own and the card falls back to `og:image`.
     private let metadata: LPLinkMetadata?
 
-    init(url: URL, caption: String, metadata: LPLinkMetadata?) {
+    init(subject: ShareSubject, url: URL, caption: String, metadata: LPLinkMetadata?) {
+        self.subject = subject
         self.url = url
         self.caption = caption
         self.metadata = metadata
@@ -45,6 +48,7 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
     static func make(for album: Album, image: UIImage?) async -> AlbumLinkShareItem? {
         guard let url = AlbumShareLink(album: album)?.url else { return nil }
         return AlbumLinkShareItem(
+            subject: .album,
             url: url,
             caption: caption(for: album),
             metadata: await card(for: url, image: image)
@@ -55,6 +59,7 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
     static func make(for track: Track, in album: Album, image: UIImage?) async -> AlbumLinkShareItem? {
         guard let url = AlbumShareLink(track: track, in: album)?.url else { return nil }
         return AlbumLinkShareItem(
+            subject: .song,
             url: url,
             caption: caption(for: track, in: album),
             metadata: await card(for: url, image: image)
@@ -120,6 +125,35 @@ final class AlbumLinkShareItem: NSObject, UIActivityItemSource, Identifiable {
 
     func activityViewControllerLinkMetadata(_ controller: UIActivityViewController) -> LPLinkMetadata? {
         metadata
+    }
+}
+
+/// What a share link points at. A song opens through its album — a track is
+/// only reachable through its folder — so a song link's access is the album's,
+/// and the album's is what the restricted warning offers to change or open.
+/// Addit never shows access per track, and the wording here says whose it is.
+enum ShareSubject {
+    case album, song
+
+    var restrictedWarning: String {
+        switch self {
+        case .album: ShareAccess.restrictedWarning
+        case .song: "This song\u{2019}s album has restricted access, so the link will only work for accounts added to the album\u{2019}s access list."
+        }
+    }
+
+    var openToAnyoneTitle: String {
+        switch self {
+        case .album: "Change to \u{201C}Anyone with Link\u{201D} and Proceed"
+        case .song: "Change Album to \u{201C}Anyone with Link\u{201D} and Proceed"
+        }
+    }
+
+    var accessSheetTitle: String {
+        switch self {
+        case .album: "Open Access Sheet"
+        case .song: "Open Album\u{2019}s Access Sheet"
+        }
     }
 }
 

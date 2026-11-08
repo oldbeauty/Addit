@@ -1643,9 +1643,8 @@ struct AlbumDetailView: View {
         .alert("Restricted Access", isPresented: Binding(
             get: { restrictedShareItem != nil },
             set: { if !$0 { restrictedShareItem = nil } }
-        )) {
+        ), presenting: restrictedShareItem) { item in
             Button("Proceed") {
-                let item = restrictedShareItem
                 restrictedShareItem = nil
                 // Next runloop turn. Handing SwiftUI a sheet while an alert is
                 // still tearing down is exactly how a presentation goes
@@ -1654,20 +1653,21 @@ struct AlbumDetailView: View {
             }
             // Owners and editors can fix the access right here, as the Access
             // sheet lets them; anyone else can only send the link as it is.
+            // A song's link is the album's access either way, and its
+            // wording says so (`ShareSubject`).
             if album.canEdit {
-                Button("Change to \u{201C}Anyone with Link\u{201D} and Proceed") {
-                    let item = restrictedShareItem
+                Button(item.subject.openToAnyoneTitle) {
                     restrictedShareItem = nil
                     Task { await openToAnyoneAndShare(item) }
                 }
-                Button("Open Access Sheet") {
+                Button(item.subject.accessSheetTitle) {
                     restrictedShareItem = nil
                     DispatchQueue.main.async { showAccessSheet = true }
                 }
             }
             Button("Cancel", role: .cancel) { restrictedShareItem = nil }
-        } message: {
-            Text(ShareAccess.restrictedWarning)
+        } message: { item in
+            Text(item.subject.restrictedWarning)
         }
         .alert("Couldn't Change Access", isPresented: Binding(
             get: { accessChangeError != nil },

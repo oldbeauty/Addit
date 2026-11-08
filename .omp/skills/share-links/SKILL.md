@@ -73,3 +73,13 @@ owners and editors (`album.canEdit`, the Access sheet's own test) also get
 **Change to "Anyone with Link" and Proceed** — adds the anyone-with-the-link
 *viewer* permission, then shares, or says why the drive refused — and **Open
 Access Sheet** (order: Proceed, Change, Open, Cancel; added 2026-10-03).
+
+A **song** link gets the same warning and the same options, from the album
+page's track menu and from Now Playing alike (2026-10-10). Its access is its
+album's — a track is only reachable through its folder, and Addit never shows
+access per track — so the options change and open the album's, and say so:
+"This song's album has restricted access…", **Change Album to "Anyone with
+Link" and Proceed**, **Open Album's Access Sheet**. The wording lives on
+`ShareSubject`, which every `AlbumLinkShareItem` carries; Now Playing keeps the
+album the link was made from with it, since the track playing can change
+while the warning is up.
