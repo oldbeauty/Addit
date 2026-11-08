@@ -100,6 +100,10 @@ struct FolderWatchPanel: View {
     /// Between the bar and whatever's under it: the screen's bottom, or the
     /// mini player.
     private static let barGap: CGFloat = 8
+    /// The top of the bar's capsule and the bottom of the pager, on screen:
+    /// between them is the room each list leaves for the bar (`barRoom`).
+    @State private var barTop: CGFloat = 0
+    @State private var pagerBottom: CGFloat = 0
 
     /// When tracking was last open before this visit. Anything newer keeps
     /// its dot until it closes, though opening it cleared the button's
@@ -117,30 +121,54 @@ struct FolderWatchPanel: View {
 
     var body: some View {
         let albumsByFolder = libraryAlbums()
-        // Two pages a swipe apart, switched by the bar below as well: a
-        // paging view rather than the system tab bar, which can't page, won't
+        // Two pages a swipe apart, switched by the bar below as well — a
+        // paging scroll view, not the system tab bar, which can't page, won't
         // drop its glass selection blob, and has no rounded triangle to draw.
-        TabView(selection: $pane) {
-            paneList {
-                paneTitle("Activity") { CheckedReadout() }
-                failureNotice
-                activity(albumsByFolder: albumsByFolder)
+        //
+        // Nor a paging `TabView`, which this was. That one is UIKit inside,
+        // and it clipped its pages to the safe area at both ends: a band
+        // under the bar and the home indicator that nothing scrolled through,
+        // and another under the navigation bar, where the library's lists run
+        // on up under the top fade (2026-10-12). A SwiftUI scroll view lays
+        // its pages out like any other content — checked in the simulator,
+        // in a navigation stack, against the `TabView` it replaces.
+        ScrollView(.horizontal) {
+            HStack(spacing: 0) {
+                paneList {
+                    paneTitle("Activity") { CheckedReadout() }
+                    failureNotice
+                    activity(albumsByFolder: albumsByFolder)
+                }
+                .containerRelativeFrame(.horizontal)
+                .id(TrackingPane.activity)
+                paneList {
+                    paneTitle("Tracked") { EmptyView() }
+                    failureNotice
+                    tracked(libraryCount: albumsByFolder.count)
+                }
+                .containerRelativeFrame(.horizontal)
+                .id(TrackingPane.tracked)
             }
-            .tag(TrackingPane.activity)
-            paneList {
-                paneTitle("Tracked") { EmptyView() }
-                failureNotice
-                tracked(libraryCount: albumsByFolder.count)
-            }
-            .tag(TrackingPane.tracked)
+            .scrollTargetLayout()
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        // An inset rather than an overlay, so each list's last rows rest
-        // above the bar while still scrolling under its glass. With a track
-        // playing it stands on top of the mini player, as the library's +
-        // button does.
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: Binding(get: { pane }, set: { if let page = $0 { pane = page } }))
+        .scrollIndicators(.hidden)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.frame(in: .global).maxY
+        } action: { pagerBottom = $0 }
+        // Down to the screen's edge, under the bar, so the lists run on
+        // behind its glass. The room the bar takes is the lists' to leave
+        // (`barRoom`).
+        .ignoresSafeArea(.container, edges: .bottom)
+        // Still placed as an inset: above the home indicator, and with a
+        // track playing on top of the mini player, as the library's + button
+        // is.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             TrackingPaneBar(selection: pane) { switchByTap(to: $0) }
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .global).minY
+                } action: { barTop = $0 }
                 .padding(.bottom, isMiniPlayerShowing
                          ? NowPlayingPill.overlayHeight + Self.barGap : Self.barGap)
         }
@@ -208,12 +236,19 @@ struct FolderWatchPanel: View {
     }
 
     /// A pane: a list on the page itself, no scroll bar, pull to check now.
+    /// Its last rows rest above the bar, and scroll on under it.
     private func paneList<Rows: View>(@ViewBuilder _ rows: () -> Rows) -> some View {
         List { rows() }
             .scrollIndicators(.hidden)
+            .contentMargins(.bottom, barRoom, for: .scrollContent)
             .appBackground()
             .refreshable { await folderWatch.checkNow(library: library()) }
     }
+
+    /// The bar's capsule to the bottom of the screen — the home indicator,
+    /// the gap and any mini player included, since the pager ignores the
+    /// safe area that used to hold them.
+    private var barRoom: CGFloat { max(0, pagerBottom - barTop) }
 
     /// A pane's large title, on the list's own row insets so it starts where
     /// the rows do, with anything that belongs beside it.

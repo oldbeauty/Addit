@@ -24,17 +24,27 @@ last on 2026-10-10 at the user's ask, by the push. "Opened" is the screen
 appearing, which includes coming back to it from an album.
 
 Inside, two panes — **Activity** and **Tracked** — a swipe apart (a paging
-`TabView`) and switched as well by a floating Liquid Glass capsule at the
+horizontal `ScrollView`) and switched as well by a floating Liquid Glass capsule at the
 bottom (`TrackingPaneBar`): a hollow rounded triangle for Activity, a hollow
 rounded square for Tracked, white for the pane on screen and grey for the
 other, no labels and no selection blob — all asked for (2026-10-10), and all
 things the system tab bar can't do, which it briefly was. A tap that changes
 pane pops a haptic; a swipe doesn't (`tapSwitches` is the trigger, not the
 selection). Each pane is its own list with its own large title (Activity's
-carries the last-checked readout) and its own pull to check. The bar is a
-bottom safe-area inset, so lists rest above it and scroll under its glass;
-with a track playing it stands `NowPlayingPill.overlayHeight` up, on top of
-the mini player, as the library's + button does. Activity is the left page,
+carries the last-checked readout) and its own pull to check. The bar is placed
+as a bottom safe-area inset — above the home indicator, and with a track
+playing `NowPlayingPill.overlayHeight` up, on top of the mini player, as the
+library's + button is — but the pager ignores the bottom safe area and runs to
+the screen's edge, and each list leaves the bar's room itself (`barRoom`, the
+capsule's top to the pager's bottom, as a bottom content margin): its last rows
+rest above the bar and everything scrolls on under the glass, top to bottom,
+as in the library. **The pager is a SwiftUI `ScrollView`, never a paging
+`TabView`.** That one is UIKit inside and clipped its pages to the safe area at
+both ends — a band under the bar and the home indicator, another under the
+navigation bar — and no `ignoresSafeArea` on it or its lists fully undid that
+in a navigation stack (three tries, 2026-10-10 to 10-12; a simulator probe of
+pagers in a stack showed it, and that outside one the `TabView` looks fine).
+Activity is the left page,
 so a drag from the screen's left edge there would bounce the pager instead of
 going back: `FlatSlideCoordinator` makes any sideways scroller wait for its
 edge swipe to fail (`shouldBeRequiredToFailBy`). Checked in the simulator:
