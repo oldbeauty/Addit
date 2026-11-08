@@ -178,6 +178,58 @@ extension LibraryView {
         try? modelContext.save()
     }
 
+    // MARK: - Disband
+
+    /// The open folder put away and its albums set loose in the library, in
+    /// the folder's own place and in its order. It closes into its tile
+    /// first, so what it shrinks into is still there; then the tile gives way
+    /// to its albums and the grid after it makes room.
+    func disbandOpenFolder() {
+        guard let folderID = arranger.openFolderID, !arranger.isBusy else { return }
+        closeFolder()
+        disband(folderID, after: FolderMotion.closeTotal + 0.05, tries: 5)
+    }
+
+    /// Once the layer is down — the close ends on its spring's completion,
+    /// which can run a little behind the clock.
+    private func disband(_ folderID: String, after delay: TimeInterval, tries: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            if arranger.openFolderID == folderID {
+                if tries > 0 { disband(folderID, after: 0.1, tries: tries - 1) }
+                return
+            }
+            guard arranger.openFolderID == nil, !arranger.isBusy,
+                  let folder = folders.first(where: { $0.folderID == folderID }) else { return }
+            let arrangement = libraryArrangement()
+            arranger.colorSortUndo = nil
+            withAnimation(.snappy(duration: 0.35)) {
+                var slot = 0
+                for item in arrangement.items {
+                    switch item {
+                    case .album(let album):
+                        album.displayOrder = slot
+                        slot += 1
+                    case .folder(let other) where other.folderID == folderID:
+                        for album in arrangement.contents[folderID] ?? [] {
+                            album.libraryFolderID = nil
+                            album.displayOrder = slot
+                            slot += 1
+                        }
+                    case .folder(let other):
+                        other.displayOrder = slot
+                        // Foldered albums sit where their folder sits.
+                        for album in arrangement.contents[other.folderID] ?? [] {
+                            album.displayOrder = slot
+                        }
+                        slot += 1
+                    }
+                }
+                modelContext.delete(folder)
+            }
+            try? modelContext.save()
+        }
+    }
+
     /// A closure that writes back, exactly, every order value `sortByColor` is
     /// about to overwrite: one folder's `libraryFolderOrder`s, or the top
     /// level's `displayOrder`s — pinned folders, loose albums, and the albums
@@ -208,7 +260,7 @@ extension LibraryView {
     /// Covers come through the art service's thumbnail path at a small size —
     /// the same files the grid already decoded, so normally no network — and
     /// are measured together off the main thread.
-    private func coverTones(for albums: [Album]) async -> [CoverTone?] {
+    func coverTones(for albums: [Album]) async -> [CoverTone?] {
         var images: [UIImage?] = []
         images.reserveCapacity(albums.count)
         for album in albums {
@@ -241,11 +293,15 @@ extension LibraryView {
             watchesLongHold: !arranger.isArranging,
             shouldBegin: { point in
                 // Only a card can be held; anything else is the scroll view's.
+                // And not out of a folder on its way back into its tile: the
+                // layer comes down as it lands, recognizer and all, with the
+                // card still in hand.
                 arranger.isArranging && !arranger.isBusy
+                    && (zone == .grid || (arranger.isFolderExpanded && arranger.areFolderLabelsShown))
                     && arranger.hasCard(at: point, in: zone, count: count)
             },
             onLongHold: { startArrangingFromHold() },
-            onBegan: { point in pickUp(at: point, in: zone) },
+            onBegan: { point, recognizer in pickUp(at: point, in: zone, carriedBy: recognizer) },
             onChanged: { point in arranger.drag(to: point) },
             onEnded: { cancelled in arranger.drop(cancelled: cancelled) }
         )
@@ -257,7 +313,7 @@ extension LibraryView {
             watchesLongHold: !arranger.isArranging,
             shouldBegin: { _ in false },
             onLongHold: { startArrangingFromHold() },
-            onBegan: { _ in },
+            onBegan: { _, _ in },
             onChanged: { _ in },
             onEnded: { _ in }
         )
@@ -272,7 +328,7 @@ extension LibraryView {
         beginArranging()
     }
 
-    private func pickUp(at point: CGPoint, in zone: LibraryDragZone) {
+    private func pickUp(at point: CGPoint, in zone: LibraryDragZone, carriedBy recognizer: UIGestureRecognizer) {
         // What a new folder would be called and where it would live, decided
         // now, while this view's state is the current state.
         let name = nextFolderName()
@@ -281,6 +337,7 @@ extension LibraryView {
         arranger.pickUp(
             at: point,
             in: zone,
+            carriedBy: recognizer,
             arrangement: libraryArrangement(),
             context: modelContext,
             makeFolder: {
@@ -339,7 +396,8 @@ extension LibraryView {
                 albums: albums,
                 coverSize: coverSize,
                 row: row,
-                tileHidden: isTileLifted(folder)
+                tileHidden: isTileLifted(folder),
+                arriving: arranger.arrivingAlbums
             )
         }
         .buttonStyle(ImprintButtonStyle())
@@ -355,13 +413,38 @@ extension LibraryView {
         }
     }
 
+    /// A cover on the canvas: opens its album as a grid card does, with the
+    /// same menu, but no label and nothing to arrange. The canvas sorts
+    /// itself; Arrange in the menu takes you to the grid to do it there.
+    func canvasCell(_ album: Album, coverSize: CGFloat) -> some View {
+        Button {
+            libraryPath.append(.album(album))
+        } label: {
+            AlbumArtworkThumbnail(album: album, size: coverSize)
+        }
+        .buttonStyle(ImprintButtonStyle())
+        .contentShape(.contextMenuPreview, RoundedRectangle(
+            cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius, style: .continuous
+        ))
+        .contextMenu { albumMenu(album) }
+        .accessibilityLabel(album.name)
+    }
+
+    /// Cover and text, nothing else: no chevron, no separator. A `Button`
+    /// pushing the route, as a grid card's does. It was a
+    /// `NavigationLink(value: album)`, which drew the chevron and, once the
+    /// path became `LibraryRoute`s (build 12), matched no destination, so a
+    /// tap on a row did nothing.
     func albumRow(_ album: Album) -> some View {
-        NavigationLink(value: album) {
+        Button {
+            libraryPath.append(.album(album))
+        } label: {
             HStack(spacing: 12) {
                 AlbumArtworkThumbnail(album: album, size: 48)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(album.name)
                         .font(.uiBody.weight(.medium))
+                        .foregroundStyle(.primary)
                         .fadingTruncation()
                     Text(album.artistName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? album.artistName! : "Unknown Artist")
                         .font(.uiCaption)
@@ -369,9 +452,11 @@ extension LibraryView {
                         .fadingTruncation()
                 }
             }
+            .contentShape(Rectangle())
         }
         .contextMenu { albumMenu(album) }
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     func folderRow(_ folder: LibraryFolder, albums: [Album]) -> some View {
@@ -402,11 +487,15 @@ extension LibraryView {
         }
         .contextMenu { folderMenu(folder) }
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder
     func albumMenu(_ album: Album) -> some View {
         Button {
+            // Here, not in `openForEditing`, which creating and importing
+            // call too — only a tap on Edit pops.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             openForEditing(album)
         } label: {
             Label("Edit", systemImage: "pencil")
@@ -455,7 +544,7 @@ extension LibraryView {
     /// Shrinks the open folder back into its tile, and only then takes the
     /// layer down — at which point it exactly covers the tile it hands back to.
     func closeFolder() {
-        guard arranger.isFolderExpanded, !arranger.isBusy else { return }
+        guard arranger.isFolderExpanded, arranger.areFolderLabelsShown, !arranger.isBusy else { return }
         let arranger = arranger
         // The covers fly home from the panel's first row; a scrolled panel
         // is brought back to it as it goes.
@@ -463,13 +552,21 @@ extension LibraryView {
             let top = CGPoint(x: 0, y: -scrollView.adjustedContentInset.top)
             if scrollView.contentOffset != top { scrollView.setContentOffset(top, animated: true) }
         }
-        MotionShine.shared.isHeld = true
-        withAnimation(FolderMotion.close) {
-            arranger.isFolderExpanded = false
-        } completion: {
-            guard !arranger.isFolderExpanded else { return }
-            arranger.openFolderID = nil
-            MotionShine.shared.isHeld = false
+        // The titles and artists fade first, and the folder follows: the
+        // panel they're on vanishes as soon as the spring starts, so a fade
+        // begun alongside it would never be seen. A panel only lifts cards
+        // while its labels show, so nothing can be picked up meanwhile.
+        withAnimation(FolderMotion.labelsOut) { arranger.areFolderLabelsShown = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + FolderMotion.labelsOutLead) {
+            guard arranger.isFolderExpanded, !arranger.isBusy else { return }
+            MotionShine.shared.isHeld = true
+            withAnimation(FolderMotion.close) {
+                arranger.isFolderExpanded = false
+            } completion: {
+                guard !arranger.isFolderExpanded else { return }
+                arranger.openFolderID = nil
+                MotionShine.shared.isHeld = false
+            }
         }
     }
 
@@ -485,7 +582,7 @@ extension LibraryView {
     /// arithmetic, like every slot in it; the list's is measured. Nil when the
     /// tile isn't on screen.
     func folderTileFrame(_ folderID: String, in arrangement: LibraryArrangement) -> CGRect? {
-        if isListMode && !arranger.isArranging {
+        if layout == .list && !arranger.isArranging {
             return arranger.rowTileFrames[folderID]
         }
         guard searchText.isEmpty,
@@ -507,27 +604,16 @@ extension LibraryView {
         showFolderRename = true
     }
 
-    private static let folderMargin: CGFloat = 20
-    private static let folderPadding: CGFloat = 20
-    private static let folderGutter: CGFloat = 20
-    /// Between rows of cards in an open folder, whose labels always show.
-    private static let folderRowSpacing: CGFloat = 16
-    private static let minFolderCover: CGFloat = 130
-
-    /// Columns for an open folder's grid, the library's rule at a folder's
-    /// width: as many covers as fit at `minFolderCover`, never fewer than two.
-    private func folderGridLayout(for width: CGFloat) -> (columns: [GridItem], coverSize: CGFloat) {
-        let gutter = Self.folderGutter
-        // Zero on the pass that builds the reader; see `gridLayout(for:)`.
-        guard width > 0 else {
-            let column = GridItem(.fixed(Self.minFolderCover), spacing: gutter)
-            return ([column, column], Self.minFolderCover)
-        }
-        let count = max(2, Int((width + gutter) / (Self.minFolderCover + gutter)))
-        let cover = max(1, (width - CGFloat(count - 1) * gutter) / CGFloat(count))
-        let column = GridItem(.fixed(cover), spacing: gutter)
-        return (Array(repeating: column, count: count), cover)
-    }
+    // An open folder is laid out as the library is: the screen's width, the
+    // library's columns and cover size (`gridLayout(for:)`), and its gutter
+    // at the edges, between covers and between rows — so a cover is the same
+    // size, the same distance from its neighbours, open in a folder as out of
+    // one. It sat on a glass plate inset 20pt from the edges, with gaps of its
+    // own, until the plate came off (2026-10-12). Rows here always show their
+    // labels, so a row's gap is the gutter below its label.
+    private static let folderPadding = LibraryView.gridGutter
+    private static let folderGutter = LibraryView.gridGutter
+    private static let folderRowSpacing = LibraryView.gridGutter
 
     @ViewBuilder
     func folderOverlay(_ arrangement: LibraryArrangement) -> some View {
@@ -554,14 +640,20 @@ extension LibraryView {
         GeometryReader { geo in
             // Floored: the reader's first pass is at zero, and the zoom
             // divides by the panel's width.
-            let panelWidth = max(1, min(geo.size.width - 2 * Self.folderMargin, 560))
-            let layout = folderGridLayout(for: panelWidth - 2 * Self.folderPadding)
+            let panelWidth = max(1, geo.size.width)
+            let layout = gridLayout(for: panelWidth)
             let columns = layout.columns.count
             let rows = max(1, (albums.count + columns - 1) / columns)
             let contentHeight = CGFloat(rows) * (layout.coverSize + AlbumCard.labelBlock)
                 + CGFloat(rows - 1) * Self.folderRowSpacing
                 + 2 * Self.folderPadding
             let panelHeight = max(1, min(contentHeight, geo.size.height * 0.62))
+            // Placed as a panel that tall would be, centred, but running on
+            // down to the screen's foot (2026-10-28, at the user's ask): no
+            // edge to cut the covers off at the bottom. The top is the one a
+            // cover is dragged past to leave the folder, so that edge stays.
+            let panelTop = (geo.size.height - panelHeight) / 2
+            let panelReach = max(1, geo.size.height + geo.safeAreaInsets.bottom - panelTop)
             // The zoom works in the reader's own space; the tile arrives in
             // the arranger's.
             let origin = geo.frame(in: LibraryArranger.coordinateSpace).origin
@@ -570,9 +662,9 @@ extension LibraryView {
                 tile: tile?.offsetBy(dx: -origin.x, dy: -origin.y),
                 panelFrame: CGRect(
                     x: (geo.size.width - panelWidth) / 2,
-                    y: (geo.size.height - panelHeight) / 2,
+                    y: panelTop,
                     width: panelWidth,
-                    height: panelHeight
+                    height: panelReach
                 ),
                 panelGrid: LibraryGridGeometry(
                     origin: CGPoint(x: Self.folderPadding, y: Self.folderPadding),
@@ -598,6 +690,19 @@ extension LibraryView {
                         arranger.panel.origin = origin
                     }
                     .padding(Self.folderPadding)
+                    // Room at the foot to scroll the last row clear of the
+                    // home indicator.
+                    .padding(.bottom, geo.safeAreaInsets.bottom)
+                    // The panel's empty reach under its covers is the library
+                    // as far as a tap goes: one there closes the folder, as one
+                    // on the blurred library does. Without this the scroll view
+                    // took it, and a short folder had no way out underneath.
+                    .frame(minHeight: panelReach, alignment: .top)
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: closeFolder)
+                    }
                     .background(alignment: .topLeading) {
                         EnclosingScrollViewReader { arranger.panelScrollView = $0 }
                             .frame(width: 1, height: 1)

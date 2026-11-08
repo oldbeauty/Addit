@@ -38,6 +38,10 @@ enum FolderSource: String, CaseIterable {
 }
 
 struct AddAlbumView: View {
+    /// An album added on its own, just before the sheet closes — so the
+    /// library can take you to it. Not called for a batch.
+    let onAddAlbum: (Album) -> Void
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudServiceRouter.self) private var cloudRouter
@@ -144,7 +148,10 @@ struct AddAlbumView: View {
                 storageSource: authService.activeProvider.storageSource
             )
             Task { await importer.finishImport(of: album, audioFiles: audioFiles) }
-            if thenDismiss { addedSuccessfully = true }
+            if thenDismiss {
+                onAddAlbum(album)
+                addedSuccessfully = true
+            }
         } catch {
             saveError = error.localizedDescription
         }

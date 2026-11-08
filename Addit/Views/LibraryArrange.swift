@@ -59,14 +59,14 @@ struct LibraryGridGeometry {
     var cover: CGFloat = 150
     var columnSpacing: CGFloat = 30
     var rowSpacing: CGFloat = 16
-    /// Labels only on the rows scrolled up to the line, as the library's own
-    /// grid draws them. Off — an open folder — every row is labelled.
+    /// Labels that come and go with the scroll, as the library's own grid
+    /// draws them. Off — an open folder — every row is labelled.
     var revealsLabels = false
-    /// How far the grid is scrolled from rest, which `revealsLabels` rows are
+    /// The labels as scrolling has left them, which `revealsLabels` rows are
     /// placed by. A copy kept here, unobserved, rather than a read of the
     /// cards' `LibraryLabelReveal`: `LibraryView.body` asks where a folder's
     /// tile is, and must never come to depend on the scroll.
-    var scrolled: CGFloat = 0
+    var labels = LibraryLabelState()
 
     private var columnPitch: CGFloat { cover + columnSpacing }
     /// The most a row can take up, cover top to cover top: label showing.
@@ -75,14 +75,14 @@ struct LibraryGridGeometry {
     /// Where row `row`'s covers start, below `origin`.
     private func rowTop(_ row: Int) -> CGFloat {
         guard revealsLabels else { return CGFloat(row) * tallestPitch }
-        return LibraryLabelLine(cover: cover, gap: rowSpacing).rowTop(row, scrolled: scrolled)
+        return LibraryLabelLine(cover: cover, gap: rowSpacing).rowTop(row, labels)
     }
 
     /// How much label hangs under row `row`'s covers.
     private func labelHeight(_ row: Int) -> CGFloat {
         guard revealsLabels else { return AlbumCard.labelBlock }
         return AlbumCard.labelBlock
-            * LibraryLabelLine(cover: cover, gap: rowSpacing).progress(row: row, scrolled: scrolled)
+            * LibraryLabelLine(cover: cover, gap: rowSpacing).progress(row: row, labels)
     }
 
     /// The card under `point`, if any. Gutters hit nothing, so a hold between
@@ -189,6 +189,9 @@ final class LibraryArranger {
     /// the cover as a merge is aimed, it hid both, and nothing said a folder
     /// was coming until one appeared.
     private static let mergeScale: CGFloat = 0.8
+    /// Into a folder: a soft spring, the way the Home Screen's icons drift in,
+    /// where a card going home snaps.
+    static let settle: Animation = .spring(duration: 0.42, bounce: 0.08)
     /// A pause, for the dwell: the finger staying within this of where it was.
     private static let pauseSlop: CGFloat = 8
 
@@ -215,6 +218,10 @@ final class LibraryArranger {
     /// `LibraryView.body` keyed on it would re-run the library on the
     /// spring's first frame. False whenever `openFolderID` is nil.
     var isFolderExpanded = false
+    /// The open folder's titles and artists are showing: in as it opens, out
+    /// just before it closes (`FolderMotion.labelsIn`, `closeFolder`). Read by
+    /// `FolderZoom` alone, like the spring.
+    var areFolderLabelsShown = false
     /// The open folder has faded because its album was dragged out, but stays
     /// in the hierarchy until the drop: the recognizer carrying the drag is
     /// attached to it, and removing the view would cancel the drag.
@@ -222,6 +229,18 @@ final class LibraryArranger {
     var draggedItem: LibraryItemID?
     var mergeTarget: LibraryItemID?
     var lifted: LiftedCard?
+    /// A new folder's first album, settling into its tile beside the card in
+    /// hand, from the drop to the landing.
+    var settling: SettlingCover?
+
+    /// Albums whose covers in a folder's tile wait unseen for the card
+    /// settling onto them (`drop`): the one in hand, and a new folder's first.
+    var arrivingAlbums: Set<PersistentIdentifier> {
+        var ids: Set<PersistentIdentifier> = []
+        if case .album(let id)? = draggedItem { ids.insert(id) }
+        if let settling { ids.insert(settling.album.persistentModelID) }
+        return ids
+    }
     /// "Sort by Color" is reading covers. Nothing may be picked up, opened or
     /// closed meanwhile — it's about to renumber everything on screen.
     var isSortingByColor = false
@@ -244,17 +263,21 @@ final class LibraryArranger {
     @ObservationIgnored weak var gridScrollView: UIScrollView?
     @ObservationIgnored weak var panelScrollView: UIScrollView?
     @ObservationIgnored private var session: DragSession?
-    @ObservationIgnored private var isSettling = false
+    /// The drop whose card is still flying home, if one is (`land`).
+    @ObservationIgnored private var landing: UUID?
     @ObservationIgnored private var dwellTask: Task<Void, Never>?
     /// Where the finger was when the current dwell started. Moving further
     /// than `pauseSlop` from it starts the dwell over.
     @ObservationIgnored private var dwellAnchor: CGPoint = .zero
     @ObservationIgnored private var leaveTask: Task<Void, Never>?
     @ObservationIgnored private var autoscroll: FrameTicker?
+    /// When the recognizer carrying the card was first seen carrying nothing
+    /// (`putDownIfAbandoned`).
+    @ObservationIgnored private var uncarriedSince: CFTimeInterval?
 
     /// A card is in hand or still flying home, or a colour sort is under way.
     /// Nothing else may start then.
-    var isBusy: Bool { session != nil || isSettling || isSortingByColor }
+    var isBusy: Bool { session != nil || landing != nil || isSortingByColor }
 
     func hasCard(at point: CGPoint, in zone: LibraryDragZone, count: Int) -> Bool {
         geometry(for: zone).itemIndex(at: point, count: count) != nil
@@ -269,6 +292,7 @@ final class LibraryArranger {
     func pickUp(
         at point: CGPoint,
         in zone: LibraryDragZone,
+        carriedBy recognizer: UIGestureRecognizer,
         arrangement: LibraryArrangement,
         context: ModelContext,
         makeFolder: @escaping () -> LibraryFolder
@@ -308,6 +332,7 @@ final class LibraryArranger {
         let session = DragSession(
             item: card.id,
             zone: zone,
+            recognizer: recognizer,
             grabOffset: CGSize(width: center.x - point.x, height: center.y - point.y),
             finger: point,
             gridOrder: arrangement.items.map(\.id),
@@ -325,6 +350,7 @@ final class LibraryArranger {
         session.writeFolderOrder(session.panelOrder)
         self.session = session
         dwellAnchor = point
+        uncarriedSince = nil
 
         liftPoint = center
         lifted = LiftedCard(item: card, contents: contents, size: geometry.cover)
@@ -487,17 +513,71 @@ final class LibraryArranger {
         }
         guard var session else { return }
         self.session = nil
-        isSettling = true
+        let flight = UUID()
+        landing = flight
 
         let destination: CGPoint
-        var absorbed = false
+        var endScale: CGFloat = 1
+        var endOpacity: Double = 1
         var createdFolderID: String?
+        var merged: (folder: LibraryItemID, slot: Int)?
 
-        if !cancelled, session.zone == .grid, let target = mergeTarget,
-           let landing = merge(into: target, session: &session, createdFolderID: &createdFolderID) {
-            withAnimation(Self.reflow) { session.writeGridOrder() }
-            destination = grid.coverCenter(of: session.gridOrder.firstIndex(of: landing) ?? 0)
-            absorbed = true
+        let target = !cancelled && session.zone == .grid ? mergeTarget : nil
+        // Where the target's cover is now, before the merge takes its slot.
+        let targetCenter = target.flatMap { session.gridOrder.firstIndex(of: $0) }.map { grid.coverCenter(of: $0) }
+        if let target {
+            // A new folder takes the target's place at once: its first album
+            // is drawn from that very place (`settling`), and a target faded
+            // out there would be a second copy of it left behind.
+            merged = formFolder(around: target, session: &session, createdFolderID: &createdFolderID)
+            if merged != nil { session.writeGridOrder() }
+        }
+
+        if let merged, case .folder(let folderID) = merged.folder {
+            // Into the folder as on the Home Screen: onto the very cover it
+            // becomes in the tile, at that cover's size, which waits unseen
+            // until it lands (`arrivingAlbums`), so the handover is the same
+            // picture in the same place. It shrank to a third at the tile's
+            // middle and faded, and the tile already showed it: a snap. Past
+            // the tile's four there's no cover to become, so into the tile.
+            // Aimed at where the folder stands once the hole has closed.
+            let item = session.item
+            let settledOrder = session.gridOrder.filter { $0 != item }
+            let center = grid.coverCenter(of: settledOrder.firstIndex(of: merged.folder) ?? 0)
+            let corner = CGPoint(x: center.x - grid.cover / 2, y: center.y - grid.cover / 2)
+            if merged.slot < FolderTile.capacity {
+                let mini = FolderTile.miniFrame(merged.slot, size: grid.cover)
+                destination = CGPoint(x: corner.x + mini.midX, y: corner.y + mini.midY)
+                endScale = mini.width / (lifted?.size ?? grid.cover)
+            } else {
+                destination = center
+                endScale = 0.35
+                endOpacity = 0
+            }
+            // A new folder's first album draws back from where it stood into
+            // its own corner, the plate that formed behind it thinning away.
+            if createdFolderID != nil, case .album(let id)? = target,
+               let album = session.albums[id], let targetCenter {
+                let mini = FolderTile.miniFrame(0, size: grid.cover)
+                settling = SettlingCover(
+                    album: album,
+                    size: grid.cover,
+                    from: targetCenter,
+                    to: CGPoint(x: corner.x + mini.midX, y: corner.y + mini.midY),
+                    fromScale: ArrangeChrome.drawBack,
+                    toScale: mini.width / grid.cover,
+                    plateTo: center
+                )
+            }
+            // The album goes in, and its hole closes, a turn later on the
+            // card's own spring, so the covers after it drift up into the
+            // gap as it settles. In the update that made the folder, which
+            // mustn't animate, the hole shut with it, at once.
+            var admitting = session
+            DispatchQueue.main.async {
+                withAnimation(Self.settle) { Self.admit(&admitting, into: folderID) }
+                try? admitting.context.save()
+            }
         } else {
             switch session.zone {
             case .grid:
@@ -512,48 +592,68 @@ final class LibraryArranger {
 
         // Home: over the hole, at rest size, so the lifted copy and the cell it
         // came from are the same picture at the moment one replaces the other.
-        // Into a folder: shrink away inside the tile.
+        // Either way the lift's shadow thins as it comes down, rather than
+        // going at the swap.
         let closesFolder = folderHiddenForDrag
         let newFolderID = createdFolderID
-        withAnimation(.snappy(duration: 0.3)) {
+        withAnimation(merged != nil ? Self.settle : .snappy(duration: 0.3)) {
             liftPoint = destination
-            lifted?.scale = absorbed ? 0.35 : 1
-            lifted?.opacity = absorbed ? 0 : 1
+            lifted?.scale = endScale
+            lifted?.opacity = endOpacity
+            lifted?.shadow = 0
             mergeTarget = nil
         } completion: { [weak self] in
-            guard let self else { return }
-            draggedItem = nil
-            lifted = nil
-            isSettling = false
-            if closesFolder {
-                openFolderID = nil
-                isFolderExpanded = false
-                folderHiddenForDrag = false
-            }
-            // A new folder opens on arrival, as on the Home Screen — the name
-            // is right there to change. It grows out of the tile the card just
-            // shrank into.
-            if let newFolderID { openFolderID = newFolderID }
+            self?.land(flight, closesFolder: closesFolder, newFolderID: newFolderID)
+        }
+        // What lands the card is that completion, and it's SwiftUI's to call.
+        // If it never does, `landing` never clears, and `isBusy` with it: the
+        // screen looks as it always does, every card jiggling and the card
+        // already home, but none will lift and Done does nothing. That's how
+        // a tester described being stuck on build 12 — no card left floating,
+        // which a lost drag would have left (`putDownIfAbandoned`). So the
+        // landing has a deadline too, well past the animation's length.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.land(flight, closesFolder: closesFolder, newFolderID: newFolderID)
         }
     }
 
-    /// Drop the dragged album onto `target`: into it if it's a folder, into a
-    /// new folder with it if it's an album. Returns what the card should fly
-    /// into, or nil if the merge can't happen and this is an ordinary drop.
-    private func merge(
-        into target: LibraryItemID,
+    /// The card in hand is home: the real one takes its place again. Run by
+    /// the landing animation's completion or its deadline, whichever comes
+    /// first, and only for the drop it belongs to — so the later of the two
+    /// can't reopen a folder since closed, or land a drop since begun.
+    private func land(_ flight: UUID, closesFolder: Bool, newFolderID: String?) {
+        guard landing == flight else { return }
+        landing = nil
+        draggedItem = nil
+        lifted = nil
+        settling = nil
+        if closesFolder {
+            openFolderID = nil
+            isFolderExpanded = false
+            areFolderLabelsShown = false
+            folderHiddenForDrag = false
+        }
+        // A new folder opens on arrival, as on the Home Screen — the name
+        // is right there to change. It grows out of the tile the card just
+        // shrank into.
+        if let newFolderID { openFolderID = newFolderID }
+    }
+
+    /// The first half of dropping the dragged album onto `target`, made at
+    /// once: an album target becomes a new folder in its own place, holding
+    /// it; a folder target is as it is. Returns the folder the card flies
+    /// into and the place the album will take in it, or nil if the merge
+    /// can't happen and this is an ordinary drop. `admit` is the other half.
+    private func formFolder(
+        around target: LibraryItemID,
         session: inout DragSession,
         createdFolderID: inout String?
-    ) -> LibraryItemID? {
-        guard case .album(let draggedID) = session.item, let dragged = session.albums[draggedID] else { return nil }
-        let draggedItem = session.item
+    ) -> (folder: LibraryItemID, slot: Int)? {
+        guard case .album(let draggedID) = session.item, session.albums[draggedID] != nil else { return nil }
         switch target {
         case .folder(let folderID):
-            let count = session.albums.values.filter { $0.libraryFolderID == folderID }.count
-            dragged.libraryFolderID = folderID
-            dragged.libraryFolderOrder = count
-            session.gridOrder.removeAll { $0 == draggedItem }
-            return target
+            return (target, session.albums.values.filter { $0.libraryFolderID == folderID }.count)
         case .album(let targetID):
             guard let targetAlbum = session.albums[targetID],
                   let slot = session.gridOrder.firstIndex(of: target) else { return nil }
@@ -562,14 +662,25 @@ final class LibraryArranger {
             session.folders[folder.folderID] = folder
             targetAlbum.libraryFolderID = folder.folderID
             targetAlbum.libraryFolderOrder = 0
-            dragged.libraryFolderID = folder.folderID
-            dragged.libraryFolderOrder = 1
-            // The folder takes the target's place; the dragged album's hole closes.
             session.gridOrder[slot] = .folder(folder.folderID)
-            session.gridOrder.removeAll { $0 == draggedItem }
             createdFolderID = folder.folderID
-            return .folder(folder.folderID)
+            return (.folder(folder.folderID), 1)
         }
+    }
+
+    /// The second half, animated: the dragged album into `folderID`, last,
+    /// and the hole it left in the grid closed.
+    private static func admit(_ session: inout DragSession, into folderID: String) {
+        guard case .album(let draggedID) = session.item, let dragged = session.albums[draggedID] else { return }
+        let inside = session.albums.values.filter { $0.libraryFolderID == folderID }
+        dragged.libraryFolderID = folderID
+        // Last, as on the Home Screen: after the highest order there, which
+        // isn't always the count — orders can have gaps, and the count could
+        // put it among them, short of the cover it flies to.
+        dragged.libraryFolderOrder = (inside.map(\.libraryFolderOrder).max() ?? -1) + 1
+        let item = session.item
+        session.gridOrder.removeAll { $0 == item }
+        session.writeGridOrder()
     }
 
     // MARK: Auto-scroll
@@ -590,12 +701,40 @@ final class LibraryArranger {
     private func startAutoscroll() {
         autoscroll?.stop()
         let ticker = FrameTicker { [weak self] elapsed in
-            guard let self, self.session != nil else { return false }
+            guard let self, self.session != nil, !self.putDownIfAbandoned() else { return false }
             self.autoscrollStep(elapsed)
             return true
         }
         autoscroll = ticker
         ticker.start()
+    }
+
+    /// A drag never outlives the touch carrying it. The recognizer's end is
+    /// what drops the card, and nothing else does: if that end is lost — the
+    /// view it's attached to taken down with the card in hand, say — the
+    /// session stays open, and with it `isBusy`. Every card then refuses to
+    /// lift and Done does nothing, with the card left floating where the
+    /// finger let go. So each frame of a drag, on the auto-scroll's clock,
+    /// also asks the recognizer itself. One that has carried nothing — gone,
+    /// or back to waiting for a touch — for longer than an end takes to
+    /// arrive lands the card in its hole, as a cancelled drag would. True if
+    /// it did.
+    private func putDownIfAbandoned() -> Bool {
+        switch session?.recognizer?.state {
+        case .began?, .changed?:
+            uncarriedSince = nil
+            return false
+        default:
+            let now = CACurrentMediaTime()
+            guard let since = uncarriedSince else {
+                uncarriedSince = now
+                return false
+            }
+            guard now - since > 0.25 else { return false }
+            uncarriedSince = nil
+            drop(cancelled: true)
+            return true
+        }
     }
 
     private func autoscrollStep(_ elapsed: CFTimeInterval) {
@@ -632,7 +771,7 @@ final class LibraryArranger {
         switch session.zone {
         case .grid:
             grid.origin.y -= new - old
-            grid.scrolled += new - old
+            grid.labels.scrolled += new - old
         case .panel:
             panel.origin.y -= new - old
         }
@@ -701,6 +840,24 @@ struct LiftedCard {
     var size: CGFloat
     var scale: CGFloat = 1
     var opacity: Double = 1
+    /// How much of the lift's shadow it casts: all of it in hand, none once
+    /// it's down.
+    var shadow: Double = 1
+}
+
+/// A new folder's first album, drawn back from where it stood into its corner
+/// of the tile as the card in hand settles into the next, the plate that
+/// formed behind it (`FormingPlate`) thinning away, since a tile has none.
+/// Drawn by `LiftedItemLayer` from the drop to the landing.
+struct SettlingCover {
+    let album: Album
+    let size: CGFloat
+    let from: CGPoint
+    let to: CGPoint
+    let fromScale: CGFloat
+    let toScale: CGFloat
+    /// Where the plate gathers to: the tile's middle.
+    let plateTo: CGPoint
 }
 
 private enum DropCandidate: Equatable {
@@ -711,6 +868,8 @@ private enum DropCandidate: Equatable {
 private struct DragSession {
     let item: LibraryItemID
     var zone: LibraryDragZone
+    /// The hold carrying the card, which `putDownIfAbandoned` checks on.
+    weak var recognizer: UIGestureRecognizer?
     /// Cover centre minus the finger, so the card stays under the finger where
     /// it was picked up rather than jumping to centre itself.
     let grabOffset: CGSize
@@ -789,7 +948,8 @@ struct LibraryHoldGesture: UIGestureRecognizerRepresentable {
     var shouldBegin: (CGPoint) -> Bool
     /// A hold outlasted the context menu.
     var onLongHold: () -> Void
-    var onBegan: (CGPoint) -> Void
+    /// Where, and the recognizer that will carry the card from there.
+    var onBegan: (CGPoint, UIGestureRecognizer) -> Void
     var onChanged: (CGPoint) -> Void
     var onEnded: (_ cancelled: Bool) -> Void
 
@@ -818,7 +978,7 @@ struct LibraryHoldGesture: UIGestureRecognizerRepresentable {
     func handleUIGestureRecognizerAction(_ recognizer: HoldRecognizer, context: Context) {
         let point = context.converter.location(in: LibraryArranger.coordinateSpace)
         switch recognizer.state {
-        case .began: onBegan(point)
+        case .began: onBegan(point, recognizer)
         case .changed: onChanged(point)
         case .ended: onEnded(false)
         case .cancelled, .failed: onEnded(true)
@@ -969,7 +1129,7 @@ struct ArrangeChrome: ViewModifier {
         let isTarget = arranger.mergeTarget == id
         // An album under a hovering album draws back into a plate that grows
         // behind it: the folder, forming. A folder just swells.
-        let targetScale: CGFloat = isTarget ? (id.isFolder ? 1.08 : 0.86) : 1
+        let targetScale: CGFloat = isTarget ? (id.isFolder ? 1.08 : Self.drawBack) : 1
         content
             // About the cover's centre, not the card's: the label hangs below
             // — or, in the library's grid, mostly doesn't (`LibraryLabelLine`)
@@ -980,11 +1140,8 @@ struct ArrangeChrome: ViewModifier {
             .offset(y: (1 - targetScale) * coverSize / 2)
             .background(alignment: .top) {
                 if !id.isFolder {
-                    // Concentric with the cover, 7pt outside it.
-                    RoundedRectangle(cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius + 7, style: .continuous)
-                        .fill(Color.white.opacity(0.16))
-                        .frame(width: coverSize + 14, height: coverSize + 14)
-                        .offset(y: -7)
+                    FormingPlate(coverSize: coverSize)
+                        .offset(y: -FormingPlate.margin)
                         .scaleEffect(isTarget ? 1 : 0.8)
                         .opacity(isTarget ? 1 : 0)
                 }
@@ -1000,7 +1157,23 @@ struct ArrangeChrome: ViewModifier {
     }
 }
 
+/// The plate that grows behind an album while another is held over it: the
+/// folder, forming. Concentric with the cover, `margin` outside it.
+struct FormingPlate: View {
+    static let margin: CGFloat = 7
+    let coverSize: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius + Self.margin, style: .continuous)
+            .fill(Color.white.opacity(0.16))
+            .frame(width: coverSize + 2 * Self.margin, height: coverSize + 2 * Self.margin)
+    }
+}
+
 extension ArrangeChrome {
+    /// How far an album draws back while another is held over it to make a
+    /// folder; a new folder's first album sets off into its tile from here.
+    static let drawBack: CGFloat = 0.86
     /// How far the delete badge hangs off the cover's top-left corner.
     static let badgeOverhang: CGFloat = 9
 
@@ -1098,59 +1271,54 @@ private struct GlassDisc: UIViewRepresentable {
     func updateUIView(_ view: UIVisualEffectView, context: Context) {}
 }
 
-/// A folder's face: its first four covers, two by two, on a pale plate shaped
-/// like a cover. Two by two rather than the Home Screen's three by three: an
-/// app icon survives shrinking to a ninth of a tile, and album art — detail,
-/// type, photographs — doesn't.
+/// A folder's face: its first four covers, two by two, filling a cover's
+/// square — no plate under them. Two by two rather than the Home Screen's
+/// three by three: an app icon survives shrinking to a ninth of a tile, and
+/// album art — detail, type, photographs — doesn't.
+///
+/// It sat on a pale glass plate, with the covers inset from its rim, until
+/// 2026-10-12, when the plate came off at the user's ask: the four covers now
+/// reach the tile's edges, so their outline is exactly a cover's and a
+/// folder stands among albums at their size.
 struct FolderTile: View {
     let albums: [Album]
     let size: CGFloat
+    /// Covers waiting for the card settling onto them (`LibraryArranger
+    /// .arrivingAlbums`): shown the moment it lands, exactly under it.
+    var hidden: Set<PersistentIdentifier> = []
 
     /// A cover's, since the tile stands among covers in for one.
     static let cornerRadius: CGFloat = AlbumArtworkThumbnail.defaultCornerRadius
-    static let plateOpacity: Double = 0.09
     private static let perSide = 2
     /// How many covers a tile shows.
     static let capacity = perSide * perSide
-    /// `GlassRim`'s hairline, which the margins are measured inside of.
-    private static let rimWidth: CGFloat = 1
 
     /// Where the `index`th cover sits on a tile `size` across. Worked out
     /// rather than left to a grid, because an opening folder flies each one
     /// from exactly here to its place in the panel (`FolderZoom`).
     ///
-    /// One spacing for everything: the plate's edge to a cover, and one cover
-    /// to the next, so the covers sit on an even grid rather than a tight
-    /// cluster in a wide frame. "The edge" is the rim, which is drawn *inside*
-    /// the plate — measured from the plate's bounds instead, the margins came
-    /// out a rim's width narrower than the gaps, and the eye measures from the
-    /// line it can see. The covers take whatever's left, unrounded, so no
-    /// remainder drifts back into the margins.
+    /// Out to the tile's edges. On a tile in the grid the gap between its
+    /// covers is the library's own gutter, the same distance as between full
+    /// covers (2026-10-28, at the user's ask; it was scaled to the minis, ~7pt).
+    /// A tile too small for that — a list row's — keeps a gap scaled to it.
+    /// The covers take whatever's left, unrounded; their corners stay the
+    /// covers' own 3¼pt either way.
     static func miniFrame(_ index: Int, size: CGFloat) -> CGRect {
-        let gap = max(2, (size * 0.08).rounded())
-        let inset = rimWidth + gap
-        let mini = (size - gap * CGFloat(perSide + 1) - rimWidth * 2) / CGFloat(perSide)
+        let gap = size >= 100 ? LibraryView.gridGutter : max(2, (size * 0.04).rounded())
+        let mini = (size - gap * CGFloat(perSide - 1)) / CGFloat(perSide)
         return CGRect(
-            x: inset + CGFloat(index % perSide) * (mini + gap),
-            y: inset + CGFloat(index / perSide) * (mini + gap),
+            x: CGFloat(index % perSide) * (mini + gap),
+            y: CGFloat(index / perSide) * (mini + gap),
             width: mini,
             height: mini
         )
     }
 
-    /// A cover's rounding, shrunk with it: in proportion to the library's
-    /// corner on a cover about the size an open folder draws them (~150pt), so
-    /// the minis are the same shape as the covers they fly out to become
-    /// (`FolderZoomStage.travellingCovers`) and never rounder than the tile
-    /// they sit on.
-    static func miniCornerRadius(_ mini: CGFloat) -> CGFloat {
-        max(1, AlbumArtworkThumbnail.defaultCornerRadius * mini / 150)
-    }
-
     var body: some View {
-        RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-            .fill(Color.white.opacity(Self.plateOpacity))
+        Color.clear
             .frame(width: size, height: size)
+            // The whole square answers a tap, gaps included.
+            .contentShape(Rectangle())
             .overlay(alignment: .topLeading) {
                 ForEach(Array(albums.prefix(Self.capacity).enumerated()), id: \.element.id) { index, album in
                     let frame = Self.miniFrame(index, size: size)
@@ -1159,12 +1327,12 @@ struct FolderTile: View {
                     AlbumArtworkThumbnail(
                         album: album,
                         size: frame.width,
-                        cornerRadius: Self.miniCornerRadius(frame.width)
+                        cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius
                     )
                     .offset(x: frame.minX, y: frame.minY)
+                    .opacity(hidden.contains(album.persistentModelID) ? 0 : 1)
                 }
             }
-            .overlay(GlassRim(cornerRadius: Self.cornerRadius, lineWidth: Self.rimWidth))
     }
 }
 
@@ -1181,6 +1349,8 @@ struct FolderCard: View {
     /// this spot, or shrinking back into it. The label stays, as on the Home
     /// Screen: only the icon lifts off.
     var tileHidden = false
+    /// Covers on the tile still waiting for their cards (`FolderTile.hidden`).
+    var arriving: Set<PersistentIdentifier> = []
 
     static func countLabel(_ count: Int) -> String {
         count == 1 ? "1 album" : "\(count) albums"
@@ -1188,7 +1358,7 @@ struct FolderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            FolderTile(albums: albums, size: coverSize)
+            FolderTile(albums: albums, size: coverSize, hidden: arriving)
                 .opacity(tileHidden ? 0 : 1)
                 // Gone the instant the folder's layer covers it, never faded.
                 // The press style animates the whole card as it springs back
@@ -1228,8 +1398,16 @@ struct FolderCard: View {
 /// in its first tenth of a second and most of the rest by a quarter, so the
 /// crossfades sit early, the settling late.
 enum FolderMotion {
-    private static let openDuration: TimeInterval = 0.42
-    private static let closeDuration: TimeInterval = 0.36
+    /// The whole choreography's clock. Every duration and delay here is the
+    /// one it was tuned at, run at this pace, so a change of speed leaves the
+    /// hand-overs where they are against the spring — slip one of those and
+    /// covers cross-fade over nothing. 0.7 since 2026-10-28, at the user's
+    /// ask ("speed up the animation"); it was 1.
+    private static let pace: TimeInterval = 0.7
+    private static func t(_ seconds: TimeInterval) -> TimeInterval { seconds * pace }
+
+    private static let openDuration = t(0.42)
+    private static let closeDuration = t(0.36)
 
     /// A breath of overshoot opening, as the Home Screen's folders have, and
     /// none closing — a tile that overshoots its own slot reads as a bounce.
@@ -1245,30 +1423,37 @@ enum FolderMotion {
     /// as the folder lands — and before the layer comes down, which it would
     /// otherwise cut short.
     static let blurIn: Animation = .easeIn(duration: openDuration)
-    static let blurOut: Animation = .easeOut(duration: closeDuration - 0.04)
+    static let blurOut: Animation = .easeOut(duration: closeDuration - t(0.04))
 
     /// The tile's covers onto the panel's first four, well before the plate
     /// arrives — they have to be over the panel's own covers by the time
     /// those fade up under them. Closing, they wait for the panel to go first.
-    static let coversIn: Animation = .spring(duration: 0.24)
-    static let coversOut: Animation = .spring(duration: 0.26).delay(0.07)
+    static let coversIn: Animation = .spring(duration: t(0.24))
+    static let coversOut: Animation = .spring(duration: t(0.26)).delay(t(0.07))
     /// The panel — labels, any further covers — under the arrived covers;
     /// closing, gone before they leave.
-    static let panelIn: Animation = .easeInOut(duration: 0.06).delay(0.11)
-    static let panelOut: Animation = .easeInOut(duration: 0.05).delay(0.02)
+    static let panelIn: Animation = .easeInOut(duration: t(0.06)).delay(t(0.11))
+    static let panelOut: Animation = .easeInOut(duration: t(0.05)).delay(t(0.02))
     /// The travelling covers off, over identical covers; closing, on at once.
-    static let coversOff: Animation = .easeInOut(duration: 0.05).delay(0.17)
-    static let coversOn: Animation = .easeOut(duration: 0.03)
-    static let titleIn: Animation = .easeOut(duration: 0.22).delay(0.12)
-    static let titleOut: Animation = .easeIn(duration: 0.1)
-    /// The glass lobes at each end — see `FolderZoomStage`.
-    static let tileLobeOff: Animation = .easeOut(duration: 0.05)
-    static let tileLobeOn: Animation = .easeIn(duration: 0.08).delay(0.26)
-    static let panelLobeOn: Animation = .easeIn(duration: 0.15).delay(0.2)
-    static let panelLobeOff: Animation = .easeOut(duration: 0.06)
+    static let coversOff: Animation = .easeInOut(duration: t(0.05)).delay(t(0.17))
+    static let coversOn: Animation = .easeOut(duration: t(0.03))
+    /// A travelling cover's hairline: gone as it leaves the tile, and closing,
+    /// back over the last of its trip, as `coversOut` sets it down.
+    static let edgeOff: Animation = .easeOut(duration: t(0.06))
+    static let edgeOn: Animation = .easeIn(duration: t(0.08)).delay(t(0.25))
+    static let titleIn: Animation = .easeOut(duration: t(0.22)).delay(t(0.12))
+    static let titleOut: Animation = .easeIn(duration: t(0.1))
+    /// The panel's titles and artists: up once the covers are in place,
+    /// and closing, gone first — the close waits `labelsOutLead` for them,
+    /// since the panel itself vanishes as soon as the spring starts.
+    static let labelsIn: Animation = .easeOut(duration: t(0.3)).delay(t(0.18))
+    static let labelsOut: Animation = .easeIn(duration: t(0.12))
+    static let labelsOutLead = t(0.1)
+    /// From asking a folder to close to its layer being down: the labels'
+    /// lead, then the spring.
+    static var closeTotal: TimeInterval { labelsOutLead + closeDuration }
 
     static let plateRadius: CGFloat = 30
-    static let plateOpacity = 0.08
     static let dim: CGFloat = 0.35
     /// The name sits in a band this tall above the panel, bottom-aligned, so
     /// the panel's place never waits on measuring a line of text.
@@ -1308,6 +1493,7 @@ struct FolderZoom<Title: View, Panel: View>: View {
         let depth: CGFloat = expanded && !hiddenForDrag ? 1 : 0
         FolderZoomStage(
             expanded: expanded,
+            labelsShown: arranger.areFolderLabelsShown,
             // Reduce Motion: fade up in place rather than fly out of the
             // tile. A tile not yet laid out has nothing to grow out of.
             tile: reduceMotion ? nil : tile.flatMap { $0.width >= 1 ? $0 : nil },
@@ -1346,6 +1532,7 @@ struct FolderZoom<Title: View, Panel: View>: View {
             } completion: {
                 if arranger.isFolderExpanded { MotionShine.shared.isHeld = false }
             }
+            withAnimation(FolderMotion.labelsIn) { arranger.areFolderLabelsShown = true }
         }
         // However the layer comes down — dragged out of, emptied — the rims
         // aren't left holding still.
@@ -1363,9 +1550,8 @@ struct FolderZoom<Title: View, Panel: View>: View {
 /// recomputed this stage every frame, and resized a `GlassRim` on every one
 /// of them — whose lobe is an angular gradient the CPU rasterises, most of
 /// the main thread's time in the profile — and it read as choppy however
-/// right each frame was. So the rims here never change size: the plate's
-/// moving edge is a plain hairline on the animated shape, and its glass lobe
-/// is two fixed rims, one at the tile and one at the panel, crossfaded.
+/// right each frame was. The plate and its rims are gone now (2026-10-12),
+/// and nothing that changes size draws anything but the clip.
 ///
 /// Opening, in order: the tile's covers slide and grow onto where the
 /// panel's first four will be; the panel — labels, any further covers —
@@ -1373,14 +1559,13 @@ struct FolderZoom<Title: View, Panel: View>: View {
 /// Nothing is ever crossfaded against something in a different place.
 private struct FolderZoomStage<Title: View, Panel: View>: View {
     let expanded: Bool
+    let labelsShown: Bool
     let tile: CGRect?
     let panelFrame: CGRect
     let panelGrid: LibraryGridGeometry
     let albums: [Album]
     let title: Title
     let panel: Panel
-
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let target = panelFrame
@@ -1393,15 +1578,19 @@ private struct FolderZoomStage<Title: View, Panel: View>: View {
         let radius = expanded || tile == nil ? FolderMotion.plateRadius : FolderTile.cornerRadius
         let shape = PlateShape(rect: plate, cornerRadius: radius)
         let lift = (FolderMotion.titleBand + FolderMotion.titleGap) * scale
-        // With no tile, the plate and all on it simply fade up.
-        let plateOpacity: Double = tile == nil && !expanded ? 0 : 1
-
+        // The plate is drawn by nothing — no fill, edge or glass, at either
+        // end (2026-10-12, at the user's ask): the covers sit straight on the
+        // blurred library, as they sit on the library itself. The shape is
+        // still the panel's clip, which is what grows it out of the tile.
         ZStack(alignment: .topLeading) {
-            shape
-                .fill(Color.white.opacity(expanded || tile == nil ? FolderMotion.plateOpacity : FolderTile.plateOpacity))
-                .opacity(plateOpacity)
-
             panel
+                // A hundredth rather than zero while hidden, for the reason
+                // the panel's own fade gives below.
+                .environment(\.folderLabelOpacity, labelsShown ? 1 : 0.01)
+                // The covers' hairlines come and go with the words: away while
+                // the panel is still growing or about to shrink, so no 1pt line
+                // is being scaled on them (`coverEdgeOpacity`).
+                .environment(\.coverEdgeOpacity, labelsShown ? 1 : 0.01)
                 .frame(width: target.width, height: target.height)
                 // Never quite zero, like the backdrop's blur: at zero neither
                 // is drawn, and their first draw then lands on the spring's
@@ -1423,26 +1612,6 @@ private struct FolderZoomStage<Title: View, Panel: View>: View {
                 .animation(expanded ? FolderMotion.titleIn : FolderMotion.titleOut, value: expanded)
                 .scaleEffect(scale, anchor: .topLeading)
                 .offset(x: plate.minX, y: plate.minY - lift)
-
-            // The plate's edge. The hairline rides the shape; the lobe is
-            // fixed at each end and crossfaded, because a rim that changes
-            // size is re-rasterised on every frame it does.
-            shape
-                .strokeBorder(GlassRim<RoundedRectangle>.hairline(scheme), lineWidth: 1)
-                .opacity(plateOpacity)
-                .allowsHitTesting(false)
-            if let tile {
-                GlassRim(cornerRadius: FolderTile.cornerRadius, showsBase: false)
-                    .frame(width: tile.width, height: tile.height)
-                    .offset(x: tile.minX, y: tile.minY)
-                    .opacity(expanded ? 0 : 1)
-                    .animation(expanded ? FolderMotion.tileLobeOff : FolderMotion.tileLobeOn, value: expanded)
-            }
-            GlassRim(cornerRadius: FolderMotion.plateRadius, showsBase: false)
-                .frame(width: target.width, height: target.height)
-                .offset(x: target.minX, y: target.minY)
-                .opacity(expanded ? 1 : 0.01)
-                .animation(expanded ? FolderMotion.panelLobeOn : FolderMotion.panelLobeOff, value: expanded)
 
             if let tile {
                 travellingCovers(tile: tile)
@@ -1472,8 +1641,13 @@ private struct FolderZoomStage<Title: View, Panel: View>: View {
                 AlbumArtworkThumbnail(
                     album: album,
                     size: mini.width,
-                    cornerRadius: FolderTile.miniCornerRadius(mini.width)
+                    cornerRadius: AlbumArtworkThumbnail.defaultCornerRadius
                 )
+                // The tile's own covers have a hairline, so these do at either
+                // end and none on the way: off as they lift off the tile, back
+                // as they land on it.
+                .environment(\.coverEdgeOpacity, expanded ? 0.01 : 1)
+                .animation(expanded ? FolderMotion.edgeOff : FolderMotion.edgeOn, value: expanded)
                 .scaleEffect(expanded ? cover / mini.width : 1 / startScale, anchor: .topLeading)
                 .offset(
                     x: expanded ? center.x - cover / 2 : mini.minX / startScale,
@@ -1648,26 +1822,55 @@ private struct ScrubbedBlur: UIViewRepresentable {
 }
 
 /// The card in hand, drawn above everything — the grid, the open folder and
-/// its dimming — so it can travel between them. The only reader of
+/// its dimming — so it can travel between them, and under it a new folder's
+/// first album on its way into the tile. The only reader of
 /// `LibraryArranger.liftPoint`.
 struct LiftedItemLayer: View {
     let arranger: LibraryArranger
 
     var body: some View {
-        if let lifted = arranger.lifted {
-            Group {
-                switch lifted.item {
-                case .album(let album):
-                    AlbumArtworkThumbnail(album: album, size: lifted.size)
-                case .folder:
-                    FolderTile(albums: lifted.contents, size: lifted.size)
-                }
+        ZStack {
+            if let settling = arranger.settling {
+                SettlingCoverView(cover: settling)
             }
-            .scaleEffect(lifted.scale)
-            .shadow(color: .black.opacity(0.5), radius: 18, y: 10)
-            .opacity(lifted.opacity)
-            .position(arranger.liftPoint)
-            .allowsHitTesting(false)
+            if let lifted = arranger.lifted {
+                Group {
+                    switch lifted.item {
+                    case .album(let album):
+                        AlbumArtworkThumbnail(album: album, size: lifted.size)
+                    case .folder:
+                        FolderTile(albums: lifted.contents, size: lifted.size)
+                    }
+                }
+                .scaleEffect(lifted.scale)
+                .shadow(color: .black.opacity(0.5 * lifted.shadow), radius: 18, y: 10)
+                .opacity(lifted.opacity)
+                .position(arranger.liftPoint)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// `SettlingCover` on its way, on the drop's spring, begun as it first draws:
+/// put up and sent off in the same update it would have no first frame to
+/// move from, and would simply be at its corner.
+private struct SettlingCoverView: View {
+    let cover: SettlingCover
+    @State private var settled = false
+
+    var body: some View {
+        ZStack {
+            FormingPlate(coverSize: cover.size)
+                .scaleEffect(settled ? cover.size / (cover.size + 2 * FormingPlate.margin) : 1)
+                .opacity(settled ? 0 : 1)
+                .position(settled ? cover.plateTo : cover.from)
+            AlbumArtworkThumbnail(album: cover.album, size: cover.size)
+                .scaleEffect(settled ? cover.toScale : cover.fromScale)
+                .position(settled ? cover.to : cover.from)
+        }
+        .onAppear {
+            withAnimation(LibraryArranger.settle) { settled = true }
         }
     }
 }

@@ -16,7 +16,7 @@ Google Drive + OneDrive + local iPhone storage.
 | Playback, queue, gapless, now-playing UI, playback failures | `skill://audio-playback` |
 | Launch screen: wordmark, ripple field, colorways, analysis overlay, plaque | `skill://launch-screen` |
 | Glass ornaments, menu icons, anything reading the scroll offset, Liquid Glass that moves | `skill://glass-ornaments` |
-| Library: grid spacing & the label line, folders, arrange mode, folder zoom, Sort by Color, cover thumbnails | `skill://library-screen` |
+| Library: grid spacing & the label line, folders, arrange mode, folder zoom, Sort by Color, the canvas, cover thumbnails | `skill://library-screen` |
 | Share links, the site handshake, link previews | `skill://share-links` |
 | Sign-in, drive requests and uploads, background transfers, album sync | `skill://cloud-services` |
 | Folder tracking: the Tracking screen, what counts as new, checks, `listWatchedChildren` | `skill://folder-tracking` |

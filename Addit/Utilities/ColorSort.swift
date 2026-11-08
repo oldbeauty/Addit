@@ -151,14 +151,15 @@ nonisolated struct CoverTone: Sendable {
 ///
 /// - **Down the rows, hue.** Consecutive runs of the hue order, one row's
 ///   worth each, so every row is a band of neighbouring colours and the bands
-///   step through the spectrum top to bottom: pink and violet first, down
-///   through blue, green and yellow, to orange and red.
+///   step through the spectrum top to bottom: violet first, down through
+///   blue, green, yellow, orange and red, to pink.
 /// - **Across a row, lightness**, lightest on the left. Each column becomes a
 ///   shade, so the left edge runs pale and the right edge deep — a paint-chip
 ///   wall, not a strip that wraps.
 ///
-/// Covers with no colour to speak of follow the spectrum, white through grey
-/// to black, and covers with no art at all come last.
+/// Covers with no colour to speak of lead, white through grey to black, and
+/// covers with no art at all come last. (Until 2026-10-28 the greys followed
+/// the spectrum and it ran pink to red; reordered at the user's ask.)
 nonisolated enum ColorSort {
     /// `tones[i]` belongs to item `i`; nil is an item with no art. Returns the
     /// items' indices in their new order. `firstColumn` is how many slots of
@@ -166,6 +167,78 @@ nonisolated enum ColorSort {
     /// so the rows here line up with the grid's real ones.
     static func order(tones: [CoverTone?], columns: Int, firstColumn: Int = 0) -> [Int] {
         let columns = max(columns, 1)
+        let sequence = spectrumSequence(tones)
+
+        // One sequence, cut into the grid's real rows, then each row re-laid
+        // light to dark.
+        var result: [Int] = []
+        result.reserveCapacity(sequence.count)
+        var start = 0
+        var rowLength = columns - (firstColumn % columns)
+        while start < sequence.count {
+            result += lightToDark(sequence[start..<min(start + rowLength, sequence.count)])
+            start += rowLength
+            rowLength = columns
+        }
+        return result
+    }
+
+    /// The library's canvas (`CanvasDisc`): every cover once, on the grid
+    /// cells inside a circle, the smallest that holds them all. The same
+    /// sequence is poured into its columns left to right, each column a run
+    /// of it re-laid lightest at the top, so hue sweeps across the disc and
+    /// lightness runs down it — greys on the left edge, violet to pink after.
+    /// It was a rectangle tiled for ever by mirroring until 2026-10-28, when
+    /// the user asked for one canvas, round.
+    static func canvas(tones: [CoverTone?]) -> CanvasDisc {
+        let count = tones.count
+        guard count > 0 else { return CanvasDisc(rows: 0, columns: 0, cells: []) }
+        // Every cell by its distance from the middle, nearest first, taken
+        // a ring at a time until there's one per cover. A ring only partly
+        // needed gives cells spaced evenly round it, so the edge stays round
+        // rather than flattening on whichever side came first.
+        let side = Int((2 * (Double(count) / .pi).squareRoot()).rounded(.up)) + 3
+        let centre = Double(side - 1) / 2
+        var rings: [Double: [(row: Int, column: Int, angle: Double)]] = [:]
+        for row in 0..<side {
+            for column in 0..<side {
+                let dy = Double(row) - centre, dx = Double(column) - centre
+                let distance = ((dx * dx + dy * dy) * 1e6).rounded() / 1e6
+                rings[distance, default: []].append((row, column, atan2(dy, dx)))
+            }
+        }
+        var kept: [(row: Int, column: Int)] = []
+        for distance in rings.keys.sorted() where kept.count < count {
+            let ring = rings[distance]!.sorted { $0.angle < $1.angle }
+            let wanted = min(ring.count, count - kept.count)
+            for k in 0..<wanted {
+                let cell = ring[k * ring.count / wanted]
+                kept.append((cell.row, cell.column))
+            }
+        }
+        // Cropped to the cells used, so no row or column stands empty.
+        let top = kept.map(\.row).min() ?? 0, left = kept.map(\.column).min() ?? 0
+        let rows = (kept.map(\.row).max() ?? 0) - top + 1
+        let columns = (kept.map(\.column).max() ?? 0) - left + 1
+
+        let sequence = spectrumSequence(tones)
+        var cells = [Int](repeating: -1, count: rows * columns)
+        var start = 0
+        for column in 0..<columns {
+            let inColumn = kept.filter { $0.column - left == column }.map { $0.row - top }.sorted()
+            guard !inColumn.isEmpty else { continue }
+            let run = lightToDark(sequence[start..<start + inColumn.count])
+            for (row, index) in zip(inColumn, run) { cells[row * columns + column] = index }
+            start += inColumn.count
+        }
+        return CanvasDisc(rows: rows, columns: columns, cells: cells)
+    }
+
+    private typealias Entry = (index: Int, rank: Int, lightness: Double)
+
+    /// Every item in one line: the greys light to dark, the spectrum violet
+    /// to pink, then the covers with no art in the order they came.
+    private static func spectrumSequence(_ tones: [CoverTone?]) -> [Entry] {
         var chromatic: [(index: Int, hue: Double, lightness: Double)] = []
         var neutral: [(index: Int, lightness: Double)] = []
         var unknown: [Int] = []
@@ -181,8 +254,9 @@ nonisolated enum ColorSort {
 
         let cut = spectrumStart(hues: chromatic.map(\.hue))
         // Backwards round the circle from the cut: OKLab hue rises from red
-        // through yellow, green and blue to pink, and the wall runs pink to
-        // red. (It ran red to pink until 2026-10-01; reversed by request.)
+        // through yellow, green and blue to violet and pink, so from a cut
+        // between violet and pink it runs violet, blue, green, yellow,
+        // orange, red, and round to pink.
         let spectrum = chromatic.sorted {
             let a = ($0.hue - cut + 360).truncatingRemainder(dividingBy: 360)
             let b = ($1.hue - cut + 360).truncatingRemainder(dividingBy: 360)
@@ -190,52 +264,58 @@ nonisolated enum ColorSort {
         }
         let greys = neutral.sorted { ($1.lightness, $0.index) < ($0.lightness, $1.index) }
 
-        // One sequence, cut into the grid's real rows, then each row re-laid
-        // light to dark. Colours stay ahead of greys within the row they share.
-        typealias Entry = (index: Int, rank: Int, lightness: Double)
-        let sequence: [Entry] =
-            spectrum.map { ($0.index, 0, $0.lightness) }
-            + greys.map { ($0.index, 1, $0.lightness) }
+        return greys.map { ($0.index, 0, $0.lightness) }
+            + spectrum.map { ($0.index, 1, $0.lightness) }
             + unknown.map { ($0, 2, 0) }
+    }
 
-        var result: [Int] = []
-        result.reserveCapacity(sequence.count)
-        var start = 0
-        var rowLength = columns - (firstColumn % columns)
-        while start < sequence.count {
-            let row = sequence[start..<min(start + rowLength, sequence.count)]
-            result += row.enumerated().sorted { a, b in
-                if a.element.rank != b.element.rank { return a.element.rank < b.element.rank }
-                // No-art covers keep the order they came in.
-                if a.element.rank == 2 { return a.offset < b.offset }
-                return (b.element.lightness, a.offset) < (a.element.lightness, b.offset)
-            }.map(\.element.index)
-            start += rowLength
-            rowLength = columns
-        }
-        return result
+    /// A stretch of the sequence re-laid light to dark. Greys stay ahead of
+    /// colours within the stretch they share.
+    private static func lightToDark(_ run: ArraySlice<Entry>) -> [Int] {
+        run.enumerated().sorted { a, b in
+            if a.element.rank != b.element.rank { return a.element.rank < b.element.rank }
+            // No-art covers keep the order they came in.
+            if a.element.rank == 2 { return a.offset < b.offset }
+            return (b.element.lightness, a.offset) < (a.element.lightness, b.offset)
+        }.map(\.element.index)
     }
 
     /// Where the circle of hues is cut open into a line: somewhere between
-    /// pink and red, as a rainbow runs, but at whichever point there is
-    /// farthest from any cover, so a cluster of reds isn't split between the
-    /// first row and the last.
+    /// violet and pink, but at whichever point there is farthest from any
+    /// cover, so a cluster of violets isn't split between the first row and
+    /// the last.
     private static func spectrumStart(hues: [Double]) -> Double {
-        guard !hues.isEmpty else { return 5 }
-        var best = 5.0
+        let middle = 325.0
+        guard !hues.isEmpty else { return middle }
+        var best = middle
         var bestClearance = -1.0
-        // OKLab hue: pinks run up to about 355°, reds start near 15°.
+        // OKLab hue: violets run up to about 315°, pinks from about 335°.
         for step in 0...40 {
-            let candidate = (345.0 + Double(step)).truncatingRemainder(dividingBy: 360)
+            let candidate = 305.0 + Double(step)
             let clearance = hues.map { CoverTone.angularDistance($0, candidate) }.min() ?? 0
             let preferred = clearance > bestClearance + 0.5
                 || (abs(clearance - bestClearance) <= 0.5
-                    && CoverTone.angularDistance(candidate, 5) < CoverTone.angularDistance(best, 5))
+                    && CoverTone.angularDistance(candidate, middle) < CoverTone.angularDistance(best, middle))
             if preferred {
                 best = candidate
                 bestClearance = clearance
             }
         }
         return best
+    }
+}
+
+/// The library's canvas laid out (`ColorSort.canvas`): a square of cells, the
+/// ones inside a circle holding a cover each, every cover once.
+nonisolated struct CanvasDisc: Equatable, Sendable {
+    let rows: Int
+    let columns: Int
+    /// Item indices, row by row; -1 for a cell outside the disc.
+    let cells: [Int]
+
+    func item(row: Int, column: Int) -> Int? {
+        guard (0..<rows).contains(row), (0..<columns).contains(column) else { return nil }
+        let item = cells[row * columns + column]
+        return item >= 0 ? item : nil
     }
 }

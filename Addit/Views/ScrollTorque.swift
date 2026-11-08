@@ -120,8 +120,30 @@ final class ScrollOffsetBox {
     /// How far the content is scrolled down from the top.
     var scrolled: CGFloat { value - top }
 
+    /// How much of the scroll view's offset is the library's labels moving it
+    /// rather than anyone scrolling it: a label growing on a row above the
+    /// visible ones, with the offset moved to match so nothing below it moves
+    /// (`LibraryLabelLine`). Kept out of `value` — the orb would snap a
+    /// quarter turn for each, and its twist read a flick — and handed back a
+    /// quarter of the way the scroll goes, so the ornaments catch up, the eye
+    /// looking at you again at the top, without ever turning on their own.
+    @ObservationIgnored private var unscrolled: CGFloat = 0
+    /// The scroll view's offset as of the last report, moves included.
+    @ObservationIgnored private var lastOffset: CGFloat?
+
     init(_ value: CGFloat = 0) {
         self.value = value
+    }
+
+    /// The scroll view reports `offset`, and has since been moved by `shifted`
+    /// with nobody scrolling.
+    func follow(_ offset: CGFloat, shifted: CGFloat = 0) {
+        let moved = lastOffset.map { abs(offset - $0) } ?? 0
+        lastOffset = offset + shifted
+        unscrolled += shifted
+        let handBack = min(abs(unscrolled), moved * 0.25)
+        unscrolled -= unscrolled < 0 ? -handBack : handBack
+        value = offset + shifted - unscrolled
     }
 }
 
@@ -136,7 +158,7 @@ extension View {
         onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y
         } action: { _, new in
-            box.value = new
+            box.follow(new)
         }
         // Separately, so a scroll frame doesn't write it: written only when
         // the inset itself changes, which is what an observer pays for.

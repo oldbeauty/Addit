@@ -35,6 +35,14 @@ struct LibraryView: View {
     @State var folderNameDraft = ""
     @State var showFolderRename = false
     @State private var showAddAlbum = false
+    /// The album Add Existing just added, to take you to once its sheet is
+    /// down (`revealAddedAlbum`).
+    @State private var albumToReveal: Album?
+    /// The row the list scrolls to next — the list's half of the same.
+    @State private var listRevealTarget: LibraryItemID?
+    /// Bumped to bring every label in the grid in, as scrolling up does — so
+    /// the album the grid is taking you to is named when it gets there.
+    @State private var showAllLabelsRequest = 0
     @State private var showFeedback = false
     @State private var showCreateAlbum = false
     @State private var showSettings = false
@@ -60,17 +68,28 @@ struct LibraryView: View {
         pendingEditAlbumId = album.googleFolderId
         libraryPath.append(.album(album))
     }
-    @AppStorage("libraryViewMode") var isListMode = false
+    @AppStorage(LibraryLayout.storageKey) var layout: LibraryLayout = .grid
+    /// The canvas's measure of each cover, kept here so leaving the canvas
+    /// and coming back doesn't measure the library again. Never read by this
+    /// view's body; the canvas reads it.
+    @State private var canvasTones = CoverToneCache()
+    /// Add Existing's "take me to it", for the canvas, which finds the album
+    /// wherever its colour put it.
+    @State private var canvasReveal: CanvasReveal?
     @State private var accountToSignOut: String?
     @State private var showSignOutConfirmation = false
     @State private var showClearLocalConfirmation = false
     @State var searchText = ""
     @State var isSearchExpanded = false
     @FocusState var isSearchFocused: Bool
-    /// Live content offset of whichever list or grid is on screen, feeding the
-    /// toolbar orb's spin and the brand mark's rock. Not clamped or reset
-    /// between the two layouts: neither ornament has a home position, so a jump
-    /// just turns it.
+    /// The software keyboard is up (`dockBottomPadding`).
+    @State private var isKeyboardShown = false
+    /// Names the dock's glass, so the + disc's becomes the search field's.
+    @Namespace private var dockGlass
+    /// Live content offset of whichever list, grid or canvas is on screen,
+    /// feeding the toolbar orb's spin and the brand mark's rock. Not clamped
+    /// or reset between the layouts: neither ornament has a home position, so
+    /// a jump just turns it.
     ///
     /// A box **this view never reads** — see `ScrollOffsetBox`. The two
     /// ornaments read it themselves, so a scroll frame invalidates them and not
@@ -364,7 +383,7 @@ struct LibraryView: View {
     /// Covers never target smaller than this; wider screens add columns.
     private static let minCoverSize: CGFloat = 150
 
-    private func gridLayout(for width: CGFloat) -> (columns: [GridItem], coverSize: CGFloat) {
+    func gridLayout(for width: CGFloat) -> (columns: [GridItem], coverSize: CGFloat) {
         let gutter = Self.gridGutter
         // A `GeometryReader` reports zero on the pass that builds it, and the
         // grid is built fresh every time this branch is entered — which is what
@@ -393,16 +412,70 @@ struct LibraryView: View {
         return (Array(repeating: column, count: count), coverSize)
     }
 
-    /// Empty room after the last row: enough for it to scroll up to the line
-    /// and be labelled (`LibraryLabelLine`). Scrolled all the way down, the last
-    /// row's covers sit where the last row labelled at rest sits then.
+    /// Empty room after the last row: enough for the last rows to scroll up to
+    /// where the rows labelled at rest sit, and they do sit there scrolled all
+    /// the way down.
     ///
-    /// Without it the rows in the last screenful could never reach the line,
-    /// and a library that fits on one screen would only ever name its top rows —
-    /// while a newly added album, which lands at the end, would never show its
-    /// name at all. `height` is the grid's visible height, between the bars.
+    /// Labels come and go with the way the grid scrolls (`LibraryLabelLine`),
+    /// so a library has to scroll to name every album. Without this, one that
+    /// fits on a screen couldn't, and would only ever name its top rows; and
+    /// a newly added album, which lands at the end, would have nowhere near
+    /// the top to be taken to. `height` is the grid's visible height, between
+    /// the bars.
     private func gridRunway(height: CGFloat, line: LibraryLabelLine) -> CGFloat {
         max(0, height - (2 * Self.gridPadding + line.restingSpan))
+    }
+
+    /// Takes you to the album Add Existing just added. It lands at the end of
+    /// the library, and the sheet used to close on wherever the library was —
+    /// usually the top — leaving you to go and find it. Out of a search first,
+    /// since what's added belongs to the whole library.
+    private func revealAddedAlbum() {
+        guard let album = albumToReveal else { return }
+        albumToReveal = nil
+        let id = LibraryItemID.album(album.persistentModelID)
+        guard isSearchExpanded || !searchText.isEmpty else {
+            scroll(toReveal: id)
+            return
+        }
+        closeSearch { scroll(toReveal: id) }
+    }
+
+    /// In the grid, the item's row up to where the top row rests, with every
+    /// label from the top of the screen down in — worked out from the labels
+    /// (`LibraryLabelLine.scrollShowing`), not measured, since bringing them
+    /// in moves every row below the screen, and the content's end with them.
+    private func scroll(toReveal id: LibraryItemID) {
+        if layout == .canvas {
+            if case .album(let album) = id {
+                canvasReveal = CanvasReveal(album: album, request: (canvasReveal?.request ?? 0) &+ 1)
+            }
+            return
+        }
+        let items = libraryArrangement().items
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        if layout == .list {
+            listRevealTarget = id
+            return
+        }
+        guard let scrollView = arranger.gridScrollView else { return }
+        let grid = arranger.grid
+        let columns = max(grid.columns, 1)
+        let line = LibraryLabelLine(cover: grid.cover, gap: grid.rowSpacing)
+        // From rest, which is minus the bars' height, not zero.
+        let rest = -scrollView.adjustedContentInset.top
+        let end = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom
+            - scrollView.bounds.height - rest
+        let target = line.scrollShowing(
+            row: index / columns,
+            rows: (items.count + columns - 1) / columns,
+            from: grid.labels,
+            end: end
+        )
+        // The scroll is the app's, not a finger's, so it moves no labels
+        // itself: they're brought in for it.
+        showAllLabelsRequest &+= 1
+        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: rest + target), animated: true)
     }
 
     /// Account whose albums the viewed library shows — resolved from the
@@ -474,59 +547,163 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Add button
+    // MARK: - Dock
 
-    /// Diameter of the bottom "+" button — the toolbar's own button size,
-    /// measured off a screenshot rather than guessed at.
-    private static let addButtonDiameter: CGFloat = 44
-    /// Gap between the button and the mini player when both are on screen.
-    private static let addButtonGap: CGFloat = 8
+    /// The side discs, layout and search: the size the + button was alone,
+    /// the toolbar's own button size, measured off a screenshot.
+    private static let dockSideDiameter: CGFloat = 44
+    /// The + disc, bigger, so the middle of the dock rises as a hump.
+    private static let dockMiddleDiameter: CGFloat = 56
+    /// Gap between the dock and the mini player, or the keyboard, when it's
+    /// above one.
+    private static let dockGap: CGFloat = 8
+    /// The dock's container spacing: glass nearer than this melts together.
+    private static let dockBlend: CGFloat = 16
+    /// Search opening and closing: the discs' glass reshaping into the field
+    /// and back. A spring of its own, not `.default`, which adds a scale and
+    /// offset to glass whose content changes under the same identity.
+    private static let dockMorph = Animation.spring(duration: 0.45, bounce: 0.2)
 
-    /// Distance from the bottom safe area to the button's bottom edge.
+    /// Distance from the bottom safe area to the dock's bottom edge.
     ///
-    /// With nothing playing the button takes the mini player's place, centered
-    /// on the line the mini play/pause button sits on — `MiniLayout`'s row
-    /// center measured up from the card's bottom, plus the card's own inset
-    /// off the safe area. With a track playing it stands clear above the whole
-    /// pill instead. Both numbers are read from the pill rather than guessed,
-    /// so a change to its geometry moves this too.
-    private var addButtonBottomPadding: CGFloat {
-        if playerService.currentTrack != nil {
-            return NowPlayingPill.overlayHeight + Self.addButtonGap
+    /// With nothing playing the dock takes the mini player's place, its side
+    /// discs centered on the line the mini play/pause button sits on —
+    /// `MiniLayout`'s row center measured up from the card's bottom, plus the
+    /// card's own inset off the safe area — and the + rising above them. With
+    /// a track playing it stands clear above the whole pill instead. Both
+    /// numbers are read from the pill rather than guessed, so a change to its
+    /// geometry moves this too. With the keyboard up, it's the keyboard it
+    /// stands on: the pill stays behind the keyboard (`ContentView`), and
+    /// clearing it there would float the search field a card's height up.
+    ///
+    /// The keyboard itself, not the field's focus. Focus can outlast the
+    /// keyboard — come back from an album opened off the results, or from
+    /// the background — and keyed on it the dock dropped to the screen's
+    /// foot with a track playing, under the mini player: no field, no ×,
+    /// and no way out of search.
+    private var dockBottomPadding: CGFloat {
+        if isKeyboardShown {
+            return Self.dockGap
         }
-        return NowPlayingPill.miniPlayCenterFromBottom - Self.addButtonDiameter / 2
+        if playerService.currentTrack != nil {
+            return NowPlayingPill.overlayHeight + Self.dockGap
+        }
+        return NowPlayingPill.miniPlayCenterFromBottom - Self.dockSideDiameter / 2
     }
 
     /// Bottom safe area the library reserves for what floats over it, so the
     /// last row of covers rests above the furniture instead of under it.
     private var bottomOverlayInset: CGFloat {
-        addButtonBottomPadding + Self.addButtonDiameter + Self.addButtonGap
+        dockBottomPadding + Self.dockMiddleDiameter + Self.dockGap
     }
 
-    /// A `Menu`, so one tap opens the same tree the toolbar glyph used to,
-    /// wearing the same glass as the rest of the toolbar — it left the bar,
-    /// not the bar's material.
+    /// Layout, add and search, left to right (2026-10-27; layout and search
+    /// were in the top bar). Three discs of Liquid Glass in one container,
+    /// standing closer than its spacing, so their glass melts into one shape
+    /// at rest, and the bigger + in the middle rises out of it as a hump.
+    /// Bottoms aligned: the hump is on top, the base runs straight.
+    ///
+    /// Searching, the + becomes the search field and the layout disc melts
+    /// into it, while the search disc turns into the × that closes it and
+    /// moves to the far right, pulling clear of the field as it goes: the
+    /// same glass, matched across the change by `glassEffectID`.
+    private var dock: some View {
+        GlassEffectContainer(spacing: Self.dockBlend) {
+            HStack(alignment: .bottom, spacing: isSearchExpanded ? Self.dockBlend + 4 : 2) {
+                if isSearchExpanded {
+                    searchField
+                        .glassEffectID("add", in: dockGlass)
+                } else {
+                    layoutButton
+                        .glassEffectID("layout", in: dockGlass)
+                    addButton
+                        .glassEffectID("add", in: dockGlass)
+                }
+                searchButton
+                    .glassEffectID("search", in: dockGlass)
+            }
+            .padding(.horizontal, isSearchExpanded ? 16 : 0)
+        }
+    }
+
+    /// One disc of the dock: a glyph on its own interactive glass, which is
+    /// what the container melts together and what answers a press.
+    private func dockDisc(_ symbol: String, diameter: CGFloat, glyph: CGFloat) -> some View {
+        Image(systemName: symbol)
+            // Weight stays at the default the toolbar glyphs use. A semibold
+            // was once the only heavy stroke in the library and read as a
+            // different icon set from the marks beside it.
+            .font(.ui(glyph))
+            .foregroundStyle(.primary)
+            // Search into ×, and a layout's glyph into the next one's.
+            .contentTransition(.symbolEffect(.replace))
+            .frame(width: diameter, height: diameter)
+            .contentShape(.circle)
+            .glassEffect(.regular.interactive(), in: .circle)
+    }
+
+    func openSearch() {
+        withAnimation(Self.dockMorph) {
+            isSearchExpanded = true
+            isSearchFocused = true
+        }
+    }
+
+    /// Search put away: the focus first, and a turn later the field, which
+    /// morphs back into the layout and + discs. Taken out in the same
+    /// transaction as the focus, the field's responder vanishes instead of
+    /// resigning, and the keyboard's inset can fail to unwind — `ContentView`
+    /// has that story, for the pill — and the dock rides that inset.
+    func closeSearch(then completion: (() -> Void)? = nil) {
+        searchText = ""
+        isSearchFocused = false
+        DispatchQueue.main.async {
+            withAnimation(Self.dockMorph) {
+                isSearchExpanded = false
+            } completion: {
+                completion?()
+            }
+        }
+    }
+
+    /// A `Menu`, so one tap opens the same tree the toolbar glyph used to.
     private var addButton: some View {
         Menu {
             addMenuContent
         } label: {
-            Image(systemName: "plus")
-                // Sized by the ink it lays down, not by the number: a symbol's
-                // point size is an em box, and a plus fills far less of one
-                // than a magnifying glass does. 25 here draws the same ~21pt
-                // of glyph the toolbar's search button draws, which is what
-                // "the same size" actually means to the eye.
-                //
-                // Weight stays at the default the toolbar glyphs use. The size
-                // is doing the matching already; a semibold on top of it was
-                // the only heavy stroke in the library and read as a different
-                // icon set from the search and account marks beside it.
-                .font(.ui(25))
-                .foregroundStyle(.primary)
-                .frame(width: Self.addButtonDiameter, height: Self.addButtonDiameter)
-                .glassEffect(.regular.interactive(), in: .circle)
+            // Sized by the ink it lays down, not by the number: a symbol's
+            // point size is an em box, and a plus fills far less of one than a
+            // magnifying glass does. 25 drew the same ~21pt of glyph as the
+            // search glyph in a 44pt disc; it grows with its disc.
+            dockDisc("plus", diameter: Self.dockMiddleDiameter, glyph: 25 * Self.dockMiddleDiameter / Self.dockSideDiameter)
         }
         .accessibilityLabel("Add album")
+    }
+
+    /// A menu the way + is: the three layouts, a tick on the one in use,
+    /// whose glyph the disc wears.
+    private var layoutButton: some View {
+        Menu {
+            Picker("Layout", selection: $layout) {
+                ForEach(LibraryLayout.allCases) { option in
+                    Label(option.title, systemImage: option.symbol).tag(option)
+                }
+            }
+        } label: {
+            dockDisc(layout.symbol, diameter: Self.dockSideDiameter, glyph: 20)
+        }
+        .accessibilityLabel("Layout")
+    }
+
+    /// Search, and once it's open the × that closes it, on the far right.
+    private var searchButton: some View {
+        Button {
+            if isSearchExpanded { closeSearch() } else { openSearch() }
+        } label: {
+            dockDisc(isSearchExpanded ? "xmark" : "magnifyingglass", diameter: Self.dockSideDiameter, glyph: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSearchExpanded ? "Close Search" : "Search")
     }
 
     /// One tree for a cloud library, another for Local. Kept out of the button
@@ -595,14 +772,25 @@ struct LibraryView: View {
         }
     }
 
-    private var searchBar: some View {
-        HStack {
+    /// The search field, in the dock where the layout and + discs were: a
+    /// capsule of Liquid Glass with nothing behind it, the covers scrolling on
+    /// under it. It sat under the top bar until 2026-10-27, and before that
+    /// was a grey field on a band of background of its own.
+    ///
+    /// One field, outside the content's branches — never inside them. It
+    /// used to be repeated in three of them, so typing a character that
+    /// matched nothing flipped the body to the no-results branch, destroyed
+    /// that `TextField` and built a different one: focus died with it and the
+    /// keyboard dropped mid-word.
+    private var searchField: some View {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField("Search albums", text: $searchText)
                 .focused($isSearchFocused)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .submitLabel(.search)
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
@@ -612,10 +800,13 @@ struct LibraryView: View {
                 }
             }
         }
-        .padding(10)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, minHeight: Self.dockSideDiameter)
+        // The whole capsule is the field: interactive glass answers a press
+        // anywhere on it, so a press beside the text should focus it too.
+        .contentShape(.capsule)
+        .onTapGesture { isSearchFocused = true }
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 
     var body: some View {
@@ -624,17 +815,6 @@ struct LibraryView: View {
         let arrangement = libraryArrangement()
         let searchResults = searchText.isEmpty ? [] : filteredAlbums
         VStack(spacing: 0) {
-            // One search field, above the branching — never inside it.
-            //
-            // It used to be repeated in three of the branches below, so typing
-            // a character that matched nothing flipped the body to the
-            // no-results branch, destroyed that `TextField` and built a
-            // different one: focus died with it and the keyboard dropped
-            // mid-word. Deleting the text flipped back and destroyed it again.
-            // A single instance outside the `if` chain survives every state
-            // the content goes through.
-            if isSearchExpanded { searchBar }
-
             if !searchText.isEmpty && searchResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             } else if arrangement.items.isEmpty {
@@ -648,39 +828,64 @@ struct LibraryView: View {
                     )
                     .padding(.top, 100)
                 }
-            } else if isListMode && !arranger.isArranging {
+            } else if layout == .canvas && !arranger.isArranging {
+                // Every album, folders or not, sorted by colour on a field
+                // that pans every way. Arranging is the grid's, from here as
+                // from the list.
+                LibraryCanvas(
+                    albums: searchText.isEmpty ? filteredAlbums : searchResults,
+                    tones: canvasTones,
+                    measure: { await coverTones(for: $0) },
+                    offset: scrollOffset,
+                    reveal: canvasReveal
+                ) { album, size in
+                    canvasCell(album, coverSize: size)
+                }
+            } else if layout == .list && !arranger.isArranging {
                 // Arranging is always the grid, list layout or not: dragging
                 // covers onto each other to make folders is a grid idea, and
                 // the Home Screen it imitates has no list to do it in.
-                List {
-                    if !searchText.isEmpty {
-                        ForEach(searchResults) { album in albumRow(album) }
-                    } else {
-                        ForEach(arrangement.items) { item in
-                            switch item {
-                            case .album(let album):
-                                albumRow(album)
-                            case .folder(let folder):
-                                folderRow(folder, albums: arrangement.contents[folder.folderID] ?? [])
+                ScrollViewReader { proxy in
+                    List {
+                        if !searchText.isEmpty {
+                            ForEach(searchResults) { album in albumRow(album) }
+                        } else {
+                            ForEach(arrangement.items) { item in
+                                switch item {
+                                case .album(let album):
+                                    albumRow(album)
+                                case .folder(let folder):
+                                    folderRow(folder, albums: arrangement.contents[folder.folderID] ?? [])
+                                }
                             }
                         }
                     }
+                    .listStyle(.plain)
+                    .tracksScrollOffset(into: scrollOffset)
+                    .gesture(listHoldGesture())
+                    // A list row's height doesn't change with the scroll, so
+                    // SwiftUI's own scroll lands true here; the grid's rows
+                    // do (`scroll(toReveal:)`).
+                    .onChange(of: listRevealTarget) { _, target in
+                        guard let target else { return }
+                        listRevealTarget = nil
+                        withAnimation { proxy.scrollTo(target, anchor: .center) }
+                    }
                 }
-                .listStyle(.plain)
-                .tracksScrollOffset(into: scrollOffset)
-                .gesture(listHoldGesture())
             } else {
                 GeometryReader { geo in
                     let layout = gridLayout(for: geo.size.width)
                     let columns = layout.columns.count
                     let line = LibraryLabelLine(cover: layout.coverSize, gap: Self.gridGutter)
                     let searching = !searchText.isEmpty
+                    let rows = ((searching ? searchResults.count : arrangement.items.count) + columns - 1) / columns
                     ScrollView {
                         VStack(spacing: 0) {
-                            // Rows of bare covers a gutter apart; a row's label
-                            // opens the gap under it as the row reaches the
-                            // line (`LibraryLabelLine`), which is why each card
-                            // is told its row.
+                            // Rows of covers a gutter apart, a row's label
+                            // opening the gap under it as the scroll brings it
+                            // in and closing it as the scroll takes it away
+                            // (`LibraryLabelLine`), which is why each card is
+                            // told its row.
                             LazyVGrid(columns: layout.columns, spacing: Self.gridGutter) {
                                 if searching {
                                     // Search looks through folders: a match is
@@ -731,9 +936,14 @@ struct LibraryView: View {
                                 .frame(width: 1, height: 1)
                         }
                     }
-                    .tracksScrollOffset(into: scrollOffset)
-                    .revealsLibraryLabels(line) { scrolled in
-                        arranger.grid.scrolled = scrolled
+                    // Which also feeds the ornaments' offset, in place of
+                    // `tracksScrollOffset`: a label growing on a row above the
+                    // visible ones moves the scroll, and that mustn't turn them.
+                    .revealsLibraryLabels(
+                        line, rows: rows, inset: Self.gridPadding, showingAllOn: showAllLabelsRequest,
+                        scrollView: { arranger.gridScrollView }, offset: scrollOffset
+                    ) { labels in
+                        arranger.grid.labels = labels
                     }
                     // Belt to the recognizer's braces: it already refuses to
                     // share the touch with the scroll, but nothing should be
@@ -865,18 +1075,35 @@ struct LibraryView: View {
                     // Right after a sort, the same button takes it back — for
                     // the grid that was sorted, the library or one folder.
                     let canUndo = arranger.colorSortUndo.map { $0.folderID == arranger.openFolderID } ?? false
-                    Button {
-                        if canUndo { undoColorSort() } else { sortByColor() }
+                    // One ellipsis for what arranging can do to the grid in
+                    // view: sort it, and in a folder, disband it (2026-10-28).
+                    Menu {
+                        Button {
+                            if canUndo { undoColorSort() } else { sortByColor() }
+                        } label: {
+                            Label(
+                                canUndo ? "Undo Sort" : "Sort by Color",
+                                systemImage: canUndo ? "arrow.uturn.backward" : "paintpalette"
+                            )
+                        }
+                        if arranger.openFolderID != nil {
+                            Button {
+                                disbandOpenFolder()
+                            } label: {
+                                Label("Disband Folder", systemImage: "rectangle.3.group")
+                            }
+                        }
                     } label: {
-                        // The label keeps its width while the spinner shows,
+                        // The glyph keeps its place while the spinner shows,
                         // so the glass capsule doesn't jump.
-                        Text(canUndo ? "Undo Sort" : "Sort by Color")
+                        Image(systemName: "ellipsis")
                             .opacity(arranger.isSortingByColor ? 0 : 1)
                             .overlay {
                                 if arranger.isSortingByColor { ProgressView() }
                             }
                     }
                     .disabled(arranger.isSortingByColor)
+                    .accessibilityLabel("Arrange Options")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { endArranging() }
@@ -890,26 +1117,12 @@ struct LibraryView: View {
                 ToolbarItem(placement: .primaryAction) {
                     ActivityRing()
                 }
-                // Folder tracking, left of search. Not in the Local library:
-                // tracking follows a cloud account, and there's none here.
+                // Folder tracking. Not in the Local library: tracking follows
+                // a cloud account, and there's none here. Search moved down
+                // to the dock (`dock`) on 2026-10-27.
                 if !libraryIsLocal {
                     ToolbarItem(placement: .primaryAction) {
                         FolderWatchButton(offset: scrollOffset) { openTracking() }
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            isSearchExpanded.toggle()
-                            if !isSearchExpanded {
-                                searchText = ""
-                                isSearchFocused = false
-                            } else {
-                                isSearchFocused = true
-                            }
-                        }
-                    } label: {
-                        Image(systemName: isSearchExpanded ? "xmark" : "magnifyingglass")
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -975,8 +1188,8 @@ struct LibraryView: View {
                 }
             }
         }
-        .sheet(isPresented: $showAddAlbum) {
-            AddAlbumView()
+        .sheet(isPresented: $showAddAlbum, onDismiss: revealAddedAlbum) {
+            AddAlbumView { albumToReveal = $0 }
                 .scrollIndicators(.hidden)
         }
         .sheet(isPresented: $showCreateAlbum) {
@@ -1107,30 +1320,42 @@ struct LibraryView: View {
         .task(id: inUseAccountKey) {
             await refreshStorageQuotas()
         }
-        // The add button rides *inside* the reserved band rather than in an
-        // overlay over it. A `safeAreaInset`'s content is laid out with its
-        // bottom on the safe-area edge, which is the one thing
-        // `addButtonBottomPadding` is measured from — an overlay attached
-        // outside this modifier would be inset by the band as well and count
-        // the same distance twice.
+        // The dock rides *inside* the reserved band rather than in an overlay
+        // over it. A `safeAreaInset`'s content is laid out with its bottom on
+        // the safe-area edge, which is the one thing `dockBottomPadding` is
+        // measured from — an overlay attached outside this modifier would be
+        // inset by the band as well and count the same distance twice.
         .safeAreaInset(edge: .bottom) {
             ZStack(alignment: .bottom) {
                 // The reserve itself: the pill's height when it's there, plus
-                // the button's, so the last row of covers clears both instead
+                // the dock's, so the last row of covers clears both instead
                 // of hiding under them.
                 Color.clear
                     .frame(height: bottomOverlayInset)
                     .allowsHitTesting(false)
 
-                // Arranging has its own Done chrome and no use for a button
-                // that pushes new albums onto the grid being rearranged.
+                // Arranging has its own Done chrome and no use for buttons
+                // that push new albums onto the grid being rearranged.
                 if !arranger.isArranging && !arranger.isLibraryBarCleared {
-                    addButton
-                        .padding(.bottom, addButtonBottomPadding)
+                    dock
+                        .padding(.bottom, dockBottomPadding)
+                        // Off the keyboard and back to its rest as the
+                        // keyboard goes, rather than a jump.
+                        .animation(Self.dockMorph, value: isKeyboardShown)
                 }
             }
         }
-        // Outside the inset, so an open folder dims the add button's band too.
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: UIResponder.keyboardWillShowNotification) {
+                isKeyboardShown = true
+            }
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: UIResponder.keyboardWillHideNotification) {
+                isKeyboardShown = false
+            }
+        }
+        // Outside the inset, so an open folder dims the dock's band too.
         .overlay { folderOverlay(arrangement) }
         .overlay { LiftedItemLayer(arranger: arranger) }
         // Every grid, the open folder and the lifted card report positions in
@@ -1705,6 +1930,17 @@ struct AlbumCard: View {
         .contentShape(.accessibility, Rectangle())
     }
 }
+extension EnvironmentValues {
+    /// How much of a cover's hairline (`AlbumArtworkThumbnail.edge`) shows:
+    /// 1 at rest, and next to nothing on covers an opening or closing folder
+    /// is moving (`FolderZoom`). They're drawn at one size and scaled, so a
+    /// 1pt line comes out 2pt on a tile's cover flying out to full size and
+    /// half that on the panel's growing in, and changed width at the
+    /// hand-over between them. (The flicker there was the placeholder under
+    /// the art; see the cover's `body`.)
+    @Entry var coverEdgeOpacity: Double = 1
+}
+
 struct AlbumArtworkThumbnail: View {
     let album: Album
     var size: CGFloat = 148
@@ -1727,6 +1963,7 @@ struct AlbumArtworkThumbnail: View {
         GlassRim<RoundedRectangle>.hairline(scheme)
     }
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.coverEdgeOpacity) private var edgeOpacity
     @Environment(\.modelContext) private var modelContext
     @Environment(\.displayScale) private var displayScale
     @Environment(AlbumArtService.self) private var albumArtService
@@ -1796,30 +2033,31 @@ struct AlbumArtworkThumbnail: View {
         // grey flash at the start of every drag. Anything that would touch
         // the disk still waits for the task below.
         let shown = image ?? memoryThumbnail
-        RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(
+        // The placeholder only while there's no art, never under it. An
+        // opacity on a cover is applied to each of its layers, not to the
+        // finished picture, so a cover part-way through a fade showed the
+        // tinted fill through its own art: every cover an opening or closing
+        // folder handed from one copy to another went pale for the frames of
+        // the hand-over, its edges most of all (seen frame by frame in a
+        // simulator recording, 2026-10-28).
+        ZStack {
+            if let shown {
+                Image(uiImage: shown)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else {
                 LinearGradient(
                     colors: [themeService.accentColor.opacity(0.6), themeService.accentColor.opacity(0.3)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
-            )
-            .frame(width: size, height: size)
-            .overlay {
-                Group {
-                    if let shown {
-                        Image(uiImage: shown)
-                            .resizable()
-                            .scaledToFill()
-                            .transition(.opacity)
-                    } else {
-                        Image(systemName: "music.note")
-                            .font(.ui(size * 0.27))
-                            .foregroundStyle(.white.opacity(0.8))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+                Image(systemName: "music.note")
+                    .font(.ui(size * 0.27))
+                    .foregroundStyle(.white.opacity(0.8))
             }
+        }
+            .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             // A still hairline, so a cover with dark edges still separates
             // from the background — what `GlassRim` did, less the gyro lobe. The
@@ -1829,6 +2067,7 @@ struct AlbumArtworkThumbnail: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Self.edge(colorScheme), lineWidth: 1)
+                    .opacity(edgeOpacity)
                     .allowsHitTesting(false)
             }
             // Every `image =` here waits for its task to still be current.

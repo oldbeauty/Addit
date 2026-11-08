@@ -60,7 +60,13 @@ The library's toolbar orb and brand mark follow the scroll through
 that owns the box must never read `value`**. As a `@State CGFloat` it made
 `LibraryView.body` — two filtering passes over every album, each a SwiftData
 read — a dependency of the scroll, re-run every frame. Reading it inside the
-ornaments puts that dependency where the value is used. These two keep moving in
+ornaments puts that dependency where the value is used. In the library's
+grid the box is fed by the label host (`revealsLibraryLabels`), not
+`tracksScrollOffset`: a label growing on a row above the visible ones moves
+the scroll view's offset to keep the screen still, and `value` leaves those moves
+out, handing them back a quarter of the scroll's pace (`follow(_:shifted:)`),
+so the eye is home again at the top. Fed raw, the orb would snap ~25° per
+label and its twist read a flick (`skill://library-screen`). These two keep moving in
 Low Power Mode — settled; they're small, they're the app's signature, and the
 box is what made them cheap. `GlassRim`'s gyro highlight is the one that holds
 still there (`PowerState.shared.isLowPower`), because there can be a screenful

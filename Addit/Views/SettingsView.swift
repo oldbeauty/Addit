@@ -8,11 +8,9 @@ struct SettingsView: View {
     /// (instead of a separate `Bool`) means the sheet always knows
     /// which scheme to operate on without an extra prop drill.
     @State private var editingScheme: ColorScheme? = nil
-    /// Same defaults key `LibraryView` reads, so the two stay in lockstep with
-    /// no plumbing — this moved here when the toolbar's layout button was
-    /// replaced by the bug reporter. `false` is icon/grid, and it is the
-    /// default for a fresh install.
-    @AppStorage("libraryViewMode") private var isListMode = false
+    /// Same defaults key the library's layout menu writes, so the two stay in
+    /// lockstep with no plumbing. Icons is the default for a fresh install.
+    @AppStorage(LibraryLayout.storageKey) private var layout: LibraryLayout = .grid
     #if DEBUG
     /// Debug only, so the once-ever intro can be looked at more than once
     /// while its copy is still being written.
@@ -40,9 +38,10 @@ struct SettingsView: View {
                 }
 
                 Section("Library") {
-                    Picker("Layout", selection: $isListMode) {
-                        Text("Icons").tag(false)
-                        Text("List").tag(true)
+                    Picker("Layout", selection: $layout) {
+                        ForEach(LibraryLayout.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
                     }
                     .pickerStyle(.segmented)
                 }

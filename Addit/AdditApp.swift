@@ -33,6 +33,8 @@ struct AdditApp: App {
         // begins on a card releases it rather than pressing it.
         UIScrollView.appearance().delaysContentTouches = false
 
+        LibraryLayout.migrateStoredSetting()
+
         // Constructed here (not as property initializers) because the
         // coordinator and router hold references to their sibling services.
         let google = GoogleAuthService()
