@@ -1423,7 +1423,7 @@ struct AlbumDetailView: View {
             .ignoresSafeArea()
         }
         .appBackground(tint: coverTint, fadingOver: nil)
-        .staticTopFade(tint: coverTint)
+        .statusBarBlur(tint: coverTint)
         .listStyle(.plain)
         .listSectionSpacing(0)
         // Plain has no default top margin to cancel, so the header's own

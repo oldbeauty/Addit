@@ -968,7 +968,7 @@ struct LibraryView: View {
             }
         }
         .appBackground()
-        .staticTopFade()
+        .statusBarBlur()
         .navigationTitle(arranger.isArranging ? "Arrange Library" : "")
         .onAppear {
             // Self-heal: a cloud library whose provider has no account
@@ -1061,7 +1061,7 @@ struct LibraryView: View {
                     libraryPath.append(.album(album))
                 }
                 .appBackground()
-                .staticTopFade()
+                .statusBarBlur()
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
             }
