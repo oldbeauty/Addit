@@ -1062,6 +1062,10 @@ struct AlbumDetailView: View {
         }
 
         Button {
+            // The tap's own pop, the same as back's (`FlatSlideCoordinator`).
+            // Not in `enterEditMode`, which also runs unasked once a new
+            // album's page has loaded.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             enterEditMode()
         } label: {
             MenuIcon.edit.label("Edit", fallback: "pencil")

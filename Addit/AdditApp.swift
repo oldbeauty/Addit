@@ -240,7 +240,7 @@ struct AccountContainerView: View {
             // as the first move of the same gesture that later takes you into
             // an album. Referenced rather than copied — two numbers that have
             // to match are one number.
-            withAnimation(.easeOut(duration: FlatSlideAnimator.duration)) {
+            withAnimation(.timingCurve(0.33, 1, 0.68, 1, duration: FlatSlideAnimator.duration)) {
                 launchPhase = .parting
             }
             try? await Task.sleep(for: .seconds(FlatSlideAnimator.duration))

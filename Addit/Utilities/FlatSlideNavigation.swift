@@ -70,6 +70,7 @@ final class FlatSlideCoordinator: NSObject, UINavigationControllerDelegate, UIGe
     /// reach it (see forwarding overrides below).
     private weak var originalDelegate: UINavigationControllerDelegate?
     private var interactionController: UIPercentDrivenInteractiveTransition?
+    private let backHaptic = UIImpactFeedbackGenerator(style: .light)
 
     /// Idempotent: retained via associated object on the nav controller, so
     /// multiple screens in the same stack calling `.flatSlideNavigation()`
@@ -132,6 +133,13 @@ final class FlatSlideCoordinator: NSObject, UINavigationControllerDelegate, UIGe
         to toVC: UIViewController
     ) -> (any UIViewControllerAnimatedTransitioning)? {
         guard operation != .none else { return nil }
+        // A pop no finger is dragging is a tap on back — the bar's own button,
+        // or a screen's own (Chat's) dismissing — so it gets a pop of its own.
+        // The edge swipe sets `interactionController` before it pops, which is
+        // how it's told apart: a drag you can still cancel shouldn't thump.
+        if operation == .pop && interactionController == nil {
+            backHaptic.impactOccurred()
+        }
         return FlatSlideAnimator(operation: operation)
     }
 
@@ -271,11 +279,24 @@ final class FlatSlideAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     /// `interruptibleAnimator`; the two directions have to match or navigating
     /// feels lopsided. Tune here, not per-direction.
     ///
-    /// Measured: the destination is built and on screen ~50ms after the tap,
-    /// so this duration is ~75% of the whole tap-to-settled time and the only
-    /// part worth cutting. Below roughly 0.08 a full-width slide stops reading
-    /// as movement and starts reading as a jump cut, which is the floor.
-    static let duration: TimeInterval = 0.11
+    /// 0.26 since 2026-10-29, measured off a screen recording of
+    /// untitled.stream's library → album push, which the user held up as the
+    /// smooth one: its page crosses in ~0.23s and is still by ~0.25s, moving a
+    /// steady ~48pt a 60 Hz frame for the first five, then settling — a cubic
+    /// ease-out, peaking near 3,000pt/s. At 0.11 on `.easeOut` this one peaked
+    /// past twice that, 60pt apart between 120 Hz frames, which the eye can't
+    /// follow as one thing moving: it read as a jump, not a glide. (It had
+    /// been cut to 0.11 because the destination builds ~50ms after the tap and
+    /// the slide was the rest of the wait; leaving at full speed is what keeps
+    /// a longer one feeling quick.)
+    static let duration: TimeInterval = 0.26
+    /// Leaves at full speed and spends its second half settling — CSS's
+    /// ease-out-cubic, the shape the recording traced. UIKit's `.easeOut`
+    /// starts gently, which at a longer duration would feel late.
+    private static let settle = UICubicTimingParameters(
+        controlPoint1: CGPoint(x: 0.33, y: 1),
+        controlPoint2: CGPoint(x: 0.68, y: 1)
+    )
 
     private let operation: UINavigationController.Operation
     private var propertyAnimator: UIViewPropertyAnimator?
@@ -323,12 +344,16 @@ final class FlatSlideAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         toView.isUserInteractionEnabled = false
 
         // Linear while a finger is scrubbing so the pages track it 1:1.
-        // Tap-triggered transitions use easeOut in BOTH directions — easeInOut
-        // spikes to ~2x average velocity mid-flight, which made pushes read
-        // way faster than pops even at identical durations. Push and pop must
-        // share one duration + one curve so the two directions feel the same.
-        let curve: UIView.AnimationCurve = context.isInteractive ? .linear : .easeOut
-        let animator = UIViewPropertyAnimator(duration: transitionDuration(using: context), curve: curve) {
+        // Tap-triggered transitions share one ease-out in BOTH directions —
+        // easeInOut spikes to ~2x average velocity mid-flight, which made
+        // pushes read way faster than pops even at identical durations. Push
+        // and pop must share one duration + one curve so the two directions
+        // feel the same.
+        let timing: UITimingCurveProvider = context.isInteractive
+            ? UICubicTimingParameters(animationCurve: .linear)
+            : Self.settle
+        let animator = UIViewPropertyAnimator(duration: transitionDuration(using: context), timingParameters: timing)
+        animator.addAnimations {
             fromView.transform = CGAffineTransform(translationX: push ? -width : width, y: 0)
             toView.transform = .identity
         }
