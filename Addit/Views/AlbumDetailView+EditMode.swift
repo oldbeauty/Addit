@@ -971,7 +971,7 @@ extension AlbumDetailView {
             } catch {
                 // Upstream delete failed — leave everything, local copy
                 // included, so the track is still playable and retryable.
-                editErrorMessage = "Failed to delete: \(error.localizedDescription)"
+                editErrorMessage = "Couldn't delete \"\(track.name)\". \(error.localizedDescription)"
                 editTrackToDelete = nil
                 return
             }

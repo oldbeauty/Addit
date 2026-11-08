@@ -304,7 +304,46 @@ final class GoogleDriveService: CloudDriveService {
         request.httpBody = try JSONSerialization.data(withJSONObject: ["trashed": true])
 
         let (_, response) = try await session.data(for: request)
-        try validateResponse(response)
+        do {
+            try validateResponse(response)
+        } catch DriveError.forbidden {
+            throw await trashRefusal(fileId: fileId)
+        }
+    }
+
+    /// Why Drive wouldn't trash a file, when it's the usual reason. Drive lets
+    /// only a file's owner trash it, so Editor access isn't enough, and it
+    /// refuses everyone else with the same 403 as having no access at all. A
+    /// collaborator deleting a track someone else uploaded was told "You don't
+    /// have edit access", on camera, in the OAuth review demo (2026-10-13).
+    /// Asked only after a refusal, so a delete that works is still one request.
+    private func trashRefusal(fileId: String) async -> DriveError {
+        struct Answer: Decodable {
+            struct Owner: Decodable { let displayName: String?; let me: Bool? }
+            struct Capabilities: Decodable { let canTrash: Bool? }
+            let owners: [Owner]?
+            let capabilities: Capabilities?
+        }
+        var components = URLComponents(string: "\(baseURL)/files/\(fileId)")!
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "owners(displayName,me),capabilities/canTrash")
+        ]
+        do {
+            var request = URLRequest(url: components.url!)
+            request.setValue("Bearer \(try await getToken())", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            try validateResponse(response)
+            let answer = try JSONDecoder().decode(Answer.self, from: data)
+            // Anything else, and the 403 meant something else (Drive also
+            // answers some rate limits with one).
+            guard answer.capabilities?.canTrash == false, answer.owners?.first?.me != true else {
+                return .forbidden
+            }
+            return .onlyOwnerCanTrash(owner: answer.owners?.first?.displayName)
+        } catch {
+            return .forbidden
+        }
     }
 
     /// Copies a file into a target folder, returning the new DriveItem.
@@ -854,6 +893,9 @@ enum DriveError: LocalizedError {
     case uploadRefused
     case unauthorized
     case forbidden
+    /// Trashing was refused because the file is someone else's. `owner` is
+    /// their name, when Drive gives one (a shared drive's files have none).
+    case onlyOwnerCanTrash(owner: String?)
     case notFound
     case rateLimited
     case invalidResponse
@@ -865,6 +907,10 @@ enum DriveError: LocalizedError {
         case .uploadRefused: return "Google Drive stopped accepting the upload. Try again."
         case .unauthorized: return "Not authorized. Please sign in again."
         case .forbidden: return "You don't have edit access to this folder."
+        case .onlyOwnerCanTrash(let owner?):
+            return "It's \(owner)'s file, and Google Drive lets only its owner move it to the trash."
+        case .onlyOwnerCanTrash(nil):
+            return "Google Drive lets only this file's owner move it to the trash."
         case .notFound: return "File or folder not found"
         case .rateLimited: return "Too many requests. Please try again later."
         case .invalidResponse: return "Invalid response from server"
