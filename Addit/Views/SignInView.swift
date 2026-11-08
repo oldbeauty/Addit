@@ -79,7 +79,7 @@ struct SignInView: View {
                 // holding the small parts small is what makes the pair above
                 // them read as the subject and the rest as apparatus.
                 AdditWordmark(size: 51)
-                Text("The cloud music library")
+                Text("Music in progress, together")
                     .font(.uiSubheadline)
                     .foregroundStyle(.secondary)
             }

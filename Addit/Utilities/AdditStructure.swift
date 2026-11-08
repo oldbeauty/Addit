@@ -9,11 +9,9 @@ import simd
 /// operation here, which is why the mark stays coherent from any angle and can
 /// be rotated live (`StructureView`).
 ///
-/// The app icon is this surface projected head-on with `iconParameters`, baked
-/// to SVG by `tools/make_app_icon.py`. That script carries its own copy of the
-/// constants and of `height(x:y:)` — change anything here and rerun it, or the
-/// home-screen icon and everything drawing `StructureView` stop being the same
-/// object.
+/// Until 2026-10-27 the app icon was this surface projected head-on with
+/// `iconParameters`, baked to SVG by an earlier `tools/make_app_icon.py` (in
+/// git history). The icon is a plus now, and nothing here feeds it.
 enum AdditStructure {
 
     /// One circular bulge in the surface.

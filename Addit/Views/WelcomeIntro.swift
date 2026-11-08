@@ -26,9 +26,9 @@ struct WelcomeStep: Identifiable {
             ornament: .orb,
             title: "Welcome to Addit",
             copy: """
-            This is an environment to listen to, share, and centralize your \
-            cloud-stored music. We work with Google Drive and OneDrive, and \
-            all functionality is free.
+            This is a place to listen to, share, and talk over \
+            work-in-progress music with the people you make it with. We work \
+            with Google Drive and OneDrive, and all functionality is free.
             """
         ),
         WelcomeStep(
@@ -47,8 +47,8 @@ struct WelcomeStep: Identifiable {
             copy: """
             Sharing and access in Addit behave exactly according to that of \
             the cloud type you are using. Addit is simply a listening \
-            interface you can plug your clouds into. You can add as many \
-            accounts as you want.
+            interface you can plug your clouds into. Share a folder with your \
+            collaborators, and everyone hears the same album.
             """
         ),
         WelcomeStep(
